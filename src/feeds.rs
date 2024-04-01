@@ -1,8 +1,9 @@
 use feed_rs::parser;
 use reqwest::get;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Feed {
+  pub url: String,
   pub title: String,
   pub entries: Vec<String>,
 }
@@ -10,30 +11,32 @@ pub struct Feed {
 pub async fn fetch_feed(feeds: Vec<String>) -> Vec<String> {
   let mut raw_feeds: Vec<String> = Vec::new();
   for url in feeds {
-    println!("Fetching: {}", url);
-    let response = get(url).await;
-    raw_feeds.push(response.unwrap().text().await.unwrap());
+    let response = get(&url).await.expect("Failed to fetch feed");
+    raw_feeds.push(response.text().await.expect("Failed to read response body"));
   }
   raw_feeds
 }
 
-pub fn parse_feed(feed: Vec<String>) -> Feed {
-  let mut all_entries: Vec<String> = Vec::new();
-  let mut feed_title = String::new();
+pub fn parse_feed(feed: Vec<String>, feed_urls: Vec<String>) -> Vec<Feed> {
+  let mut all_feeds: Vec<Feed> = Vec::new();
 
-  for raw in feed {
-    let feed_from_xml = parser::parse(raw.as_bytes()).unwrap();
+  for (index, raw) in feed.into_iter().enumerate() {
+    let feed_from_xml = parser::parse(raw.as_bytes()).expect("Failed to parse feed");
     let title = feed_from_xml.title.unwrap().content;
-    if feed_title.is_empty() {
-      feed_title = title.clone(); // Assuming you want to use the title from the first feed
-    }
+
+    let mut entries: Vec<String> = Vec::new();
     for entry in feed_from_xml.entries {
-      all_entries.push(entry.title.unwrap().content);
+      entries.push(entry.title.unwrap().content);
     }
+
+    let feed = Feed {
+      url: feed_urls[index].clone(),
+      title,
+      entries,
+    };
+
+    all_feeds.push(feed);
   }
 
-  Feed {
-    title: feed_title,
-    entries: all_entries,
-  }
+  all_feeds
 }

@@ -16,7 +16,7 @@ mod ui;
 async fn main() -> std::io::Result<()> {
   let feeds_urls = config::parse_feed_urls;
   let xml = feeds::fetch_feed(feeds_urls());
-  let list: Feed = feeds::parse_feed(xml.await);
+  let list: Vec<Feed> = feeds::parse_feed(xml.await, feeds_urls());
   let mut terminal = ui::init()?;
   let app = App::new(list).run(&mut terminal);
   ui::restore()?;
@@ -26,12 +26,12 @@ async fn main() -> std::io::Result<()> {
 #[derive(Debug, Default)]
 pub struct App {
   //mode: String, // TODO Change into something like Mode type
-  list: Feed,
+  list: Vec<Feed>,
   exit: bool,
 }
 
 impl App {
-  pub fn new(list: Feed) -> Self {
+  pub fn new(list: Vec<Feed>) -> Self {
     App {
       //mode: String::new(),
       list,
@@ -64,7 +64,7 @@ impl App {
   }
   fn handle_key_event(&mut self, key_event: KeyEvent) {
     match key_event.code {
-      KeyCode::Char('q') => self.exit(),
+      KeyCode::Char('q') | KeyCode::Char('Q') => self.exit(),
       _ => {}
     }
   }
@@ -75,7 +75,7 @@ impl App {
 
 impl Widget for &App {
   fn render(self, area: Rect, buf: &mut Buffer) {
-    let title = Title::from("Feed list".bold());
+    let title = Title::from(" Feed list ".bold());
     let instructions = Title::from(Line::from(vec![" Quit ".into(), "<Q> ".blue().bold()]));
     let block = Block::default()
       .title(title.alignment(Alignment::Left))
@@ -86,10 +86,18 @@ impl Widget for &App {
       )
       .borders(Borders::ALL)
       .border_style(Style::new().white())
-      .border_set(border::THICK);
+      .border_set(border::PLAIN);
 
     //let text = Text::from(self.list.entries.join("\n"));
-    let text = Text::from(format!("{:#?}", self.list));
+    let text = Text::from(format!(
+      "{}",
+      self
+        .list
+        .iter()
+        .map(|l| format!("- {}", &l.title))
+        .collect::<Vec<String>>()
+        .join("\n")
+    ));
 
     Paragraph::new(text)
       .style(Style::new().green())
