@@ -11,8 +11,7 @@
       let
         pkgs = (import nixpkgs) { inherit system; };
         naersk' = pkgs.callPackage naersk { };
-
-      in rec {
+      in {
         defaultPackage = naersk'.buildPackage {
           src = ./.;
           nativeBuildInputs = with pkgs; [ pkg-config ];
@@ -26,8 +25,8 @@
             rust-analyzer
             rustPackages.clippy
             rustfmt
-	    openssl
-	    pkg-config
+            openssl
+            pkg-config
           ];
         };
       });
