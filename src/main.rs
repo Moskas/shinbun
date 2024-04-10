@@ -1,4 +1,4 @@
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use feeds::Feed;
 use ratatui::{
   prelude::*,
@@ -27,14 +27,17 @@ async fn main() -> std::io::Result<()> {
 pub struct App {
   //mode: String, // TODO Change into something like Mode type
   list: Vec<Feed>,
+  index: usize,
+  state: ListState,
   exit: bool,
 }
 
 impl App {
   pub fn new(list: Vec<Feed>) -> Self {
     App {
-      //mode: String::new(),
       list,
+      state: ListState::default().with_selected(Some(0)),
+      index: 0,
       exit: false,
     }
   }
@@ -65,18 +68,47 @@ impl App {
   fn handle_key_event(&mut self, key_event: KeyEvent) {
     match key_event.code {
       KeyCode::Char('q') | KeyCode::Char('Q') => self.exit(),
+      KeyCode::Up | KeyCode::Char('k') => self.previous(),
+      KeyCode::Down | KeyCode::Char('j') => self.next(),
+      KeyCode::Right | KeyCode::Char('l') => self.enter(),
+      KeyCode::Left | KeyCode::Char('h') => self.back(),
+      KeyCode::Char('?') => self.help(), // TODO Fix panic on ? press
       _ => {}
     }
   }
   fn exit(&mut self) {
     self.exit = true;
   }
+  fn previous(&mut self) {
+    if self.index > 0 {
+      self.index -= 1;
+      self.state.select(Some(self.index))
+    } else {
+      self.state.select(Some(0))
+    }
+  }
+  fn next(&mut self) {
+    if self.index + 1 < self.list.len() {
+      self.index += 1;
+      self.state.select(Some(self.index))
+    }
+  }
+  fn enter(&mut self) {
+    //println!("{}", self.list[self.index].title)
+    todo!()
+  }
+  fn back(&mut self) {
+    todo!()
+  }
+  fn help(&mut self) {
+    todo!()
+  }
 }
 
 impl Widget for &App {
   fn render(self, area: Rect, buf: &mut Buffer) {
-    let title = Title::from(" Feed list ".bold());
-    let instructions = Title::from(Line::from(vec![" Quit ".into(), "<Q> ".blue().bold()]));
+    let title = Title::from(" Shinbun ".bold().yellow());
+    let instructions = Title::from(Line::from(vec![" Quit ".into(), "<Q> ".bold()]));
     let block = Block::default()
       .title(title.alignment(Alignment::Left))
       .title(
@@ -85,24 +117,22 @@ impl Widget for &App {
           .position(Position::Bottom),
       )
       .borders(Borders::ALL)
-      .border_style(Style::new().white())
+      .border_style(Style::new().blue())
       .border_set(border::PLAIN);
 
-    //let text = Text::from(self.list.entries.join("\n"));
-    let text = Text::from(format!(
-      "{}",
-      self
-        .list
-        .iter()
-        .map(|l| format!("- {}", &l.title))
-        .collect::<Vec<String>>()
-        .join("\n")
-    ));
+    let entries = self
+      .list
+      .iter()
+      .map(|l| format!(" {} [{}]", &l.title, l.entries.len()))
+      .collect::<List>();
 
-    Paragraph::new(text)
-      .style(Style::new().green())
-      .alignment(Alignment::Left)
-      .block(block)
-      .render(area, buf);
+    StatefulWidget::render(
+      entries
+        .block(block.title(" Feeds ".green()))
+        .highlight_style(Style::default().yellow().bold()),
+      area,
+      buf,
+      &mut self.state.to_owned(),
+    )
   }
 }

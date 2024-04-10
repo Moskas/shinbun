@@ -1070,6 +1070,7 @@ dependencies = [
  "dirs",
  "feed-rs",
  "ratatui",
+ "regex",
  "reqwest",
  "tokio",
 ]
