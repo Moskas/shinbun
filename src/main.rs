@@ -1,4 +1,4 @@
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use feeds::Feed;
 use ratatui::{
   prelude::*,
@@ -31,6 +31,17 @@ pub struct App {
   state: ListState,
   exit: bool,
 }
+
+//pub struct FeedsList {
+//  list: Vec<String>,
+//  index: usize,
+//  state: ListState,
+//}
+//
+//pub struct PostList {
+//  index: usize,
+//  state: ListState,
+//}
 
 impl App {
   pub fn new(list: Vec<Feed>) -> Self {
@@ -120,14 +131,14 @@ impl Widget for &App {
       .border_style(Style::new().blue())
       .border_set(border::PLAIN);
 
-    let entries = self
+    let feeds = self
       .list
       .iter()
-      .map(|l| format!(" {} [{}]", &l.title, l.entries.len()))
+      .map(|l| format!(" {} [{}]", &l.title, l.entries.len(),))
       .collect::<List>();
 
     StatefulWidget::render(
-      entries
+      feeds
         .block(block.title(" Feeds ".green()))
         .highlight_style(Style::default().yellow().bold()),
       area,

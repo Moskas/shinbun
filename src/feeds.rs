@@ -1,12 +1,18 @@
-use feed_rs::parser;
+use feed_rs::{
+  model::{Feed as Feedrs, Person},
+  parser,
+};
 use reqwest::get;
 
 #[derive(Debug)]
 pub struct Feed {
+  authors: Vec<Person>,
   pub url: String,
   pub title: String,
   pub entries: Vec<String>,
 }
+
+pub struct _FeedList {}
 
 pub async fn fetch_feed(feeds: Vec<String>) -> Vec<String> {
   let mut raw_feeds: Vec<String> = Vec::new();
@@ -23,6 +29,7 @@ pub fn parse_feed(feed: Vec<String>, feed_urls: Vec<String>) -> Vec<Feed> {
   for (index, raw) in feed.into_iter().enumerate() {
     let feed_from_xml = parser::parse(raw.as_bytes()).expect("Failed to parse feed");
     let title = feed_from_xml.title.unwrap().content;
+    let authors = feed_from_xml.authors;
 
     let mut entries: Vec<String> = Vec::new();
     for entry in feed_from_xml.entries {
@@ -31,6 +38,7 @@ pub fn parse_feed(feed: Vec<String>, feed_urls: Vec<String>) -> Vec<Feed> {
 
     let feed = Feed {
       url: feed_urls[index].clone(),
+      authors,
       title,
       entries,
     };
