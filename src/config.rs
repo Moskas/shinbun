@@ -1,17 +1,13 @@
 use dirs::config_dir;
 
 #[derive(Debug, Default)]
-pub struct Urls {
-  link: String,
-  name: Option<String>,
-  tags: Option<Vec<String>>,
+pub struct Feeds {
+  pub link: String,
+  pub name: Option<String>,
+  pub tags: Option<Vec<String>>,
 }
 
-pub struct FeedsFromUrls {
-  feeds: Vec<Urls>,
-}
-
-pub fn parse_feed_urls() -> Vec<String> {
+pub fn parse_feed_urls() -> Vec<Feeds> {
   // Read the configuration file
   let url_file = format!(
     "{}/shinbun/urls",
@@ -32,22 +28,26 @@ pub fn parse_feed_urls() -> Vec<String> {
       .split_whitespace()
       .map(|word| word.to_string())
       .collect::<Vec<String>>();
+    // Get the tags that are between url and name override
+    // FIX That might skip a tag if no name override is set
     let tags = if feed.len() > 2 {
       Some(feed[1..feed.len() - 1].to_owned())
     } else {
       None
     };
-    let _feed_struct = Urls {
+    // Name override for the feed
+    let name = if feed.last().unwrap().to_string().starts_with('~') {
+      Some(feed.last().unwrap().to_string())
+    } else {
+      None
+    };
+
+    let feed_struct = Feeds {
       link: feed.first().unwrap().to_string(),
       tags,
-      name: if feed.last().unwrap().to_string().starts_with('~') {
-        Some(feed.last().unwrap().to_string())
-      } else {
-        None
-      },
+      name,
     };
-    //println!("{:#?}", feed_struct);
-    feed_urls.push(feed.first().unwrap().to_string());
+    feed_urls.push(feed_struct);
   }
 
   feed_urls

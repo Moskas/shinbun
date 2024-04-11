@@ -1,3 +1,4 @@
+use config::Feeds;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use feeds::Feed;
 use ratatui::{
@@ -15,8 +16,8 @@ mod ui;
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
   let feeds_urls = config::parse_feed_urls;
-  let xml = feeds::fetch_feed(feeds_urls());
-  let list: Vec<Feed> = feeds::parse_feed(xml.await, feeds_urls());
+  let xml = feeds::fetch_feed(feeds_urls()).await;
+  let list: Vec<Feed> = feeds::parse_feed(xml, feeds_urls());
   let mut terminal = ui::init()?;
   let app = App::new(list).run(&mut terminal);
   ui::restore()?;
@@ -25,7 +26,6 @@ async fn main() -> std::io::Result<()> {
 
 #[derive(Debug, Default)]
 pub struct App {
-  //mode: String, // TODO Change into something like Mode type
   list: Vec<Feed>,
   index: usize,
   state: ListState,

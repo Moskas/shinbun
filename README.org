@@ -3,12 +3,17 @@
 #+options: \n:t
 
 新聞(shinbun) is a TUI application for reading feeds. Heavily inspired by newsboat.
+[[./examples/feed_list.png]]
 
 * Configuration
 Feeds are being read from user config directory. The format follows newsboat urls file so each feed url is a separate line.
 ** Linux
 #+begin_src shell
 $HOME/.config/shinbun/urls
+#+end_src
+** Windows
+#+begin_src shell
+$HOME/AppData/Roaming/shinbun/ursl
 #+end_src
 
 ** Example
