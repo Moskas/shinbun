@@ -17,7 +17,7 @@ mod ui;
 async fn main() -> std::io::Result<()> {
   let feeds_urls = config::parse_feed_urls;
   let xml = feeds::fetch_feed(feeds_urls()).await;
-  let list: Vec<Feed> = feeds::parse_feed(xml, feeds_urls());
+  let list: Vec<Feed> = feeds::parse_feed(xml.expect("Failed to fetch feed"), feeds_urls());
   let mut terminal = ui::init()?;
   let app = App::new(list).run(&mut terminal);
   ui::restore()?;
@@ -83,7 +83,7 @@ impl App {
       KeyCode::Down | KeyCode::Char('j') => self.next(),
       KeyCode::Right | KeyCode::Char('l') => self.enter(),
       KeyCode::Left | KeyCode::Char('h') => self.back(),
-      KeyCode::Char('?') => self.help(), // TODO Fix panic on ? press
+      KeyCode::Char('?') => self.help(),
       _ => {}
     }
   }

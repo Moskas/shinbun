@@ -26,21 +26,23 @@ pub fn parse_feed_urls() -> Vec<Feeds> {
   {
     let feed = line
       .split_whitespace()
-      .map(|word| word.to_string())
+      // Replace all quotation marks as they are not needed but newsboat format used them
+      .map(|word| word.to_string().replace('"', ""))
       .collect::<Vec<String>>();
     // Get the tags that are between url and name override
-    // FIX That might skip a tag if no name override is set
-    let tags = if feed.len() > 2 {
-      Some(feed[1..feed.len() - 1].to_owned())
-    } else {
-      None
+    let tags = match (feed.len(), feed.last().unwrap().starts_with('~')) {
+      (len, true) if len > 2 => Some(feed[1..len - 1].to_owned()),
+      (len, false) if len > 1 => Some(feed[1..len].to_owned()),
+      _ => None,
     };
     // Name override for the feed
-    let name = if feed.last().unwrap().to_string().starts_with('~') {
-      Some(feed.last().unwrap().to_string())
-    } else {
-      None
-    };
+    let name = feed.last().and_then(|element| {
+      if element.starts_with('~') {
+        Some(element[1..].to_string())
+      } else {
+        None
+      }
+    });
 
     let feed_struct = Feeds {
       link: feed.first().unwrap().to_string(),

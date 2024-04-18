@@ -1,34 +1,49 @@
 //use config::Feeds;
 use crate::Feeds;
-use feed_rs::parser;
-use reqwest::get;
+use feed_rs::{model::Entry, parser};
+use reqwest::{get, Error as reqError};
 
 #[derive(Debug)]
 pub struct Feed {
   //authors: Vec<Person>,
   pub url: String,
   pub title: String,
-  pub entries: Vec<String>,
+  pub entries: Vec<Entry>,
 }
 
-pub async fn fetch_feed(feeds: Vec<Feeds>) -> Vec<String> {
+pub async fn fetch_feed(feeds: Vec<Feeds>) -> Result<Vec<String>, reqError> {
   let mut raw_feeds: Vec<String> = Vec::new();
   for entry in feeds {
-    let response = get(entry.link).await.expect("Failed to fetch feed");
-    raw_feeds.push(response.text().await.expect("Failed to read response body"));
+    match get(entry.link).await {
+      Ok(response) => match response.text().await {
+        Ok(body) => {
+          raw_feeds.push(body);
+        }
+        Err(e) => {
+          eprintln!("Failed to read response body: {}", e);
+        }
+      },
+      Err(e) => {
+        eprintln!("Failed to fetch feed: {}", e);
+      }
+    }
   }
-  raw_feeds
+  Ok::<Vec<String>, reqError>(raw_feeds)
 }
 
 pub fn parse_feed(links: Vec<String>, feeds: Vec<Feeds>) -> Vec<Feed> {
   let mut all_feeds: Vec<Feed> = Vec::new();
   for (index, raw) in links.into_iter().enumerate() {
     let feed_from_xml = parser::parse(raw.as_bytes()).expect("Failed to parse the feed");
-    let title = feed_from_xml.title.unwrap().content;
+    let title = if feeds[index].name.is_some() {
+      feeds[index].name.clone().unwrap()
+    } else {
+      feed_from_xml.title.unwrap().content
+    };
 
-    let mut entries: Vec<String> = Vec::new();
+    let mut entries: Vec<Entry> = Vec::new();
     for entry in feed_from_xml.entries {
-      entries.push(entry.title.unwrap().content);
+      entries.push(entry);
     }
 
     let feed = Feed {
