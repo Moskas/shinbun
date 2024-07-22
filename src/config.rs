@@ -1,60 +1,45 @@
 use dirs::config_dir;
+use serde::Deserialize;
+use std::fs;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize)]
 pub struct Feeds {
-  pub link: String,
-  pub name: Option<String>,
-  pub tags: Option<Vec<String>>,
+    pub link: String,
+    pub name: Option<String>,
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Config {
+    feeds: Vec<Feeds>,
 }
 
 pub fn parse_feed_urls() -> Vec<Feeds> {
-  // Read the configuration file
-  let url_file = format!(
-    "{}/shinbun/urls",
-    config_dir()
-      .expect("Config directory doesn't exist")
-      .display(),
-  );
+    // Read the configuration file
+    let url_file = format!(
+        "{}/shinbun/urls.toml",
+        config_dir()
+            .expect("Config directory doesn't exist")
+            .display(),
+    );
 
-  // Parse the file as a list of URLs
-  let mut feed_urls = Vec::new();
-  for line in std::fs::read_to_string(url_file)
-    .expect("Error reading configuration file")
-    .lines()
-    // Ignore lines starting with '#'
-    .filter(|line| !line.trim().starts_with('#'))
-  {
-    let feed = line
-      .split_whitespace()
-      // Replace all quotation marks as they are not needed but newsboat format used them
-      .map(|word| word.to_string().replace('"', ""))
-      .collect::<Vec<String>>();
-    // Get the tags that are between url and name override
-    let tags = match (feed.len(), feed.last().unwrap().starts_with('~')) {
-      (len, true) if len > 2 => Some(feed[1..len - 1].to_owned()),
-      (len, false) if len > 1 => Some(feed[1..len].to_owned()),
-      _ => None,
-    };
-    // Name override for the feed
-    let name = feed.last().and_then(|element| {
-      if element.starts_with('~') {
-        Some(element[1..].to_string())
-      } else {
-        None
-      }
-    });
+    // Read the TOML file
+    let toml_content = fs::read_to_string(&url_file).expect("Error reading configuration file");
 
-    let feed_struct = Feeds {
-      link: feed.first().unwrap().to_string(),
-      tags,
-      name,
-    };
-    feed_urls.push(feed_struct);
-  }
+    // Parse the TOML content into Config struct
+    let config: Config = toml::from_str(&toml_content).expect("Error parsing TOML configuration");
+    let config2: Config = toml::from_str(&toml_content).expect("Error parsing TOML configuration");
 
-  feed_urls
+    for entry in config2.feeds.into_iter() {
+        if entry.tags.is_some() {
+            println!("{}", entry.tags.unwrap().join(", "));
+        }
+    }
+
+    // Return the list of feeds
+    config.feeds
 }
 
 pub fn _parse_config() {
-  todo!()
+    todo!()
 }
