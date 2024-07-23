@@ -28,14 +28,6 @@ pub fn parse_feed_urls() -> Vec<Feeds> {
 
     // Parse the TOML content into Config struct
     let config: Config = toml::from_str(&toml_content).expect("Error parsing TOML configuration");
-    let config2: Config = toml::from_str(&toml_content).expect("Error parsing TOML configuration");
-
-    for entry in config2.feeds.into_iter() {
-        if entry.tags.is_some() {
-            println!("{}", entry.tags.unwrap().join(", "));
-        }
-    }
-
     // Return the list of feeds
     config.feeds
 }

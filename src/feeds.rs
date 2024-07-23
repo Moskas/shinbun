@@ -9,6 +9,7 @@ pub struct Feed {
   pub url: String,
   pub title: String,
   pub entries: Vec<Entry>,
+  pub tags: Option<Vec<String>>,
 }
 
 pub async fn fetch_feed(feeds: Vec<Feeds>) -> Result<Vec<String>, reqError> {
@@ -50,6 +51,7 @@ pub fn parse_feed(links: Vec<String>, feeds: Vec<Feeds>) -> Vec<Feed> {
       url: feeds[index].link.clone(),
       title,
       entries,
+      tags: feeds[index].tags.clone(),
     };
 
     all_feeds.push(feed);

@@ -24,7 +24,7 @@ async fn main() -> std::io::Result<()> {
   app
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct App {
   list: Vec<Feed>,
   index: usize,
@@ -105,7 +105,6 @@ impl App {
     }
   }
   fn enter(&mut self) {
-    //println!("{}", self.list[self.index].title)
     todo!()
   }
   fn back(&mut self) {
@@ -131,19 +130,71 @@ impl Widget for &App {
       .border_style(Style::new().blue())
       .border_set(border::PLAIN);
 
+    let inner_area = block.inner(area);
+    block.render(area, buf);
+
+    let horizontal_split = Layout::default()
+      .direction(Direction::Horizontal)
+      .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+      .split(inner_area);
+
     let feeds = self
       .list
       .iter()
-      .map(|l| format!(" {} [{}]", &l.title, l.entries.len(),))
+      .map(|l| {
+        format!(
+          " {} [{}] | {}",
+          &l.title,
+          l.entries.len(),
+          if l.tags.is_some() {
+            l.tags.as_ref().unwrap().join(",")
+          } else {
+            "".to_string()
+          }
+        )
+      })
       .collect::<List>();
+
+    let left_block = Block::default()
+      .title(" Feeds ".green())
+      .borders(Borders::ALL)
+      .border_style(Style::new().blue())
+      .border_set(border::PLAIN);
 
     StatefulWidget::render(
       feeds
-        .block(block.title(" Feeds ".green()))
+        .block(left_block)
         .highlight_style(Style::default().yellow().bold()),
-      area,
+      horizontal_split[0],
       buf,
       &mut self.state.to_owned(),
-    )
+    );
+
+    let right_block = Block::default()
+      .title(" Entries ".green())
+      .borders(Borders::ALL)
+      .border_style(Style::new().blue())
+      .border_set(border::PLAIN);
+
+    let selected_index = self.state.selected().unwrap_or(0);
+    let entries = if let Some(feed) = self.list.get(selected_index) {
+      feed
+        .entries
+        .iter()
+        .map(|e| ListItem::new(format!("{}", e.title.clone().unwrap().content)))
+        .collect::<Vec<_>>()
+    } else {
+      vec![]
+    };
+
+    let secondary_list = List::new(entries)
+      .block(right_block.clone())
+      .highlight_style(Style::default().yellow().bold());
+    StatefulWidget::render(
+      secondary_list.block(right_block),
+      horizontal_split[1],
+      buf,
+      &mut ListState::default(),
+    );
   }
 }
