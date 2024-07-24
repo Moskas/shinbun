@@ -1,6 +1,6 @@
 use dirs::config_dir;
 use serde::Deserialize;
-use std::fs;
+use std::{fs, process::exit};
 
 #[derive(Debug, Default, Deserialize)]
 pub struct Feeds {
@@ -22,6 +22,11 @@ pub fn parse_feed_urls() -> Vec<Feeds> {
             .expect("Config directory doesn't exist")
             .display(),
     );
+
+    if fs::File::open(&url_file).is_err() {
+        println!("File urls.toml not found in path: {}", &url_file);
+        exit(-1)
+    }
 
     // Read the TOML file
     let toml_content = fs::read_to_string(&url_file).expect("Error reading configuration file");

@@ -35,7 +35,14 @@ pub async fn fetch_feed(feeds: Vec<Feeds>) -> Result<Vec<String>, reqError> {
 pub fn parse_feed(links: Vec<String>, feeds: Vec<Feeds>) -> Vec<Feed> {
   let mut all_feeds: Vec<Feed> = Vec::new();
   for (index, raw) in links.into_iter().enumerate() {
-    let feed_from_xml = parser::parse(raw.as_bytes()).expect("Failed to parse the feed");
+    let feed_from_xml = match parser::parse(raw.as_bytes()) {
+      Ok(feed) => feed,
+      Err(e) => {
+        eprintln!("Failed to parse the feed: {}", feeds[index].link);
+        eprintln!("Details: {}", e);
+        std::process::exit(-1)
+      }
+    };
     let title = if feeds[index].name.is_some() {
       feeds[index].name.clone().unwrap()
     } else {
