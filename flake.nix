@@ -1,56 +1,44 @@
 {
-  description = "Rust dev flake";
-
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-    naersk.url = "github:nix-community/naersk";
     flake-utils.url = "github:numtide/flake-utils";
+    naersk.url = "github:nix-community/naersk";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    fenix.url = "github:nix-community/fenix";
   };
-  outputs =
-    {
-      self,
-      flake-utils,
-      naersk,
-      nixpkgs,
-    }:
+
+  outputs = {
+    self,
+    flake-utils,
+    naersk,
+    nixpkgs,
+    fenix,
+  }:
     flake-utils.lib.eachDefaultSystem (
-      system:
-      let
-        pkgs = (import nixpkgs) { inherit system; };
-        naersk' = pkgs.callPackage naersk { };
-      in
-      {
-        defaultPackage = naersk'.buildPackage {
-          src = ./.;
-          nativeBuildInputs = with pkgs; [
-            pkg-config
-            rustc
-          ];
-          buildInputs = with pkgs; [ openssl ];
+      system: let
+        pkgs = (import nixpkgs) {
+          inherit system;
+          overlays = [fenix.overlays.default];
         };
 
-        packages = {
-          check = naersk'.buildPackage {
-            src = ./.;
-            nativeBuildInputs = with pkgs; [
-              pkg-config
-              rustc
-            ];
-            buildInputs = with pkgs; [ openssl ];
-            mode = "check";
-          };
+        naersk' = pkgs.callPackage naersk {};
+      in rec {
+        defaultPackage = naersk'.buildPackage {
+          src = ./.;
         };
 
         devShell = pkgs.mkShell {
-          buildInputs = with pkgs; [
-            rustc
-            cargo
-            cargo-watch
+          nativeBuildInputs = with pkgs; [
+            alejandra
             rust-analyzer
-            rustPackages.clippy
-            rustfmt
-            openssl
-            pkg-config
+            (pkgs.fenix.stable.withComponents [
+              "cargo"
+              "clippy"
+              "rust-src"
+              "rustc"
+              "rustfmt"
+            ])
+	    openssl
+	    pkg-config
           ];
         };
       }

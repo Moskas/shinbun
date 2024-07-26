@@ -33,6 +33,7 @@ pub struct App {
   active_list: ActiveList,
   entry_open: bool,
   scroll: usize,
+  scroll_state: ScrollbarState,
   exit: bool,
 }
 
@@ -40,7 +41,7 @@ pub struct App {
 enum ActiveList {
   Feeds,
   Entries,
-  Entry,
+  _Entry,
 }
 
 impl App {
@@ -53,6 +54,7 @@ impl App {
       active_list: ActiveList::Feeds,
       entry_open: false,
       scroll: 0,
+      scroll_state: ScrollbarState::new(0),
       exit: false,
     }
   }
@@ -117,7 +119,8 @@ impl App {
         _ => {}
       }
     } else {
-      self.scroll = self.scroll.saturating_sub(1)
+      self.scroll = self.scroll.saturating_sub(1);
+      //self.scroll_state = self.scroll_state.position(self.scroll)
     }
   }
 
@@ -141,7 +144,9 @@ impl App {
         _ => {}
       }
     } else {
-      self.scroll += 1
+      //self.scroll = self.scroll.clamp(0, 150).into();
+      self.scroll = self.scroll.saturating_add(1);
+      //self.scroll_state = self.scroll_state.position(self.scroll)
     }
   }
 
@@ -175,7 +180,7 @@ impl App {
 impl Widget for &App {
   fn render(self, area: Rect, buf: &mut Buffer) {
     let title = Title::from(" Shinbun ".bold().yellow());
-    let instructions = Title::from(Line::from(vec![" Quit ".into(), "<Q> ".bold()]));
+    let instructions = Title::from(Line::from(vec![" Quit ".into(), "<q> ".bold()]));
     let block = Block::default()
       .title(title.alignment(Alignment::Left))
       .title(
@@ -183,6 +188,7 @@ impl Widget for &App {
           .alignment(Alignment::Left)
           .position(Position::Bottom),
       )
+      .title_bottom(Line::from(" Help <?> ".blue()).right_aligned())
       .borders(Borders::ALL)
       .border_style(Style::new().blue())
       .border_set(border::PLAIN);
@@ -196,26 +202,52 @@ impl Widget for &App {
         if let Some(selected_entry) = self.entries_state.selected() {
           if let Some(entry) = feed.entries.get(selected_entry) {
             let content = entry.clone();
-            let entry_content = content.summary.clone().unwrap().content;
+
+            let main_text = content
+              .content
+              .as_ref()
+              .and_then(|c| c.clone().body)
+              .or_else(|| content.clone().summary.map(|s| s.content))
+              .unwrap_or_default();
+
+            let text_height = main_text.split("\n").count() + 5;
+
+            let entry_content = vec![
+              Line::from(format!("Title: {}", content.title.clone().unwrap().content).magenta()),
+              Line::from(
+                format!(
+                  "Published: {}",
+                  content.clone().published.unwrap().to_string()
+                )
+                .yellow(),
+              ),
+              Line::from(
+                format!(
+                  "Link: {}",
+                  content.clone().links.first().unwrap().to_owned().href
+                )
+                .blue(),
+              ),
+              Line::from(""),
+              Line::from(main_text),
+            ];
             let text = Text::from(entry_content);
 
-            let content_height = text.height() as usize;
-            //let max_scroll = content_height.saturating_sub(inner_area.height as usize);
-            //self.scroll = self.scroll.clone().min(max_scroll);
-
-            let mut scrollbar_state = ScrollbarState::default()
-              .content_length(content_height)
-              .position(self.scroll);
-
+            let content_height = text_height as usize;
             let paragraph = Paragraph::new(text)
               .block(
                 Block::default()
-                  .title(format!(" {} ", entry.title.clone().unwrap().content).green())
+                  .title_bottom(format!("{} {} ", self.scroll as i32, content_height as i32))
                   .padding(Padding::new(area.width / 10, area.width / 10, 1, 1))
                   .borders(Borders::NONE),
               )
               .scroll((self.scroll as u16, 0))
               .wrap(Wrap { trim: false });
+
+            //let mut scrollbar_state = ScrollbarState::default()
+            //  .content_length(content_height)
+            //  .position(self.scroll);
+            let mut scroll_state = self.scroll_state.content_length(content_height);
 
             let scrollbar = Scrollbar::default()
               .orientation(ScrollbarOrientation::VerticalRight)
@@ -223,7 +255,7 @@ impl Widget for &App {
               .end_symbol(None);
 
             paragraph.render(inner_area, buf);
-            scrollbar.render(inner_area, buf, &mut scrollbar_state);
+            scrollbar.render(inner_area, buf, &mut scroll_state);
           }
         }
       }
@@ -237,18 +269,7 @@ impl Widget for &App {
       let feeds = self
         .list
         .iter()
-        .map(|l| {
-          format!(
-            " {} [{}] | {}",
-            &l.title,
-            l.entries.len(),
-            if l.tags.is_some() {
-              l.tags.as_ref().unwrap().join(",")
-            } else {
-              "".to_string()
-            }
-          )
-        })
+        .map(|l| format!(" {}", &l.title,))
         .collect::<List>();
 
       let left_block = Block::default()
@@ -259,7 +280,7 @@ impl Widget for &App {
 
       let feeds_highlight_style = match self.active_list {
         ActiveList::Feeds => Style::default().yellow().bold(),
-        ActiveList::Entries => Style::default(),
+        ActiveList::Entries => Style::default().yellow(),
         _ => Style::default(),
       };
 
@@ -294,7 +315,7 @@ impl Widget for &App {
         .highlight_style(Style::default().yellow().bold());
 
       let entries_highlight_style = match self.active_list {
-        ActiveList::Entries => Style::default().yellow().bold(),
+        ActiveList::Entries => Style::default().bg(Color::Yellow).fg(Color::Black),
         ActiveList::Feeds => Style::default(),
         _ => Style::default(),
       };
