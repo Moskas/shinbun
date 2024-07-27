@@ -210,10 +210,19 @@ impl Widget for &App {
               .or_else(|| content.clone().summary.map(|s| s.content))
               .unwrap_or_default();
 
+            let plain_text = html2text::config::rich()
+              .lines_from_read(main_text.as_bytes(), area.width as usize - 15 as usize)
+              .expect("Failed to parse the page")
+              .iter()
+              .map(|l| l.chars().collect())
+              .collect::<Vec<String>>()
+              .join("\n");
+
             let text_height = main_text.split("\n").count() + 5;
 
             let entry_content = vec![
               Line::from(format!("Title: {}", content.title.clone().unwrap().content).magenta()),
+              Line::from(format!("Feed: {}", feed.title).cyan()),
               Line::from(
                 format!(
                   "Published: {}",
@@ -229,16 +238,18 @@ impl Widget for &App {
                 .blue(),
               ),
               Line::from(""),
-              Line::from(main_text),
             ];
-            let text = Text::from(entry_content);
+            let plain_text_lines: Vec<Line> = plain_text.lines().map(Line::from).collect();
 
+            // Combine entry_content and plain_text_lines
+            let mut combined_lines = entry_content;
+            combined_lines.extend(plain_text_lines);
             let content_height = text_height as usize;
-            let paragraph = Paragraph::new(text)
+            let paragraph = Paragraph::new(combined_lines)
               .block(
                 Block::default()
                   .title_bottom(format!("{} {} ", self.scroll as i32, content_height as i32))
-                  .padding(Padding::new(area.width / 10, area.width / 10, 1, 1))
+                  .padding(Padding::new(area.width / 20, area.width / 20, 1, 1))
                   .borders(Borders::NONE),
               )
               .scroll((self.scroll as u16, 0))
@@ -315,7 +326,7 @@ impl Widget for &App {
         .highlight_style(Style::default().yellow().bold());
 
       let entries_highlight_style = match self.active_list {
-        ActiveList::Entries => Style::default().bg(Color::Yellow).fg(Color::Black),
+        ActiveList::Entries => Style::default().bg(Color::Yellow).fg(Color::Black).bold(),
         ActiveList::Feeds => Style::default(),
         _ => Style::default(),
       };
