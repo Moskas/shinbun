@@ -210,7 +210,7 @@ impl Widget for &App {
               .or_else(|| content.clone().summary.map(|s| s.content))
               .unwrap_or_default();
 
-            let plain_text = html2text::config::rich()
+            let plain_text = html2text::config::plain()
               .lines_from_read(main_text.as_bytes(), area.width as usize - 15 as usize)
               .expect("Failed to parse the page")
               .iter()
@@ -226,7 +226,11 @@ impl Widget for &App {
               Line::from(
                 format!(
                   "Published: {}",
-                  content.clone().published.unwrap().to_string()
+                  if content.clone().published.is_some() {
+                    content.clone().published.unwrap().to_string()
+                  } else {
+                    content.clone().updated.unwrap().to_string()
+                  }
                 )
                 .yellow(),
               ),
@@ -244,11 +248,11 @@ impl Widget for &App {
             // Combine entry_content and plain_text_lines
             let mut combined_lines = entry_content;
             combined_lines.extend(plain_text_lines);
-            let content_height = text_height as usize;
+            //let content_height = text_height as usize;
             let paragraph = Paragraph::new(combined_lines)
               .block(
                 Block::default()
-                  .title_bottom(format!("{} {} ", self.scroll as i32, content_height as i32))
+                  //.title_bottom(format!("{} {} ", self.scroll as i32, content_height as i32))
                   .padding(Padding::new(area.width / 20, area.width / 20, 1, 1))
                   .borders(Borders::NONE),
               )
@@ -258,15 +262,15 @@ impl Widget for &App {
             //let mut scrollbar_state = ScrollbarState::default()
             //  .content_length(content_height)
             //  .position(self.scroll);
-            let mut scroll_state = self.scroll_state.content_length(content_height);
+            //let mut scroll_state = self.scroll_state.content_length(content_height);
 
-            let scrollbar = Scrollbar::default()
-              .orientation(ScrollbarOrientation::VerticalRight)
-              .begin_symbol(None)
-              .end_symbol(None);
+            //let scrollbar = Scrollbar::default()
+            //  .orientation(ScrollbarOrientation::VerticalRight)
+            //  .begin_symbol(None)
+            //  .end_symbol(None);
 
             paragraph.render(inner_area, buf);
-            scrollbar.render(inner_area, buf, &mut scroll_state);
+            //scrollbar.render(inner_area, buf, &mut scroll_state);
           }
         }
       }
