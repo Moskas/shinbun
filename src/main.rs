@@ -41,7 +41,7 @@ pub struct App {
 enum ActiveList {
   Feeds,
   Entries,
-  _Entry,
+  Entry,
 }
 
 impl App {
@@ -90,7 +90,6 @@ impl App {
       KeyCode::Down | KeyCode::Char('j') => self.next(),
       KeyCode::Right | KeyCode::Char('l') => self.enter(),
       KeyCode::Left | KeyCode::Char('h') => self.back(),
-      KeyCode::Enter => self.toggle_pane(),
       KeyCode::Char('?') => self.help(),
       _ => {}
     }
@@ -151,25 +150,29 @@ impl App {
   }
 
   fn enter(&mut self) {
-    if !self.entry_open {
-      if let ActiveList::Feeds = self.active_list {
+    match self.active_list {
+      ActiveList::Feeds => {
         self.active_list = ActiveList::Entries;
         self.entries_state.select(Some(0));
       }
+      ActiveList::Entries => {
+        self.active_list = ActiveList::Entry;
+        self.scroll = 0;
+        self.entry_open = true;
+      }
+      _ => {}
     }
   }
 
   fn back(&mut self) {
-    if !self.entry_open {
-      if let ActiveList::Entries = self.active_list {
-        self.active_list = ActiveList::Feeds;
-      }
+    match self.active_list {
+      ActiveList::Entry => {
+        self.active_list = ActiveList::Entries;
+        self.entry_open = false;
+      },
+      ActiveList::Entries => self.active_list = ActiveList::Feeds,
+      _ => {}
     }
-  }
-
-  fn toggle_pane(&mut self) {
-    self.scroll = 0;
-    self.entry_open = !self.entry_open;
   }
 
   fn help(&mut self) {
@@ -294,7 +297,7 @@ impl Widget for &App {
         .border_set(border::PLAIN);
 
       let feeds_highlight_style = match self.active_list {
-        ActiveList::Feeds => Style::default().yellow().bold(),
+        ActiveList::Feeds => Style::default().bg(Color::Yellow).fg(Color::Black),
         ActiveList::Entries => Style::default().yellow(),
         _ => Style::default(),
       };
@@ -308,22 +311,23 @@ impl Widget for &App {
         &mut self.state.to_owned(),
       );
 
-      let right_block = Block::default()
-        .title(" Entries ".green())
-        .borders(Borders::ALL)
-        .border_style(Style::new().blue())
-        .border_set(border::PLAIN);
-
       let selected_index = self.state.selected().unwrap_or(0);
       let entries = if let Some(feed) = self.list.get(selected_index) {
         feed
           .entries
           .iter()
-          .map(|e| ListItem::new(format!("- {}", e.title.clone().unwrap().content)))
+          .map(|e| ListItem::new(format!(" {}", e.title.clone().unwrap().content)))
           .collect::<Vec<_>>()
       } else {
         vec![]
       };
+
+      let right_block = Block::default()
+        .title(" Entries ".green())
+        .title(format!(" {} ", entries.iter().count()).yellow())
+        .borders(Borders::ALL)
+        .border_style(Style::new().blue())
+        .border_set(border::PLAIN);
 
       let secondary_list = List::new(entries)
         .block(right_block.clone())
