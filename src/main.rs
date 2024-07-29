@@ -20,6 +20,7 @@ async fn main() -> std::io::Result<()> {
   let list: Vec<Feed> = feeds::parse_feed(xml.expect("Failed to fetch feed"), feeds_urls());
   let mut terminal = ui::init()?;
   let app = App::new(list).run(&mut terminal);
+  println!("{}", config::parse_config());
   ui::restore()?;
   app
 }
@@ -33,7 +34,7 @@ pub struct App {
   active_list: ActiveList,
   entry_open: bool,
   scroll: usize,
-  scroll_state: ScrollbarState,
+  _scroll_state: ScrollbarState,
   exit: bool,
 }
 
@@ -54,7 +55,7 @@ impl App {
       active_list: ActiveList::Feeds,
       entry_open: false,
       scroll: 0,
-      scroll_state: ScrollbarState::new(0),
+      _scroll_state: ScrollbarState::new(0),
       exit: false,
     }
   }
@@ -88,8 +89,9 @@ impl App {
       KeyCode::Char('q') | KeyCode::Char('Q') => self.exit(),
       KeyCode::Up | KeyCode::Char('k') => self.previous(),
       KeyCode::Down | KeyCode::Char('j') => self.next(),
-      KeyCode::Right | KeyCode::Char('l') => self.enter(),
-      KeyCode::Left | KeyCode::Char('h') => self.back(),
+      KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => self.enter(),
+      KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace => self.back(),
+      KeyCode::Char('s') => self.save_entry(),
       KeyCode::Char('?') => self.help(),
       _ => {}
     }
@@ -169,13 +171,17 @@ impl App {
       ActiveList::Entry => {
         self.active_list = ActiveList::Entries;
         self.entry_open = false;
-      },
+      }
       ActiveList::Entries => self.active_list = ActiveList::Feeds,
       _ => {}
     }
   }
 
   fn help(&mut self) {
+    todo!()
+  }
+
+  fn save_entry(&mut self) {
     todo!()
   }
 }
@@ -206,12 +212,24 @@ impl Widget for &App {
           if let Some(entry) = feed.entries.get(selected_entry) {
             let content = entry.clone();
 
-            let main_text = content
+            let mut main_text = content
               .content
               .as_ref()
               .and_then(|c| c.clone().body)
               .or_else(|| content.clone().summary.map(|s| s.content))
               .unwrap_or_default();
+
+            let media_description = content
+              .media
+              .clone()
+              .iter()
+              .filter_map(|e| e.description.as_ref().map(|desc| desc.content.clone()))
+              .collect::<Vec<String>>()
+              .join("\n");
+
+            if !media_description.is_empty() {
+              main_text = media_description;
+            }
 
             let plain_text = html2text::config::plain()
               .lines_from_read(main_text.as_bytes(), area.width as usize - 15 as usize)
@@ -221,10 +239,27 @@ impl Widget for &App {
               .collect::<Vec<String>>()
               .join("\n");
 
-            let text_height = main_text.split("\n").count() + 5;
+            let _text_height = main_text.split("\n").count() + 5;
 
-            let entry_content = vec![
-              Line::from(format!("Title: {}", content.title.clone().unwrap().content).magenta()),
+            let podcast_link = content
+              .clone()
+              .media
+              .first()
+              .and_then(|media| media.content.first())
+              .map(|content_item| content_item.url.as_ref().map(|l| l.to_string()))
+              .unwrap_or_default()
+              .unwrap_or_default();
+
+            let entry_link = content
+              .clone()
+              .links
+              .into_iter()
+              .map(|l| l.href)
+              .collect::<Vec<String>>()
+              .join(", ");
+
+            let mut entry_content = vec![
+              Line::from(format!("Title: {}", content.title.as_ref().unwrap().content).magenta()),
               Line::from(format!("Feed: {}", feed.title).cyan()),
               Line::from(
                 format!(
@@ -237,15 +272,17 @@ impl Widget for &App {
                 )
                 .yellow(),
               ),
-              Line::from(
-                format!(
-                  "Link: {}",
-                  content.clone().links.first().unwrap().to_owned().href
-                )
-                .blue(),
-              ),
-              Line::from(""),
             ];
+
+            if !entry_link.is_empty() {
+              entry_content.push(Line::from(format!("Link: {}", entry_link).blue()));
+            };
+
+            if !podcast_link.is_empty() {
+              entry_content.push(Line::from(format!("Media: {}", podcast_link).green()));
+            }
+
+            entry_content.push(Line::from("")); // Padding
             let plain_text_lines: Vec<Line> = plain_text.lines().map(Line::from).collect();
 
             // Combine entry_content and plain_text_lines
@@ -316,7 +353,7 @@ impl Widget for &App {
         feed
           .entries
           .iter()
-          .map(|e| ListItem::new(format!(" {}", e.title.clone().unwrap().content)))
+          .map(|e| ListItem::new(format!(" {}", e.title.as_ref().unwrap().content)))
           .collect::<Vec<_>>()
       } else {
         vec![]
