@@ -39,6 +39,7 @@
             ])
 	    openssl
 	    pkg-config
+	    sqlite
           ];
         };
       }

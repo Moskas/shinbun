@@ -13,6 +13,7 @@ html2text = "0.12.5"
 ratatui = { version = "0.26.1", features = ["unstable-rendered-line-info"]}
 regex = "1.10.4"
 reqwest = "0.12.2"
+rusqlite = "0.32.1"
 serde = { version = "1.0.204", features = ["derive"] }
 tl = "0.7.8"
 tokio = { version = "1.37.0", features = ["full"] }

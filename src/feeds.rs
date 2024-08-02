@@ -44,7 +44,7 @@ pub fn parse_feed(links: Vec<String>, feeds: Vec<Feeds>) -> Vec<Feed> {
       }
     };
     let title = if feeds[index].name.is_some() {
-      feeds[index].name.clone().unwrap()
+      feeds[index].name.clone().unwrap_or_default()
     } else {
       feed_from_xml.title.unwrap().content
     };

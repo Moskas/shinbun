@@ -259,15 +259,25 @@ impl Widget for &App {
               .join(", ");
 
             let mut entry_content = vec![
-              Line::from(format!("Title: {}", content.title.as_ref().unwrap().content).magenta()),
+              Line::from(
+                format!(
+                  "Title: {}",
+                  if content.title.is_some() {
+                    content.title.as_ref().unwrap().content.as_ref()
+                  } else {
+                   "None"
+                  }
+                )
+                .magenta(),
+              ),
               Line::from(format!("Feed: {}", feed.title).cyan()),
               Line::from(
                 format!(
                   "Published: {}",
                   if content.clone().published.is_some() {
-                    content.clone().published.unwrap().to_string()
+                    content.clone().published.unwrap_or_default().to_string()
                   } else {
-                    content.clone().updated.unwrap().to_string()
+                    content.clone().updated.unwrap_or_default().to_string()
                   }
                 )
                 .yellow(),
