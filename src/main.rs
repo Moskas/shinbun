@@ -15,12 +15,16 @@ mod ui;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
+  let mut terminal = ui::init()?;
+  let area_width = terminal.size()?.width as usize;
+
   let feeds_urls = config::parse_feed_urls;
   let xml = feeds::fetch_feed(feeds_urls()).await;
-  let list: Vec<Feed> = feeds::parse_feed(xml.expect("Failed to fetch feed"), feeds_urls());
-  let mut terminal = ui::init()?;
+  //let list: Vec<Feed> = feeds::parse_feed(xml.expect("Failed to fetch feed"), feeds_urls());
+
+  let list: Vec<Feed> =
+    feeds::parse_feed(xml.expect("Failed to fetch feed"), feeds_urls(), area_width);
   let app = App::new(list).run(&mut terminal);
-  println!("{}", config::parse_config());
   ui::restore()?;
   app
 }
@@ -69,7 +73,7 @@ impl App {
   }
 
   fn render_frame(&self, frame: &mut Frame) {
-    frame.render_widget(self, frame.size());
+    frame.render_widget(self, frame.area());
   }
 
   fn handle_events(&mut self) -> std::io::Result<()> {
@@ -195,7 +199,7 @@ impl Widget for &App {
       .title(
         instructions
           .alignment(Alignment::Left)
-          .position(Position::Bottom),
+          .position(block::Position::Bottom),
       )
       .title_bottom(Line::from(" Help <?> ".blue()).right_aligned())
       .borders(Borders::ALL)
@@ -204,123 +208,51 @@ impl Widget for &App {
 
     let inner_area = block.inner(area);
     block.render(area, buf);
-
     if self.entry_open {
       // Render the pane
       if let Some(feed) = self.list.get(self.index) {
         if let Some(selected_entry) = self.entries_state.selected() {
           if let Some(entry) = feed.entries.get(selected_entry) {
-            let content = entry.clone();
-
-            let mut main_text = content
-              .content
-              .as_ref()
-              .and_then(|c| c.clone().body)
-              .or_else(|| content.clone().summary.map(|s| s.content))
-              .unwrap_or_default();
-
-            let media_description = content
-              .media
-              .clone()
-              .iter()
-              .filter_map(|e| e.description.as_ref().map(|desc| desc.content.clone()))
-              .collect::<Vec<String>>()
-              .join("\n");
-
-            if !media_description.is_empty() {
-              main_text = media_description;
-            }
-
-            let plain_text = html2text::config::plain()
-              .lines_from_read(main_text.as_bytes(), area.width as usize - 15 as usize)
-              .expect("Failed to parse the page")
-              .iter()
-              .map(|l| l.chars().collect())
-              .collect::<Vec<String>>()
-              .join("\n");
-
-            let _text_height = main_text.split("\n").count() + 5;
-
-            let podcast_link = content
-              .clone()
-              .media
-              .first()
-              .and_then(|media| media.content.first())
-              .map(|content_item| content_item.url.as_ref().map(|l| l.to_string()))
-              .unwrap_or_default()
-              .unwrap_or_default();
-
-            let entry_link = content
-              .clone()
-              .links
-              .into_iter()
-              .map(|l| l.href)
-              .collect::<Vec<String>>()
-              .join(", ");
-
             let mut entry_content = vec![
-              Line::from(
-                format!(
-                  "Title: {}",
-                  if content.title.is_some() {
-                    content.title.as_ref().unwrap().content.as_ref()
-                  } else {
-                   "None"
-                  }
-                )
-                .magenta(),
-              ),
-              Line::from(format!("Feed: {}", feed.title).cyan()),
+              Line::from(format!("Title: {}", entry.title).magenta()), // Entry title
+              Line::from(format!("Feed: {}", feed.title).cyan()),      // Feed title
               Line::from(
                 format!(
                   "Published: {}",
-                  if content.clone().published.is_some() {
-                    content.clone().published.unwrap_or_default().to_string()
-                  } else {
-                    content.clone().updated.unwrap_or_default().to_string()
-                  }
+                  entry.published.as_deref().unwrap_or("Unknown")
                 )
                 .yellow(),
-              ),
+              ), // Publication date
             ];
 
-            if !entry_link.is_empty() {
-              entry_content.push(Line::from(format!("Link: {}", entry_link).blue()));
-            };
-
-            if !podcast_link.is_empty() {
-              entry_content.push(Line::from(format!("Media: {}", podcast_link).green()));
+            if !entry.links.is_empty() {
+              entry_content.push(Line::from(
+                format!("Link: {}", entry.links.join(", ")).blue(),
+              ));
             }
 
-            entry_content.push(Line::from("")); // Padding
-            let plain_text_lines: Vec<Line> = plain_text.lines().map(Line::from).collect();
+            if !entry.media.is_empty() {
+              entry_content.push(Line::from(format!("Media: {}", entry.media).blue()));
+            }
 
-            // Combine entry_content and plain_text_lines
-            let mut combined_lines = entry_content;
-            combined_lines.extend(plain_text_lines);
-            //let content_height = text_height as usize;
-            let paragraph = Paragraph::new(combined_lines)
+            entry_content.push(Line::from("")); // Add a blank line for separation
+
+            // Append the plain text content
+            let plain_text_lines: Vec<Line> = entry.plain_text.lines().map(Line::from).collect();
+
+            // Combine metadata and text content
+            entry_content.extend(plain_text_lines);
+            // Rest of the rendering logic
+            let paragraph = Paragraph::new(entry_content)
               .block(
                 Block::default()
-                  //.title_bottom(format!("{} {} ", self.scroll as i32, content_height as i32))
                   .padding(Padding::new(area.width / 20, area.width / 20, 1, 1))
                   .borders(Borders::NONE),
               )
               .scroll((self.scroll as u16, 0))
               .wrap(Wrap { trim: false });
 
-            //let mut scrollbar_state = ScrollbarState::default()
-            //  .content_length(content_height)
-            //  .position(self.scroll);
-            //let mut scroll_state = self.scroll_state.content_length(content_height);
-
-            //let scrollbar = Scrollbar::default()
-            //  .orientation(ScrollbarOrientation::VerticalRight)
-            //  .begin_symbol(None)
-            //  .end_symbol(None);
-
             paragraph.render(inner_area, buf);
-            //scrollbar.render(inner_area, buf, &mut scroll_state);
           }
         }
       }
@@ -339,6 +271,7 @@ impl Widget for &App {
 
       let left_block = Block::default()
         .title(" Feeds ".green())
+        .title(format!(" {} ", self.list.iter().count().to_string()).yellow())
         .borders(Borders::ALL)
         .border_style(Style::new().blue())
         .border_set(border::PLAIN);
@@ -363,7 +296,7 @@ impl Widget for &App {
         feed
           .entries
           .iter()
-          .map(|e| ListItem::new(format!(" {}", e.title.as_ref().unwrap().content)))
+          .map(|e| ListItem::new(format!(" {}", e.title)))
           .collect::<Vec<_>>()
       } else {
         vec![]

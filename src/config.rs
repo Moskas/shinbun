@@ -14,10 +14,10 @@ struct Config {
   feeds: Vec<Feeds>,
 }
 
-#[derive(Debug, Deserialize)]
-struct UserConfig {
-  refresh_on_launch: bool,
-}
+//#[derive(Debug, Deserialize)]
+//struct UserConfig {
+//  refresh_on_launch: bool,
+//}
 
 pub fn parse_feed_urls() -> Vec<Feeds> {
   // Read the configuration file
@@ -42,14 +42,14 @@ pub fn parse_feed_urls() -> Vec<Feeds> {
   config.feeds
 }
 
-pub fn parse_config() -> bool {
-  let config_file = format!(
-    "{}/shinbun/config.toml",
-    config_dir()
-      .expect("Config directory doesn't exist")
-      .display(),
-  );
-  let toml_content = fs::read_to_string(&config_file).expect("Failed to read the config file");
-  let config: UserConfig = toml::from_str(&toml_content).expect("Failed to parse the config");
-  config.refresh_on_launch
-}
+//pub fn parse_config() -> bool {
+//  let config_file = format!(
+//    "{}/shinbun/config.toml",
+//    config_dir()
+//      .expect("Config directory doesn't exist")
+//      .display(),
+//  );
+//  let toml_content = fs::read_to_string(&config_file).expect("Failed to read the config file");
+//  let config: UserConfig = toml::from_str(&toml_content).expect("Failed to parse the config");
+//  config.refresh_on_launch
+//}
