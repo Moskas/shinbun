@@ -9,6 +9,7 @@ edition = "2021"
 crossterm = "0.28.1"
 dirs = "5.0.1"
 feed-rs = "2.1.0"
+futures = "0.3.31"
 html2text = "0.13.0"
 ratatui = { version = "0.28.1", features = ["unstable-rendered-line-info"]}
 regex = "1.10.4"

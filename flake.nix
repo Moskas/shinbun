@@ -1,45 +1,50 @@
 {
+  description = "Rust dev flake";
+
   inputs = {
-    flake-utils.url = "github:numtide/flake-utils";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     naersk.url = "github:nix-community/naersk";
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
     fenix.url = "github:nix-community/fenix";
   };
-
-  outputs = {
-    self,
-    flake-utils,
-    naersk,
-    nixpkgs,
-    fenix,
-  }:
+  outputs =
+    {
+      self,
+      flake-utils,
+      naersk,
+      nixpkgs,
+      fenix,
+    }:
     flake-utils.lib.eachDefaultSystem (
-      system: let
+      system:
+      let
         pkgs = (import nixpkgs) {
           inherit system;
-          overlays = [fenix.overlays.default];
+          overlays = [ fenix.overlays.default ];
         };
-
-        naersk' = pkgs.callPackage naersk {};
-      in rec {
+        naersk' = pkgs.callPackage naersk { };
+      in
+      rec {
         defaultPackage = naersk'.buildPackage {
           src = ./.;
+          nativeBuildInputs = with pkgs; [ pkg-config ];
+          buildInputs = with pkgs; [ openssl ];
         };
 
         devShell = pkgs.mkShell {
-          nativeBuildInputs = with pkgs; [
-            alejandra
-            rust-analyzer
+          buildInputs = with pkgs; [
             (pkgs.fenix.stable.withComponents [
-              "cargo"
-              "clippy"
-              "rust-src"
               "rustc"
+              "cargo"
+              "rust-analyzer"
+              "clippy"
               "rustfmt"
             ])
-	    openssl
-	    pkg-config
-	    sqlite
+            openssl
+          ];
+          nativeBuildInputs = with pkgs; [
+            openssl
+            pkg-config
           ];
         };
       }
