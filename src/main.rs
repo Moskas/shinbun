@@ -6,7 +6,6 @@ use ratatui::{
     symbols::border,
     widgets::{block::*, *},
 };
-
 use std::io;
 
 mod config;
@@ -20,10 +19,10 @@ async fn main() -> std::io::Result<()> {
 
     let feeds_urls = config::parse_feed_urls;
     let xml = feeds::fetch_feed(feeds_urls()).await;
-    //let list: Vec<Feed> = feeds::parse_feed(xml.expect("Failed to fetch feed"), feeds_urls());
 
     let list: Vec<Feed> =
         feeds::parse_feed(xml.expect("Failed to fetch feed"), feeds_urls(), area_width);
+
     let app = App::new(list).run(&mut terminal);
     ui::restore()?;
     app
@@ -38,13 +37,10 @@ pub struct App {
     active_list: ActiveList,
     entry_open: bool,
     scroll: usize,
-
     // NEW: cache viewport metrics for the entry view
     view_content_length: usize,
     view_visible_height: usize,
     view_max_scroll: usize,
-
-    _scroll_state: ScrollbarState,
     exit: bool,
 }
 
@@ -65,100 +61,91 @@ impl App {
             active_list: ActiveList::Feeds,
             entry_open: false,
             scroll: 0,
-            view_content_length: 0, // NEW
-            view_visible_height: 0, // NEW
-            view_max_scroll: 0,     // NEW
-            _scroll_state: ScrollbarState::new(0),
+            view_content_length: 0,
+            view_visible_height: 0,
+            view_max_scroll: 0,
             exit: false,
         }
     }
 
-    
-pub fn run(&mut self, terminal: &mut ui::Tui) -> io::Result<()> {
-    while !self.exit {
-        terminal.draw(|frame| {
-            self.render_frame(frame)   // now takes &mut self
-        })?;
-        self.handle_events()?;
+    pub fn run(&mut self, terminal: &mut ui::Tui) -> io::Result<()> {
+        while !self.exit {
+            terminal.draw(|frame| {
+                self.render_frame(frame) // now takes &mut self
+            })?;
+            self.handle_events()?;
+        }
+        Ok(())
     }
-    Ok(())
-}
 
+    fn render_frame(&mut self, frame: &mut Frame) {
+        // Compute the outer app block to get the same inner area you use in Widget::render
+        let title = Title::from(" Shinbun ".bold().yellow());
+        let instructions = Title::from(Line::from(vec![" Quit ".into(), "<q> ".bold()]));
+        let app_block = Block::default()
+            .title(title.alignment(Alignment::Left))
+            .title(
+                instructions
+                    .alignment(Alignment::Left)
+                    .position(block::Position::Bottom),
+            )
+            .title_bottom(Line::from(" Help <?> ").blue().right_aligned())
+            .borders(Borders::ALL)
+            .border_style(Style::new().blue())
+            .border_set(border::PLAIN);
 
-fn render_frame(&mut self, frame: &mut Frame) {
-    // Instead of frame.render_widget(self, frame.area());
-    // we compute metrics then render via the existing Widget impl.
+        let area = frame.area();
+        let inner_area = app_block.inner(area);
 
-    // Compute the outer app block to get the same inner area you use in Widget::render
-    let title = Title::from(" Shinbun ".bold().yellow());
-    let instructions = Title::from(Line::from(vec![" Quit ".into(), "<q> ".bold()]));
-    let app_block = Block::default()
-        .title(title.alignment(Alignment::Left))
-        .title(
-            instructions
-                .alignment(Alignment::Left)
-                .position(block::Position::Bottom),
-        )
-        .title_bottom(Line::from(" Help <?> ").blue().right_aligned())
-        .borders(Borders::ALL)
-        .border_style(Style::new().blue())
-        .border_set(border::PLAIN);
+        // If entry is open, compute viewport metrics for the entry pane
+        if self.entry_open {
+            if let Some(feed) = self.list.get(self.index) {
+                if let Some(selected) = self.entries_state.selected() {
+                    if let Some(entry) = feed.entries.get(selected) {
+                        // Count lines that will be in the Paragraph:
+                        // 3 metadata lines + optional link + optional media + 1 blank + body lines
+                        let meta_base = 3usize;
+                        let link_lines = if entry.links.is_empty() { 0 } else { 1 };
+                        let media_lines = if entry.media.is_empty() { 0 } else { 1 };
+                        let sep_line = 1usize;
+                        let body_lines = entry.plain_text.lines().count();
+                        let content_length =
+                            meta_base + link_lines + media_lines + sep_line + body_lines;
 
-    let area = frame.area();
-    let inner_area = app_block.inner(area);
+                        // Use the same entry block you use in Widget::render to get accurate height
+                        let entry_block = Block::default()
+                            .title(" Entry ".yellow())
+                            .borders(Borders::ALL)
+                            .border_style(Style::new().blue());
+                        let inner = entry_block.inner(inner_area);
+                        let visible_height = inner.height as usize;
+                        let max_scroll = content_length.saturating_sub(visible_height);
 
-    // If entry is open, compute viewport metrics for the entry pane
-    if self.entry_open {
-        if let Some(feed) = self.list.get(self.index) {
-            if let Some(selected) = self.entries_state.selected() {
-                if let Some(entry) = feed.entries.get(selected) {
-                    // Count lines that will be in the Paragraph:
-                    // 3 metadata lines + optional link + optional media + 1 blank + body lines
-                    let meta_base = 3usize;
-                    let link_lines = if entry.links.is_empty() { 0 } else { 1 };
-                    let media_lines = if entry.media.is_empty() { 0 } else { 1 };
-                    let sep_line = 1usize;
-                    let body_lines = entry.plain_text.lines().count();
+                        // Cache for key handlers
+                        self.view_content_length = content_length;
+                        self.view_visible_height = visible_height;
+                        self.view_max_scroll = max_scroll;
 
-                    let content_length =
-                        meta_base + link_lines + media_lines + sep_line + body_lines;
-
-                    // Use the same entry block you use in Widget::render to get accurate height
-                    let entry_block = Block::default()
-                        .title(" Entry ".yellow())
-                        .borders(Borders::ALL).border_style(Style::new().blue());
-
-                    let inner = entry_block.inner(inner_area);
-                    let visible_height = inner.height as usize;
-
-                    let max_scroll = content_length.saturating_sub(visible_height);
-
-                    // Cache for key handlers
-                    self.view_content_length = content_length;
-                    self.view_visible_height = visible_height;
-                    self.view_max_scroll = max_scroll;
-
-                    // Clamp the state *now* so UI and state stay in sync
-                    if self.scroll > self.view_max_scroll {
-                        self.scroll = self.view_max_scroll;
+                        // Clamp the state *now* so UI and state stay in sync
+                        if self.scroll > self.view_max_scroll {
+                            self.scroll = self.view_max_scroll;
+                        }
                     }
                 }
             }
+        } else {
+            // Not in entry view; nothing scrollable here
+            self.view_content_length = 0;
+            self.view_visible_height = 0;
+            self.view_max_scroll = 0;
+            self.scroll = 0; // optional: reset when leaving entry view
         }
-    } else {
-        // Not in entry view; nothing scrollable here
-        self.view_content_length = 0;
-        self.view_visible_height = 0;
-        self.view_max_scroll = 0;
-        self.scroll = 0; // optional: reset when leaving entry view
+
+        // Draw the outer block and the rest via your Widget impl
+        app_block.render(area, frame.buffer_mut());
+        let app_ref: &App = self;
+        frame.render_widget(app_ref, frame.area());
     }
-
-    // Draw the outer block and the rest via your Widget impl
-    app_block.render(area, frame.buffer_mut());
-    let app_ref: &App = self;
-    frame.render_widget(app_ref, frame.area());
-}
-
 
     fn handle_events(&mut self) -> std::io::Result<()> {
         match event::read()? {
@@ -209,7 +196,7 @@ fn render_frame(&mut self, frame: &mut Frame) {
             }
         } else {
             self.scroll = self.scroll.saturating_sub(1);
-            //self.scroll_state = self.scroll_state.position(self.scroll)
+            // self.scroll_state = self.scroll_state.position(self.scroll)
         }
     }
 
@@ -233,9 +220,8 @@ fn render_frame(&mut self, frame: &mut Frame) {
                 _ => {}
             }
         } else {
-            //self.scroll = self.scroll.clamp(0, 150).into();
             self.scroll = self.scroll.saturating_add(1).min(self.view_max_scroll);
-            //self.scroll_state = self.scroll_state.position(self.scroll)
+            // self.scroll_state = self.scroll_state.position(self.scroll)
         }
     }
 
@@ -292,13 +278,15 @@ impl Widget for &App {
 
         let inner_area = block.inner(area);
         block.render(area, buf);
+
+        // NEW: responsive flag based on drawable content width
+        let is_wide = inner_area.width >= 80u16;
+
         if self.entry_open {
             if let Some(feed) = self.list.get(self.index) {
                 if let Some(selected_entry) = self.entries_state.selected() {
                     if let Some(entry) = feed.entries.get(selected_entry) {
-                        // -------------------------------
-                        // 1. Build visible text buffer
-                        // -------------------------------
+                        // 1) Build visible text buffer
                         let mut entry_content = vec![
                             Line::from(format!("Title: {}", entry.title)).magenta(),
                             Line::from(format!("Feed: {}", feed.title)).cyan(),
@@ -308,48 +296,38 @@ impl Widget for &App {
                             ))
                             .yellow(),
                         ];
-
                         if !entry.links.is_empty() {
                             entry_content.push(
                                 Line::from(format!("Link: {}", entry.links.join(", "))).blue(),
                             );
                         }
-
                         if !entry.media.is_empty() {
                             entry_content
                                 .push(Line::from(format!("Media: {}", entry.media)).blue());
                         }
-
                         entry_content.push(Line::from("")); // separator
 
                         // Add wrapped plain text lines
                         let plain_lines: Vec<Line> =
                             entry.plain_text.lines().map(Line::from).collect();
-
                         entry_content.extend(plain_lines);
 
-                        // ---------------------------------
-                        // 2. Compute scroll + visible height
-                        // ---------------------------------
+                        // 2) Compute scroll + visible height
                         let block = Block::default()
                             .title(" Entry ".yellow())
-                            .borders(Borders::ALL);
-
+                            .borders(Borders::ALL)
+                            .border_style(Style::new().blue());
                         let inner = block.inner(inner_area);
                         let visible_height = inner.height as usize;
-
                         let content_length = entry_content.len();
                         let max_scroll = content_length.saturating_sub(visible_height).max(0);
 
-                        // Clamp scroll
+                        // Clamp scroll for safety (render-only clamp; main loop clamps too)
                         let scroll = self.scroll.min(max_scroll);
 
-                        // ---------------------------------
-                        // 3. Visible line range for display
-                        // ---------------------------------
+                        // 3) Visible line info (for bottom title)
                         let first_visible = scroll;
                         let last_visible = (scroll + visible_height - 1).min(content_length - 1);
-
                         let line_info = format!(
                             " Lines: {}–{} / {} ",
                             first_visible + 1,
@@ -357,55 +335,47 @@ impl Widget for &App {
                             content_length
                         );
 
-                        // ---------------------------------
-                        // 4. Whether to show scrollbar
-                        // ---------------------------------
+                        // 4) Whether to show scrollbar
                         let show_scrollbar = content_length > visible_height;
 
-                        // ---------------------------------
-                        // 5. Render paragraph
-                        // ---------------------------------
+                        // 5) Render paragraph
                         let paragraph = Paragraph::new(entry_content.clone())
-                            .block(block.clone().title_bottom(line_info))
+                            .block(block.clone().title_bottom(line_info.yellow()))
                             .scroll((scroll as u16, 0))
                             .wrap(Wrap { trim: false });
-
                         paragraph.render(inner_area, buf);
 
-                        // ---------------------------------
-                        // 6. Render scrollbar (conditionally)
-                        // ---------------------------------
+                        // 6) Render scrollbar (conditionally)
                         if show_scrollbar {
                             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                                 .begin_symbol(Some("↑"))
                                 .end_symbol(Some("↓"))
                                 .track_symbol(Some("░"))
                                 .thumb_symbol("█");
-
                             let mut scrollbar_state =
                                 ScrollbarState::new(max_scroll + 1).position(scroll);
-
                             scrollbar.render(inner, buf, &mut scrollbar_state);
                         }
                     }
                 }
             }
-        } else {
-            // Render the lists
+        } else if is_wide {
+            // ==== WIDE MODE: dual pane ====
             let horizontal_split = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(inner_area);
 
-            let feeds = self
+            // Left: Feeds
+            let feeds_items: Vec<ListItem> = self
                 .list
                 .iter()
-                .map(|l| format!(" {}", &l.title,))
-                .collect::<List>();
+                .map(|l| ListItem::new(format!(" {}", &l.title)))
+                .collect();
 
             let left_block = Block::default()
                 .title(" Feeds ".green())
-                .title(format!(" {} ", self.list.iter().count().to_string()).yellow())
+                .title(format!(" {} ", self.list.len()).yellow())
                 .borders(Borders::ALL)
                 .border_style(Style::new().blue())
                 .border_set(border::PLAIN);
@@ -416,35 +386,34 @@ impl Widget for &App {
                 _ => Style::default(),
             };
 
+            let feeds_list = List::new(feeds_items)
+                .block(left_block)
+                .highlight_style(feeds_highlight_style);
+
             StatefulWidget::render(
-                feeds
-                    .block(left_block)
-                    .highlight_style(feeds_highlight_style),
+                feeds_list,
                 horizontal_split[0],
                 buf,
                 &mut self.state.to_owned(),
             );
 
+            // Right: Entries of selected feed
             let selected_index = self.state.selected().unwrap_or(0);
-            let entries = if let Some(feed) = self.list.get(selected_index) {
+            let entries_items: Vec<ListItem> = if let Some(feed) = self.list.get(selected_index) {
                 feed.entries
                     .iter()
                     .map(|e| ListItem::new(format!(" {}", e.title)))
-                    .collect::<Vec<_>>()
+                    .collect()
             } else {
                 vec![]
             };
 
             let right_block = Block::default()
                 .title(" Entries ".green())
-                .title(format!(" {} ", entries.iter().count()).yellow())
+                .title(format!(" {} ", entries_items.len()).yellow())
                 .borders(Borders::ALL)
                 .border_style(Style::new().blue())
                 .border_set(border::PLAIN);
-
-            let secondary_list = List::new(entries)
-                .block(right_block.clone())
-                .highlight_style(Style::default().yellow().bold());
 
             let entries_highlight_style = match self.active_list {
                 ActiveList::Entries => Style::default().bg(Color::Yellow).fg(Color::Black).bold(),
@@ -452,14 +421,76 @@ impl Widget for &App {
                 _ => Style::default(),
             };
 
+            let entries_list = List::new(entries_items)
+                .block(right_block)
+                .highlight_style(entries_highlight_style);
+
             StatefulWidget::render(
-                secondary_list
-                    .block(right_block)
-                    .highlight_style(entries_highlight_style),
+                entries_list,
                 horizontal_split[1],
                 buf,
                 &mut self.entries_state.to_owned(),
             );
+        } else {
+            // ==== NARROW MODE: single pane ====
+            match self.active_list {
+                ActiveList::Feeds => {
+                    // Show only feeds list
+                    let feeds_items: Vec<ListItem> = self
+                        .list
+                        .iter()
+                        .map(|l| ListItem::new(format!(" {}", &l.title)))
+                        .collect();
+
+                    let feeds_block = Block::default()
+                        .title(" Feeds ".green())
+                        .title(format!(" {} ", self.list.len()).yellow())
+                        .borders(Borders::ALL)
+                        .border_style(Style::new().blue())
+                        .border_set(border::PLAIN);
+
+                    let feeds_highlight_style = Style::default().bg(Color::Yellow).fg(Color::Black);
+
+                    let feeds_list = List::new(feeds_items)
+                        .block(feeds_block)
+                        .highlight_style(feeds_highlight_style);
+
+                    StatefulWidget::render(feeds_list, inner_area, buf, &mut self.state.to_owned());
+                }
+                ActiveList::Entries | ActiveList::Entry => {
+                    // Show only entries list (the actual reader is handled by the self.entry_open branch above)
+                    let selected_index = self.state.selected().unwrap_or(0);
+                    let entries_items: Vec<ListItem> =
+                        if let Some(feed) = self.list.get(selected_index) {
+                            feed.entries
+                                .iter()
+                                .map(|e| ListItem::new(format!(" {}", e.title)))
+                                .collect()
+                        } else {
+                            vec![]
+                        };
+
+                    let entries_block = Block::default()
+                        .title(" Entries ".green())
+                        .title(format!(" {} ", entries_items.len()).yellow())
+                        .borders(Borders::ALL)
+                        .border_style(Style::new().blue())
+                        .border_set(border::PLAIN);
+
+                    let entries_list = List::new(entries_items)
+                        .block(entries_block.clone())
+                        .highlight_style(
+                            Style::default().bg(Color::Yellow).fg(Color::Black).bold(),
+                        );
+
+                    StatefulWidget::render(
+                        entries_list.block(entries_block),
+                        inner_area,
+                        buf,
+                        &mut self.entries_state.to_owned(),
+                    );
+                }
+            }
         }
     }
 }

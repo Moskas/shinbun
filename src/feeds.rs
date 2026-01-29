@@ -5,7 +5,6 @@ use reqwest::{get, Error as reqError};
 
 use futures::future::join_all;
 
-
 #[derive(Debug)]
 pub struct Feed {
     pub url: String,
@@ -22,7 +21,6 @@ pub struct FeedEntry {
     pub links: Vec<String>,        // Store any relevant links
     pub media: String,             // Store any relevant links
 }
-
 
 pub async fn fetch_feed(feeds: Vec<Feeds>) -> Result<Vec<String>, reqError> {
     let futs = feeds.into_iter().map(|entry| async move {
