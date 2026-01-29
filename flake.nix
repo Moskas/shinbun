@@ -40,10 +40,9 @@
               "clippy"
               "rustfmt"
             ])
-            openssl
           ];
           nativeBuildInputs = with pkgs; [
-            openssl
+            (openssl.override { static = true; })
             pkg-config
           ];
         };
