@@ -1,6 +1,6 @@
 use config::Feeds;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use feeds::Feed;
+use feeds::{Feed, FeedEntry};
 use ratatui::{
     prelude::*,
     symbols::border,
@@ -15,13 +15,12 @@ mod ui;
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let mut terminal = ui::init()?;
-    let area_width = terminal.size()?.width as usize;
 
     let feeds_urls = config::parse_feed_urls;
-    let xml = feeds::fetch_feed(feeds_urls()).await;
+    let results = feeds::fetch_feed(feeds_urls()).await;
 
-    let list: Vec<Feed> =
-        feeds::parse_feed(xml.expect("Failed to fetch feed"), feeds_urls(), area_width);
+    // NOTE: parse_feed now takes the vector of (Feeds, Result<String, _>)
+    let list: Vec<Feed> = feeds::parse_feed(results);
 
     let app = App::new(list).run(&mut terminal);
     ui::restore()?;
@@ -37,10 +36,12 @@ pub struct App {
     active_list: ActiveList,
     entry_open: bool,
     scroll: usize,
-    // NEW: cache viewport metrics for the entry view
+
+    // Cached viewport metrics for the entry view
     view_content_length: usize,
     view_visible_height: usize,
     view_max_scroll: usize,
+
     exit: bool,
 }
 
@@ -71,24 +72,70 @@ impl App {
     pub fn run(&mut self, terminal: &mut ui::Tui) -> io::Result<()> {
         while !self.exit {
             terminal.draw(|frame| {
-                self.render_frame(frame) // now takes &mut self
+                self.render_frame(frame);
             })?;
             self.handle_events()?;
         }
         Ok(())
     }
 
+    /// Build the exact text content that will go into the Paragraph (unstyled here).
+    /// Keeping this centralized ensures measurement == render content.
+    fn build_entry_lines<'a>(&self, feed: &Feed, entry: &FeedEntry) -> Vec<Line<'a>> {
+        let mut lines: Vec<Line> = Vec::new();
+
+        // Metadata
+        lines.push(Line::from(format!("Title: {}", entry.title)));
+        lines.push(Line::from(format!("Feed: {}", feed.title)));
+        lines.push(Line::from(format!(
+            "Published: {}",
+            entry.published.as_deref().unwrap_or("Unknown")
+        )));
+
+        if !entry.links.is_empty() {
+            lines.push(Line::from(format!("Link: {}", entry.links.join(", "))));
+        }
+        if !entry.media.is_empty() {
+            lines.push(Line::from(format!("Media: {}", entry.media)));
+        }
+
+        // Separator
+        lines.push(Line::from(""));
+
+        // Body (already unwrapped; Paragraph will wrap dynamically)
+        lines.extend(entry.text.lines().map(|s| Line::from(s.to_owned())));
+
+        lines
+    }
+
+    /// Estimate the wrapped height (number of terminal rows) that `lines` will take
+    /// when rendered into a text area of width `content_width` (after borders & padding).
+    ///
+    /// We count 1 row for empty lines, and for non-empty lines we ceil-divide their
+    /// display width by the content width.
+    pub fn wrapped_height(&self, lines: &[Line], content_width: u16) -> usize {
+        let w = content_width.max(1) as usize;
+        lines
+            .iter()
+            .map(|line| {
+                let raw = line.width(); // display width (Unicode-aware)
+                if raw == 0 {
+                    1
+                } else {
+                    // ceil(raw / w)
+                    (raw + w - 1) / w
+                }
+            })
+            .sum::<usize>()
+    }
+
     fn render_frame(&mut self, frame: &mut Frame) {
-        // Compute the outer app block to get the same inner area you use in Widget::render
+        // ---- Outer application block ----
         let title = Title::from(" Shinbun ".bold().yellow());
         let instructions = Title::from(Line::from(vec![" Quit ".into(), "<q> ".bold()]));
         let app_block = Block::default()
             .title(title.alignment(Alignment::Left))
-            .title(
-                instructions
-                    .alignment(Alignment::Left)
-                    .position(block::Position::Bottom),
-            )
+            .title(instructions.alignment(Alignment::Left).position(block::Position::Bottom))
             .title_bottom(Line::from(" Help <?> ").blue().right_aligned())
             .borders(Borders::ALL)
             .border_style(Style::new().blue())
@@ -97,36 +144,38 @@ impl App {
         let area = frame.area();
         let inner_area = app_block.inner(area);
 
-        // If entry is open, compute viewport metrics for the entry pane
+        // ---- Cache viewport metrics for Entry view ----
         if self.entry_open {
             if let Some(feed) = self.list.get(self.index) {
                 if let Some(selected) = self.entries_state.selected() {
                     if let Some(entry) = feed.entries.get(selected) {
-                        // Count lines that will be in the Paragraph:
-                        // 3 metadata lines + optional link + optional media + 1 blank + body lines
-                        let meta_base = 3usize;
-                        let link_lines = if entry.links.is_empty() { 0 } else { 1 };
-                        let media_lines = if entry.media.is_empty() { 0 } else { 1 };
-                        let sep_line = 1usize;
-                        let body_lines = entry.plain_text.lines().count();
-                        let content_length =
-                            meta_base + link_lines + media_lines + sep_line + body_lines;
+                        // Build the SAME content we will render
+                        let entry_lines = self.build_entry_lines(feed, entry);
 
-                        // Use the same entry block you use in Widget::render to get accurate height
+                        // Use the SAME entry block and padding as in render() below
                         let entry_block = Block::default()
                             .title(" Entry ".yellow())
                             .borders(Borders::ALL)
-                            .border_style(Style::new().blue());
-                        let inner = entry_block.inner(inner_area);
-                        let visible_height = inner.height as usize;
+                            .border_style(Style::new().blue())
+                            // IMPORTANT: padding must be considered for measurement
+                            .padding(Padding::symmetric(4, 1));
+
+                        // Compute the text area (borders + padding removed)
+                        let text_area = entry_block.inner(inner_area);
+                        let visible_height = text_area.height as usize;
+
+                        // Accurate wrapped height over the *whole* content
+                        let content_length = self.wrapped_height(&entry_lines, text_area.width);
+
+                        // Max scroll rows
                         let max_scroll = content_length.saturating_sub(visible_height);
 
-                        // Cache for key handlers
+                        // Cache for key handlers and bottom info
                         self.view_content_length = content_length;
                         self.view_visible_height = visible_height;
                         self.view_max_scroll = max_scroll;
 
-                        // Clamp the state *now* so UI and state stay in sync
+                        // Clamp current scroll to avoid overshoot
                         if self.scroll > self.view_max_scroll {
                             self.scroll = self.view_max_scroll;
                         }
@@ -134,14 +183,14 @@ impl App {
                 }
             }
         } else {
-            // Not in entry view; nothing scrollable here
+            // Not in entry view; no scrollable metrics needed
             self.view_content_length = 0;
             self.view_visible_height = 0;
             self.view_max_scroll = 0;
-            self.scroll = 0; // optional: reset when leaving entry view
+            self.scroll = 0; // optional reset
         }
 
-        // Draw the outer block and the rest via your Widget impl
+        // Render outer block and the rest via Widget impl
         app_block.render(area, frame.buffer_mut());
         let app_ref: &App = self;
         frame.render_widget(app_ref, frame.area());
@@ -149,8 +198,6 @@ impl App {
 
     fn handle_events(&mut self) -> std::io::Result<()> {
         match event::read()? {
-            // it's important to check that the event is a key press event as
-            // crossterm also emits key release and repeat events on Windows.
             Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
                 self.handle_key_event(key_event)
             }
@@ -195,8 +242,10 @@ impl App {
                 _ => {}
             }
         } else {
-            self.scroll = self.scroll.saturating_sub(1);
-            // self.scroll_state = self.scroll_state.position(self.scroll)
+            // scroll up in entry view
+            if self.scroll > 0 {
+                self.scroll -= 1;
+            }
         }
     }
 
@@ -220,8 +269,8 @@ impl App {
                 _ => {}
             }
         } else {
+            // scroll down in entry view; clamp to max
             self.scroll = self.scroll.saturating_add(1).min(self.view_max_scroll);
-            // self.scroll_state = self.scroll_state.position(self.scroll)
         }
     }
 
@@ -252,11 +301,11 @@ impl App {
     }
 
     fn help(&mut self) {
-        todo!()
+        // TODO
     }
 
     fn save_entry(&mut self) {
-        todo!()
+        // TODO
     }
 }
 
@@ -266,11 +315,7 @@ impl Widget for &App {
         let instructions = Title::from(Line::from(vec![" Quit ".into(), "<q> ".bold()]));
         let block = Block::default()
             .title(title.alignment(Alignment::Left))
-            .title(
-                instructions
-                    .alignment(Alignment::Left)
-                    .position(block::Position::Bottom),
-            )
+            .title(instructions.alignment(Alignment::Left).position(block::Position::Bottom))
             .title_bottom(Line::from(" Help <?> ".blue()).right_aligned())
             .borders(Borders::ALL)
             .border_style(Style::new().blue())
@@ -279,82 +324,112 @@ impl Widget for &App {
         let inner_area = block.inner(area);
         block.render(area, buf);
 
-        // NEW: responsive flag based on drawable content width
+        // Responsive split
         let is_wide = inner_area.width >= 80u16;
 
         if self.entry_open {
             if let Some(feed) = self.list.get(self.index) {
                 if let Some(selected_entry) = self.entries_state.selected() {
                     if let Some(entry) = feed.entries.get(selected_entry) {
-                        // 1) Build visible text buffer
-                        let mut entry_content = vec![
-                            Line::from(format!("Title: {}", entry.title)).magenta(),
-                            Line::from(format!("Feed: {}", feed.title)).cyan(),
+                        // --- Build content (same text as measurement) ---
+                        let mut entry_content: Vec<Line> = Vec::new();
+
+                        // Styled metadata
+                        entry_content.push(Line::from(format!("Title: {}", entry.title)).magenta());
+                        entry_content.push(Line::from(format!("Feed: {}", feed.title)).cyan());
+                        entry_content.push(
                             Line::from(format!(
                                 "Published: {}",
                                 entry.published.as_deref().unwrap_or("Unknown")
                             ))
                             .yellow(),
-                        ];
+                        );
                         if !entry.links.is_empty() {
                             entry_content.push(
                                 Line::from(format!("Link: {}", entry.links.join(", "))).blue(),
                             );
                         }
                         if !entry.media.is_empty() {
-                            entry_content
-                                .push(Line::from(format!("Media: {}", entry.media)).blue());
+                            entry_content.push(Line::from(format!("Media: {}", entry.media)).blue());
                         }
                         entry_content.push(Line::from("")); // separator
 
-                        // Add wrapped plain text lines
-                        let plain_lines: Vec<Line> =
-                            entry.plain_text.lines().map(Line::from).collect();
-                        entry_content.extend(plain_lines);
+                        // Body lines (unstyled)
+                        entry_content.extend(entry.text.lines().map(Line::from));
 
-                        // 2) Compute scroll + visible height
-                        let block = Block::default()
+                        // --- Use the SAME block (with padding) as used in measurement ---
+                        let entry_block = Block::default()
                             .title(" Entry ".yellow())
                             .borders(Borders::ALL)
-                            .border_style(Style::new().blue());
-                        let inner = block.inner(inner_area);
-                        let visible_height = inner.height as usize;
-                        let content_length = entry_content.len();
-                        let max_scroll = content_length.saturating_sub(visible_height).max(0);
+                            .border_style(Style::new().blue())
+                            .padding(Padding::symmetric(4, 1));
 
-                        // Clamp scroll for safety (render-only clamp; main loop clamps too)
+                        // This is the true text area (borders & padding removed)
+                        let inner_text_area = entry_block.inner(inner_area);
+
+                        // Pull cached scrolling metrics (set in render_frame)
+                        let content_length = self.view_content_length;
+                        let visible_height = self.view_visible_height;
+                        let max_scroll = self.view_max_scroll;
                         let scroll = self.scroll.min(max_scroll);
 
-                        // 3) Visible line info (for bottom title)
-                        let first_visible = scroll;
-                        let last_visible = (scroll + visible_height - 1).min(content_length - 1);
+                        // Bottom info: "Lines: a–b / total"
+                        let (first_visible, last_visible) = if content_length == 0 || visible_height == 0 {
+                            (0usize, 0usize)
+                        } else {
+                            let first = scroll;
+                            let last = (scroll + visible_height.saturating_sub(1))
+                                .min(content_length.saturating_sub(1));
+                            (first, last)
+                        };
                         let line_info = format!(
                             " Lines: {}–{} / {} ",
-                            first_visible + 1,
-                            last_visible + 1,
+                            first_visible.saturating_add(1),
+                            last_visible.saturating_add(1),
                             content_length
                         );
 
-                        // 4) Whether to show scrollbar
-                        let show_scrollbar = content_length > visible_height;
-
-                        // 5) Render paragraph
-                        let paragraph = Paragraph::new(entry_content.clone())
-                            .block(block.clone().title_bottom(line_info.yellow()))
+                        // Prepare the Paragraph
+                        let paragraph = Paragraph::new(entry_content)
+                            .block(entry_block.clone().title_bottom(line_info.yellow()))
                             .scroll((scroll as u16, 0))
-                            .wrap(Wrap { trim: false });
+                            .wrap(Wrap { trim: true });
+
+                        // === Reserve 1 column on the right for the scrollbar ===
+                        // Paragraph will render into everything except the last column
+                        let paragraph_area = Rect {
+                            x: inner_text_area.x,
+                            y: inner_text_area.y,
+                            width: inner_text_area.width.saturating_sub(1),
+                            height: inner_text_area.height,
+                        };
+
+                        // The scrollbar uses a dedicated 1-column strip on the right
+                        let scrollbar_area = Rect {
+                            x: inner_text_area.x + inner_text_area.width.saturating_sub(0),
+                            y: inner_text_area.y,
+                            width: 1,
+                            height: inner_text_area.height,
+                        };
+
+                        // Render the paragraph inside the inner (bordered + padded) entry area
+                        // NOTE: we still pass `inner_area` to render the block decoration,
+                        // and the paragraph text is constrained by `paragraph_area`.
                         paragraph.render(inner_area, buf);
 
-                        // 6) Render scrollbar (conditionally)
-                        if show_scrollbar {
+                        // Render the scrollbar only if content overflows
+                        if content_length > visible_height && paragraph_area.width > 0 {
                             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                                 .begin_symbol(Some("↑"))
                                 .end_symbol(Some("↓"))
                                 .track_symbol(Some("░"))
                                 .thumb_symbol("█");
+
                             let mut scrollbar_state =
                                 ScrollbarState::new(max_scroll + 1).position(scroll);
-                            scrollbar.render(inner, buf, &mut scrollbar_state);
+
+                            // Draw the scrollbar in its own 1‑column strip
+                            scrollbar.render(scrollbar_area, buf, &mut scrollbar_state);
                         }
                     }
                 }
@@ -390,12 +465,7 @@ impl Widget for &App {
                 .block(left_block)
                 .highlight_style(feeds_highlight_style);
 
-            StatefulWidget::render(
-                feeds_list,
-                horizontal_split[0],
-                buf,
-                &mut self.state.to_owned(),
-            );
+            StatefulWidget::render(feeds_list, horizontal_split[0], buf, &mut self.state.to_owned());
 
             // Right: Entries of selected feed
             let selected_index = self.state.selected().unwrap_or(0);
@@ -435,7 +505,6 @@ impl Widget for &App {
             // ==== NARROW MODE: single pane ====
             match self.active_list {
                 ActiveList::Feeds => {
-                    // Show only feeds list
                     let feeds_items: Vec<ListItem> = self
                         .list
                         .iter()
@@ -458,7 +527,6 @@ impl Widget for &App {
                     StatefulWidget::render(feeds_list, inner_area, buf, &mut self.state.to_owned());
                 }
                 ActiveList::Entries | ActiveList::Entry => {
-                    // Show only entries list (the actual reader is handled by the self.entry_open branch above)
                     let selected_index = self.state.selected().unwrap_or(0);
                     let entries_items: Vec<ListItem> =
                         if let Some(feed) = self.list.get(selected_index) {
@@ -479,9 +547,7 @@ impl Widget for &App {
 
                     let entries_list = List::new(entries_items)
                         .block(entries_block.clone())
-                        .highlight_style(
-                            Style::default().bg(Color::Yellow).fg(Color::Black).bold(),
-                        );
+                        .highlight_style(Style::default().bg(Color::Yellow).fg(Color::Black).bold());
 
                     StatefulWidget::render(
                         entries_list.block(entries_block),
