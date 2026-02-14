@@ -1,111 +1,130 @@
-use crate::Feeds;
+use crate::config::Feed as FeedConfig;
 use feed_rs::parser;
 use futures::future::join_all;
-use reqwest::{get, Error as reqError};
+use reqwest::{get, Error as ReqError};
 
 #[derive(Debug)]
 pub struct Feed {
-    pub url: String,
-    pub title: String,
-    pub entries: Vec<FeedEntry>,
-    pub tags: Option<Vec<String>>,
+  pub url: String,
+  pub title: String,
+  pub entries: Vec<FeedEntry>,
+  pub tags: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
 pub struct FeedEntry {
-    pub title: String,
-    pub published: Option<String>,
-    pub text: String,         // <-- unwrapped plain text
-    pub links: Vec<String>,
-    pub media: String,
+  pub title: String,
+  pub published: Option<String>,
+  pub text: String,
+  pub links: Vec<String>,
+  pub media: String,
 }
 
-/// Fetch while preserving association with the original `Feeds` item.
-/// We return one tuple per input feed; each has the original `Feeds` and a body or error.
-pub async fn fetch_feed(feeds: Vec<Feeds>) -> Vec<(Feeds, Result<String, reqError>)> {
-    let futs = feeds.into_iter().map(|f| async move {
-        let res = match get(&f.link).await {
-            Ok(resp) => resp.text().await.map_err(|e| {
-                eprintln!("Failed to read response body from {}: {}", f.link, e);
-                e
-            }),
-            Err(e) => {
-                eprintln!("Failed to fetch feed {}: {}", f.link, e);
-                Err(e)
-            }
-        };
-        (f, res)
-    });
+/// Fetch multiple feeds concurrently
+pub async fn fetch_feed(feeds: Vec<FeedConfig>) -> Vec<(FeedConfig, Result<String, ReqError>)> {
+  let futures = feeds.into_iter().map(|feed| async move {
+    let result = fetch_single_feed(&feed.link).await;
+    (feed, result)
+  });
 
-    join_all(futs).await
+  join_all(futures).await
 }
 
-/// Parse feeds. We skip failed downloads and failed XML parses (log & continue).
-/// No static wrapping: we convert HTML to plain text with effectively infinite width.
-pub fn parse_feed(results: Vec<(Feeds, Result<String, reqError>)>) -> Vec<Feed> {
-    let mut all_feeds = Vec::with_capacity(results.len());
-
-    for (feed_cfg, body_res) in results {
-        let raw = match body_res {
-            Ok(b) => b,
-            Err(_) => {
-                // Skip (or create an empty feed if you prefer).
-                continue;
-            }
-        };
-
-        let feed_from_xml = match parser::parse(raw.as_bytes()) {
-            Ok(feed) => feed,
-            Err(e) => {
-                eprintln!("Failed to parse the feed: {}", feed_cfg.link);
-                eprintln!("Details: {}", e);
-                continue;
-            }
-        };
-
-        let title = feed_cfg
-            .name
-            .clone()
-            .or_else(|| feed_from_xml.title.as_ref().map(|t| t.content.clone()))
-            .unwrap_or_else(|| feed_cfg.link.clone());
-
-        let mut entries = Vec::with_capacity(feed_from_xml.entries.len());
-
-        for entry in feed_from_xml.entries {
-            // Prefer the main content; fall back to summary if needed
-            let main_html = entry
-                .content
-                .as_ref()
-                .and_then(|c| c.body.clone())
-                .or_else(|| entry.summary.as_ref().map(|s| s.content.clone()))
-                .unwrap_or_default();
-
-            let text = html2text::from_read(main_html.as_bytes(), usize::MAX).unwrap();
-
-            let links = entry.links.iter().map(|l| l.href.clone()).collect::<Vec<_>>();
-            let media = entry
-                .media
-                .first()
-                .and_then(|m| m.content.first())
-                .and_then(|c| c.url.as_ref().map(|u| u.to_string()))
-                .unwrap_or_default();
-
-            entries.push(FeedEntry {
-                title: entry.title.map_or_else(|| "No title".to_string(), |t| t.content),
-                published: entry.published.map(|p| p.to_string()),
-                text,
-                links,
-                media,
-            });
-        }
-
-        all_feeds.push(Feed {
-            url: feed_cfg.link,
-            title,
-            entries,
-            tags: feed_cfg.tags,
-        });
+/// Fetch a single feed from URL
+async fn fetch_single_feed(url: &str) -> Result<String, ReqError> {
+  match get(url).await {
+    Ok(response) => response.text().await.map_err(|err| {
+      eprintln!("Failed to read response body from {}: {}", url, err);
+      err
+    }),
+    Err(err) => {
+      eprintln!("Failed to fetch feed {}: {}", url, err);
+      Err(err)
     }
+  }
+}
 
-    all_feeds
+/// Parse feed results into structured Feed objects
+pub fn parse_feed(results: Vec<(FeedConfig, Result<String, ReqError>)>) -> Vec<Feed> {
+  results
+    .into_iter()
+    .filter_map(|(feed_config, body_result)| {
+      let body = body_result.ok()?;
+      parse_single_feed(feed_config, &body)
+    })
+    .collect()
+}
+
+/// Parse a single feed from XML/RSS content
+fn parse_single_feed(feed_config: FeedConfig, content: &str) -> Option<Feed> {
+  let parsed_feed = match parser::parse(content.as_bytes()) {
+    Ok(feed) => feed,
+    Err(err) => {
+      eprintln!("Failed to parse feed: {}", feed_config.link);
+      eprintln!("Error: {}", err);
+      return None;
+    }
+  };
+
+  // Determine the feed title
+  let title = feed_config
+    .name
+    .clone()
+    .or_else(|| parsed_feed.title.as_ref().map(|t| t.content.clone()))
+    .unwrap_or_else(|| feed_config.link.clone());
+
+  // Parse all entries
+  let entries = parsed_feed
+    .entries
+    .into_iter()
+    .map(|entry| parse_feed_entry(entry))
+    .collect();
+
+  Some(Feed {
+    url: feed_config.link,
+    title,
+    entries,
+    tags: feed_config.tags,
+  })
+}
+
+/// Parse a single feed entry
+fn parse_feed_entry(entry: feed_rs::model::Entry) -> FeedEntry {
+  // Extract the main content (prefer content over summary)
+  let html_content = entry
+    .content
+    .as_ref()
+    .and_then(|c| c.body.clone())
+    .or_else(|| entry.summary.as_ref().map(|s| s.content.clone()))
+    .unwrap_or_default();
+
+  // Convert HTML to plain text with no wrapping
+  let text = html2text::from_read(html_content.as_bytes(), usize::MAX)
+    .unwrap_or_else(|_| String::from("Failed to parse content"));
+
+  // Extract links
+  let links = entry.links.iter().map(|link| link.href.clone()).collect();
+
+  // Extract media URL
+  let media = entry
+    .media
+    .first()
+    .and_then(|m| m.content.first())
+    .and_then(|c| c.url.as_ref().map(|u| u.to_string()))
+    .unwrap_or_default();
+
+  // Format date: prefer published, fallback to updated
+  // This handles aggregator feeds that only have <updated> tags
+  let published = entry.published.or(entry.updated).map(|dt| dt.to_rfc3339());
+
+  FeedEntry {
+    title: entry
+      .title
+      .map(|t| t.content)
+      .unwrap_or_else(|| String::from("No title")),
+    published,
+    text,
+    links,
+    media,
+  }
 }
