@@ -2,7 +2,7 @@ use dirs::config_dir;
 use serde::Deserialize;
 use std::{fs, path::PathBuf, process};
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Clone)]
 pub struct Feed {
   pub link: String,
   pub name: Option<String>,
@@ -14,7 +14,7 @@ struct FeedsFile {
   feeds: Vec<Feed>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct UiConfig {
   #[serde(default)]
   pub split_view: bool,

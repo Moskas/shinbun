@@ -1,9 +1,10 @@
+use crate::app::FeedUpdate;
 use crate::config::Feed as FeedConfig;
 use feed_rs::parser;
-use futures::future::join_all;
 use reqwest::{get, Error as ReqError};
+use tokio::sync::mpsc;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Feed {
   pub url: String,
   pub title: String,
@@ -11,7 +12,7 @@ pub struct Feed {
   pub tags: Option<Vec<String>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FeedEntry {
   pub title: String,
   pub published: Option<String>,
@@ -20,27 +21,80 @@ pub struct FeedEntry {
   pub media: String,
 }
 
-/// Fetch multiple feeds concurrently
+/// Fetch multiple feeds concurrently with progress reporting
+pub async fn fetch_feed_with_progress(
+  feeds: Vec<FeedConfig>,
+  tx: mpsc::UnboundedSender<FeedUpdate>,
+) {
+  let mut tasks = Vec::new();
+
+  for feed_config in feeds {
+    let tx_clone = tx.clone();
+    let task = tokio::spawn(async move {
+      // Report that we're fetching this feed
+      let feed_name = feed_config
+        .name
+        .clone()
+        .unwrap_or_else(|| feed_config.link.clone());
+      let _ = tx_clone.send(FeedUpdate::FetchingFeed(feed_name.clone()));
+
+      // Fetch the feed
+      match fetch_single_feed(&feed_config.link).await {
+        Ok(body) => {
+          // Parse the feed
+          match parse_single_feed(feed_config.clone(), &body) {
+            Some(feed) => Some(feed),
+            None => {
+              // Parsing failed
+              let _ = tx_clone.send(FeedUpdate::FeedError {
+                name: feed_name,
+                error: "Failed to parse feed".to_string(),
+              });
+              None
+            }
+          }
+        }
+        Err(err) => {
+          // Fetch failed
+          let _ = tx_clone.send(FeedUpdate::FeedError {
+            name: feed_name,
+            error: format!("Failed to fetch: {}", err),
+          });
+          None
+        }
+      }
+    });
+    tasks.push(task);
+  }
+
+  // Wait for all tasks to complete
+  let mut feed_list = Vec::new();
+  for task in tasks {
+    if let Ok(Some(feed)) = task.await {
+      feed_list.push(feed);
+    }
+  }
+
+  // Send the final result
+  let _ = tx.send(FeedUpdate::Replace(feed_list));
+  let _ = tx.send(FeedUpdate::FetchComplete);
+}
+
+/// Fetch multiple feeds concurrently (original function for compatibility)
 pub async fn fetch_feed(feeds: Vec<FeedConfig>) -> Vec<(FeedConfig, Result<String, ReqError>)> {
   let futures = feeds.into_iter().map(|feed| async move {
     let result = fetch_single_feed(&feed.link).await;
     (feed, result)
   });
 
-  join_all(futures).await
+  futures::future::join_all(futures).await
 }
 
 /// Fetch a single feed from URL
 async fn fetch_single_feed(url: &str) -> Result<String, ReqError> {
   match get(url).await {
-    Ok(response) => response.text().await.map_err(|err| {
-      eprintln!("Failed to read response body from {}: {}", url, err);
-      err
-    }),
-    Err(err) => {
-      eprintln!("Failed to fetch feed {}: {}", url, err);
-      Err(err)
-    }
+    Ok(response) => response.text().await,
+    Err(err) => Err(err),
   }
 }
 
@@ -59,9 +113,7 @@ pub fn parse_feed(results: Vec<(FeedConfig, Result<String, ReqError>)>) -> Vec<F
 fn parse_single_feed(feed_config: FeedConfig, content: &str) -> Option<Feed> {
   let parsed_feed = match parser::parse(content.as_bytes()) {
     Ok(feed) => feed,
-    Err(err) => {
-      eprintln!("Failed to parse feed: {}", feed_config.link);
-      eprintln!("Error: {}", err);
+    Err(_err) => {
       return None;
     }
   };
