@@ -1,6 +1,7 @@
 use crate::cache::FeedCache;
-use crate::config::{Feed as FeedConfig, UiConfig};
-use crate::feeds::{self, Feed};
+use crate::config::{Feed as FeedConfig, QueryFeed, UiConfig};
+use crate::feeds::{self, Feed, FeedEntry};
+use crate::query;
 use crate::views::{entry_view, feeds_list_view};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
@@ -13,6 +14,42 @@ pub enum AppState {
   BrowsingFeeds,
   BrowsingEntries,
   ViewingEntry,
+}
+
+/// Represents a feed or query feed in the display list
+#[derive(Debug, Clone)]
+pub enum DisplayFeed {
+  /// A regular RSS feed
+  Regular(Feed),
+  /// A query feed with its name, query string, and aggregated entries
+  Query {
+    name: String,
+    query: String,
+    entries: Vec<FeedEntry>,
+  },
+}
+
+impl DisplayFeed {
+  /// Get the display title of the feed
+  pub fn title(&self) -> &str {
+    match self {
+      DisplayFeed::Regular(feed) => &feed.title,
+      DisplayFeed::Query { name, .. } => name,
+    }
+  }
+
+  /// Get the entries for this feed
+  pub fn entries(&self) -> &[FeedEntry] {
+    match self {
+      DisplayFeed::Regular(feed) => &feed.entries,
+      DisplayFeed::Query { entries, .. } => entries,
+    }
+  }
+
+  /// Check if this is a query feed
+  pub fn is_query(&self) -> bool {
+    matches!(self, DisplayFeed::Query { .. })
+  }
 }
 
 /// Messages sent from background tasks to update feeds
@@ -74,8 +111,10 @@ impl LoadingState {
 }
 
 pub struct App {
-  feeds: Vec<Feed>,
+  feeds: Vec<Feed>,                  // Raw feeds from cache/fetch
+  display_feeds: Vec<DisplayFeed>,   // Combined query + regular feeds for display
   feed_config: Vec<FeedConfig>,
+  query_config: Vec<QueryFeed>,
   feed_index: usize,
   feed_list_state: ListState,
   entry_list_state: ListState,
@@ -96,15 +135,21 @@ impl App {
     feeds: Vec<Feed>,
     ui_config: UiConfig,
     feed_config: Vec<FeedConfig>,
+    query_config: Vec<QueryFeed>,
     feed_tx: mpsc::UnboundedSender<FeedUpdate>,
     cache: FeedCache,
   ) -> Self {
     // Set initial loading state based on whether we have cached feeds
     let is_loading = feeds.is_empty();
     
+    // Build initial display feeds
+    let display_feeds = Self::build_display_feeds(&feeds, &query_config);
+    
     Self {
       feeds,
+      display_feeds,
       feed_config,
+      query_config,
       feed_index: 0,
       feed_list_state: ListState::default().with_selected(Some(0)),
       entry_list_state: ListState::default(),
@@ -125,6 +170,33 @@ impl App {
       show_error_popup: false,
       cache,
     }
+  }
+
+  /// Build display feeds by combining query feeds and regular feeds
+  fn build_display_feeds(feeds: &[Feed], query_config: &[QueryFeed]) -> Vec<DisplayFeed> {
+    let mut display_feeds = Vec::new();
+
+    // Add query feeds first (they appear at the top)
+    for query in query_config {
+      let entries = query::apply_query(feeds, &query.query);
+      display_feeds.push(DisplayFeed::Query {
+        name: query.name.clone(),
+        query: query.query.clone(),
+        entries,
+      });
+    }
+
+    // Add regular feeds
+    for feed in feeds {
+      display_feeds.push(DisplayFeed::Regular(feed.clone()));
+    }
+
+    display_feeds
+  }
+
+  /// Rebuild display feeds after feeds change
+  fn rebuild_display_feeds(&mut self) {
+    self.display_feeds = Self::build_display_feeds(&self.feeds, &self.query_config);
   }
 
   pub fn should_exit(&self) -> bool {
@@ -151,19 +223,50 @@ impl App {
   pub fn handle_feed_update(&mut self, update: FeedUpdate) {
     match update {
       FeedUpdate::Replace(new_feeds) => {
-        // Save each feed to cache
+        // Save each feed to cache with its position from config
         for feed in &new_feeds {
-          if let Err(e) = self.cache.save_feed(feed) {
+          // Find the position of this feed in the original config
+          let position = self
+            .feed_config
+            .iter()
+            .position(|config| config.link == feed.url)
+            .unwrap_or(0);
+
+          if let Err(e) = self.cache.save_feed(feed, position) {
             eprintln!("Failed to cache feed {}: {}", feed.title, e);
           }
         }
 
-        self.feeds = new_feeds;
+        // Merge new feeds with existing feeds (don't replace, merge by URL)
+        let mut merged_feeds = self.feeds.clone();
+        
+        for new_feed in new_feeds {
+          // Find if this feed already exists
+          if let Some(existing) = merged_feeds.iter_mut().find(|f| f.url == new_feed.url) {
+            // Update existing feed
+            *existing = new_feed;
+          } else {
+            // Add new feed
+            merged_feeds.push(new_feed);
+          }
+        }
+
+        // Sort feeds by their config order before displaying
+        merged_feeds.sort_by_key(|feed| {
+          self
+            .feed_config
+            .iter()
+            .position(|config| config.link == feed.url)
+            .unwrap_or(usize::MAX)
+        });
+
+        self.feeds = merged_feeds;
+        self.rebuild_display_feeds(); // Rebuild display feeds with new data
         self.loading_state.stop();
         self.current_feed = None;
 
         // Reset selection if current index is out of bounds
-        if self.feed_index >= self.feeds.len() && !self.feeds.is_empty() {
+        if self.feed_index >= self.display_feeds.len() && !self.display_feeds.is_empty() {
           self.feed_index = 0;
           self.feed_list_state.select(Some(0));
         }
@@ -174,13 +277,22 @@ impl App {
         }
       }
       FeedUpdate::UpdateFeed(index, feed) => {
+        // Find the position of this feed in the original config
+        let position = self
+          .feed_config
+          .iter()
+          .position(|config| config.link == feed.url)
+          .unwrap_or(0);
+
         // Save to cache
-        if let Err(e) = self.cache.save_feed(&feed) {
+        if let Err(e) = self.cache.save_feed(&feed, position) {
           eprintln!("Failed to cache feed {}: {}", feed.title, e);
         }
 
-        if index < self.feeds.len() {
-          self.feeds[index] = feed;
+        // Update in the feeds list
+        if let Some(existing) = self.feeds.iter_mut().find(|f| f.url == feed.url) {
+          *existing = feed;
+          self.rebuild_display_feeds(); // Rebuild to update query feeds too
         }
       }
       FeedUpdate::FetchingFeed(name) => {
@@ -219,13 +331,13 @@ impl App {
     // Render based on current state
     match self.state {
       AppState::ViewingEntry => {
-        if let Some(feed) = self.feeds.get(self.feed_index) {
+        if let Some(display_feed) = self.display_feeds.get(self.feed_index) {
           if let Some(entry_idx) = self.entry_list_state.selected() {
-            if let Some(entry) = feed.entries.get(entry_idx) {
+            if let Some(entry) = display_feed.entries().get(entry_idx) {
               entry_view::render(
                 frame,
                 area,
-                feed,
+                display_feed.title(),
                 entry,
                 &mut self.entry_scroll,
                 self.ui_config.show_borders,
@@ -239,7 +351,7 @@ impl App {
         feeds_list_view::render(
           frame,
           area,
-          &self.feeds,
+          &self.display_feeds,
           &mut self.feed_list_state,
           &mut self.entry_list_state,
           self.state,
@@ -306,15 +418,15 @@ impl App {
   fn handle_down(&mut self) {
     match self.state {
       AppState::BrowsingFeeds => {
-        if self.feed_index + 1 < self.feeds.len() {
+        if self.feed_index + 1 < self.display_feeds.len() {
           self.feed_index += 1;
           self.feed_list_state.select(Some(self.feed_index));
         }
       }
       AppState::BrowsingEntries => {
         if let Some(selected) = self.entry_list_state.selected() {
-          if let Some(feed) = self.feeds.get(self.feed_index) {
-            if selected + 1 < feed.entries.len() {
+          if let Some(display_feed) = self.display_feeds.get(self.feed_index) {
+            if selected + 1 < display_feed.entries().len() {
               self.entry_list_state.select(Some(selected + 1));
             }
           }

@@ -22,7 +22,8 @@ impl FeedCache {
         url TEXT NOT NULL UNIQUE,
         title TEXT NOT NULL,
         last_fetched INTEGER NOT NULL,
-        tags TEXT
+        tags TEXT,
+        position INTEGER NOT NULL DEFAULT 0
       )",
             [],
         )?;
@@ -48,7 +49,7 @@ impl FeedCache {
     }
 
     /// Save or update a feed and its entries
-    pub fn save_feed(&self, feed: &Feed) -> Result<()> {
+    pub fn save_feed(&self, feed: &Feed, position: usize) -> Result<()> {
         let now = chrono::Utc::now().timestamp();
         let tags_json = feed
             .tags
@@ -57,9 +58,9 @@ impl FeedCache {
 
         // Insert or replace the feed
         self.conn.execute(
-            "INSERT OR REPLACE INTO feeds (url, title, last_fetched, tags)
-       VALUES (?1, ?2, ?3, ?4)",
-            params![feed.url, feed.title, now, tags_json],
+            "INSERT OR REPLACE INTO feeds (url, title, last_fetched, tags, position)
+       VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![feed.url, feed.title, now, tags_json, position as i64],
         )?;
 
         // Get the feed ID
@@ -136,6 +137,7 @@ impl FeedCache {
                     text,
                     links,
                     media,
+                    feed_title: None, // Regular feeds don't need this
                 })
             })?
             .collect::<Result<Vec<_>>>()?;
@@ -152,7 +154,7 @@ impl FeedCache {
     pub fn load_all_feeds(&self) -> Result<Vec<Feed>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, url, title, tags FROM feeds ORDER BY title")?;
+            .prepare("SELECT id, url, title, tags FROM feeds ORDER BY position")?;
 
         let feed_data = stmt
             .query_map([], |row| {
@@ -194,6 +196,7 @@ impl FeedCache {
                         text,
                         links,
                         media,
+                        feed_title: None, // Regular feeds don't need this
                     })
                 })?
                 .collect::<Result<Vec<_>>>()?;

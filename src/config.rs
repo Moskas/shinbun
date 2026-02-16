@@ -26,23 +26,32 @@ fn default_show_borders() -> bool {
     true
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct QueryFeed {
+    pub name: String,
+    pub query: String,
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct ConfigFile {
     #[serde(default)]
     ui: UiConfig,
+    #[serde(default)]
+    queries: Vec<QueryFeed>,
 }
 
 pub struct Config {
     pub feeds: Vec<Feed>,
     pub ui: UiConfig,
+    pub queries: Vec<QueryFeed>,
 }
 
 /// Parse complete configuration from config.toml and feeds.toml
 pub fn parse_config() -> Config {
     let config_dir = get_config_dir();
 
-    // Parse UI config from config.toml (optional)
-    let ui_config = parse_ui_config(&config_dir);
+    // Parse UI config and queries from config.toml (optional)
+    let (ui_config, queries) = parse_config_file(&config_dir);
 
     // Parse feeds from feeds.toml (required)
     let feeds = parse_feeds(&config_dir);
@@ -50,30 +59,31 @@ pub fn parse_config() -> Config {
     Config {
         feeds,
         ui: ui_config,
+        queries,
     }
 }
 
-/// Parse UI configuration from config.toml
-fn parse_ui_config(config_dir: &PathBuf) -> UiConfig {
+/// Parse configuration file (config.toml)
+fn parse_config_file(config_dir: &PathBuf) -> (UiConfig, Vec<QueryFeed>) {
     let config_path = config_dir.join("config.toml");
 
     // If config.toml doesn't exist, use defaults
     if !config_path.exists() {
-        return UiConfig::default();
+        return (UiConfig::default(), Vec::new());
     }
 
     // Read and parse config.toml
     let content = match fs::read_to_string(&config_path) {
         Ok(c) => c,
-        Err(_) => return UiConfig::default(),
+        Err(_) => return (UiConfig::default(), Vec::new()),
     };
 
     match toml::from_str::<ConfigFile>(&content) {
-        Ok(config) => config.ui,
+        Ok(config) => (config.ui, config.queries),
         Err(err) => {
             eprintln!("Warning: Failed to parse config.toml: {}", err);
             eprintln!("Using default configuration");
-            UiConfig::default()
+            (UiConfig::default(), Vec::new())
         }
     }
 }

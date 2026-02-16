@@ -7,6 +7,7 @@ mod app;
 mod cache;
 mod config;
 mod feeds;
+mod query;
 mod ui;
 mod views;
 
@@ -24,7 +25,7 @@ async fn main() -> io::Result<()> {
   let cache_path = config::get_cache_path();
   let cache = FeedCache::new(cache_path).expect("Failed to initialize cache");
 
-  // Load cached feeds
+  // Load cached feeds (already sorted by position)
   let cached_feeds = cache.load_all_feeds().unwrap_or_default();
 
   // Determine which feeds need to be fetched
@@ -53,7 +54,14 @@ async fn main() -> io::Result<()> {
   }
 
   // Create and run the app with cached feeds
-  let mut app = App::new(cached_feeds, config.ui, config.feeds, feed_tx, cache);
+  let mut app = App::new(
+    cached_feeds,
+    config.ui,
+    config.feeds,
+    config.queries,
+    feed_tx,
+    cache,
+  );
   let result = run_app(&mut terminal, &mut app, feed_rx);
 
   // Restore terminal

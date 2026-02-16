@@ -19,6 +19,7 @@ pub struct FeedEntry {
   pub text: String,
   pub links: Vec<String>,
   pub media: String,
+  pub feed_title: Option<String>, // Source feed title (for query feeds)
 }
 
 /// Fetch multiple feeds concurrently with progress reporting
@@ -178,5 +179,6 @@ fn parse_feed_entry(entry: feed_rs::model::Entry) -> FeedEntry {
     text,
     links,
     media,
+    feed_title: None, // Will be set by query aggregation if needed
   }
 }
