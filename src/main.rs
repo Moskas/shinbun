@@ -4,12 +4,14 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 mod app;
+mod cache;
 mod config;
 mod feeds;
 mod ui;
 mod views;
 
 use app::{App, FeedUpdate};
+use cache::FeedCache;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -18,18 +20,40 @@ async fn main() -> io::Result<()> {
   // Parse configuration
   let config = config::parse_config();
 
+  // Initialize cache
+  let cache_path = config::get_cache_path();
+  let cache = FeedCache::new(cache_path).expect("Failed to initialize cache");
+
+  // Load cached feeds
+  let cached_feeds = cache.load_all_feeds().unwrap_or_default();
+
+  // Determine which feeds need to be fetched
+  let feeds_to_fetch: Vec<_> = config
+    .feeds
+    .iter()
+    .filter(|feed_config| {
+      // Fetch if not in cache
+      !cache.has_feed(&feed_config.link).unwrap_or(false)
+    })
+    .cloned()
+    .collect();
+
   // Create channel for feed updates
   let (feed_tx, feed_rx) = mpsc::unbounded_channel();
 
-  // Start initial feed fetch in background
-  let initial_feeds = config.feeds.clone();
-  let tx = feed_tx.clone();
-  tokio::spawn(async move {
-    feeds::fetch_feed_with_progress(initial_feeds, tx).await;
-  });
+  // Start background fetch for missing feeds
+  if !feeds_to_fetch.is_empty() {
+    let tx = feed_tx.clone();
+    tokio::spawn(async move {
+      feeds::fetch_feed_with_progress(feeds_to_fetch, tx).await;
+    });
+  } else {
+    // No feeds to fetch, send FetchComplete immediately
+    let _ = feed_tx.send(FeedUpdate::FetchComplete);
+  }
 
-  // Create and run the app with empty feeds initially
-  let mut app = App::new(vec![], config.ui, config.feeds, feed_tx);
+  // Create and run the app with cached feeds
+  let mut app = App::new(cached_feeds, config.ui, config.feeds, feed_tx, cache);
   let result = run_app(&mut terminal, &mut app, feed_rx);
 
   // Restore terminal

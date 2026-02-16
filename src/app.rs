@@ -1,3 +1,4 @@
+use crate::cache::FeedCache;
 use crate::config::{Feed as FeedConfig, UiConfig};
 use crate::feeds::{self, Feed};
 use crate::views::{entry_view, feeds_list_view};
@@ -87,6 +88,7 @@ pub struct App {
   current_feed: Option<String>,
   feed_errors: Vec<FeedError>,
   show_error_popup: bool,
+  cache: FeedCache,
 }
 
 impl App {
@@ -95,7 +97,11 @@ impl App {
     ui_config: UiConfig,
     feed_config: Vec<FeedConfig>,
     feed_tx: mpsc::UnboundedSender<FeedUpdate>,
+    cache: FeedCache,
   ) -> Self {
+    // Set initial loading state based on whether we have cached feeds
+    let is_loading = feeds.is_empty();
+    
     Self {
       feeds,
       feed_config,
@@ -107,10 +113,17 @@ impl App {
       ui_config,
       exit: false,
       feed_tx,
-      loading_state: LoadingState::new(),
+      loading_state: if is_loading {
+        LoadingState::new()
+      } else {
+        let mut state = LoadingState::new();
+        state.stop();
+        state
+      },
       current_feed: None,
       feed_errors: Vec::new(),
       show_error_popup: false,
+      cache,
     }
   }
 
@@ -138,6 +151,13 @@ impl App {
   pub fn handle_feed_update(&mut self, update: FeedUpdate) {
     match update {
       FeedUpdate::Replace(new_feeds) => {
+        // Save each feed to cache
+        for feed in &new_feeds {
+          if let Err(e) = self.cache.save_feed(feed) {
+            eprintln!("Failed to cache feed {}: {}", feed.title, e);
+          }
+        }
+
         self.feeds = new_feeds;
         self.loading_state.stop();
         self.current_feed = None;
@@ -154,6 +174,11 @@ impl App {
         }
       }
       FeedUpdate::UpdateFeed(index, feed) => {
+        // Save to cache
+        if let Err(e) = self.cache.save_feed(&feed) {
+          eprintln!("Failed to cache feed {}: {}", feed.title, e);
+        }
+
         if index < self.feeds.len() {
           self.feeds[index] = feed;
         }
