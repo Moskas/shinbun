@@ -20,6 +20,7 @@ pub struct FeedEntry {
   pub links: Vec<String>,
   pub media: String,
   pub feed_title: Option<String>, // Source feed title (for query feeds)
+  pub read: bool,                 // Whether this entry has been read
 }
 
 /// Fetch multiple feeds concurrently with progress reporting
@@ -110,27 +111,52 @@ pub fn parse_feed(results: Vec<(FeedConfig, Result<String, ReqError>)>) -> Vec<F
     .collect()
 }
 
-/// Parse a single feed from XML/RSS content
-fn parse_single_feed(feed_config: FeedConfig, content: &str) -> Option<Feed> {
-  let parsed_feed = match parser::parse(content.as_bytes()) {
-    Ok(feed) => feed,
-    Err(_err) => {
-      return None;
-    }
-  };
+/// Parse a single feed from its body content
+pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {
+  let parsed = parser::parse(body.as_bytes()).ok()?;
 
-  // Determine the feed title
-  let title = feed_config
-    .name
-    .clone()
-    .or_else(|| parsed_feed.title.as_ref().map(|t| t.content.clone()))
-    .unwrap_or_else(|| feed_config.link.clone());
+  let title = parsed
+    .title
+    .map(|t| t.content)
+    .unwrap_or_else(|| feed_config.name.unwrap_or_else(|| feed_config.link.clone()));
 
-  // Parse all entries
-  let entries = parsed_feed
+  let entries = parsed
     .entries
     .into_iter()
-    .map(|entry| parse_feed_entry(entry))
+    .map(|e| {
+      let entry_title = e
+        .title
+        .map(|t| t.content)
+        .unwrap_or_else(|| "Untitled".to_string());
+
+      let published = e.published.or(e.updated).map(|dt| dt.to_rfc3339());
+
+      let text = e
+        .summary
+        .map(|s| s.content)
+        .or_else(|| e.content.and_then(|c| c.body))
+        .unwrap_or_default();
+
+      let links = e.links.into_iter().map(|l| l.href).collect();
+
+      let media = e
+        .media
+        .first()
+        .and_then(|m| m.content.first())
+        .and_then(|c| c.url.as_ref())
+        .map(|u| u.to_string())
+        .unwrap_or_default();
+
+      FeedEntry {
+        title: entry_title,
+        published,
+        text,
+        links,
+        media,
+        feed_title: None,
+        read: false, // New entries start as unread
+      }
+    })
     .collect();
 
   Some(Feed {
@@ -139,46 +165,4 @@ fn parse_single_feed(feed_config: FeedConfig, content: &str) -> Option<Feed> {
     entries,
     tags: feed_config.tags,
   })
-}
-
-/// Parse a single feed entry
-fn parse_feed_entry(entry: feed_rs::model::Entry) -> FeedEntry {
-  // Extract the main content (prefer content over summary)
-  let html_content = entry
-    .content
-    .as_ref()
-    .and_then(|c| c.body.clone())
-    .or_else(|| entry.summary.as_ref().map(|s| s.content.clone()))
-    .unwrap_or_default();
-
-  // Convert HTML to plain text with no wrapping
-  let text = html2text::from_read(html_content.as_bytes(), usize::MAX)
-    .unwrap_or_else(|_| String::from("Failed to parse content"));
-
-  // Extract links
-  let links = entry.links.iter().map(|link| link.href.clone()).collect();
-
-  // Extract media URL
-  let media = entry
-    .media
-    .first()
-    .and_then(|m| m.content.first())
-    .and_then(|c| c.url.as_ref().map(|u| u.to_string()))
-    .unwrap_or_default();
-
-  // Format date: prefer published, fallback to updated
-  // This handles aggregator feeds that only have <updated> tags
-  let published = entry.published.or(entry.updated).map(|dt| dt.to_rfc3339());
-
-  FeedEntry {
-    title: entry
-      .title
-      .map(|t| t.content)
-      .unwrap_or_else(|| String::from("No title")),
-    published,
-    text,
-    links,
-    media,
-    feed_title: None, // Will be set by query aggregation if needed
-  }
 }

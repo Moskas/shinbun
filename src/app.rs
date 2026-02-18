@@ -46,6 +46,14 @@ impl DisplayFeed {
     }
   }
 
+  /// Get mutable entries for this feed
+  pub fn entries_mut(&mut self) -> &mut Vec<FeedEntry> {
+    match self {
+      DisplayFeed::Regular(feed) => &mut feed.entries,
+      DisplayFeed::Query { entries, .. } => entries,
+    }
+  }
+
   /// Check if this is a query feed
   pub fn is_query(&self) -> bool {
     matches!(self, DisplayFeed::Query { .. })
@@ -60,7 +68,7 @@ pub enum FeedUpdate {
   /// Update a specific feed
   UpdateFeed(usize, Feed),
   /// Report progress on a specific feed
-  FetchingFeed(String), // Feed name/URL being fetched
+  FetchingFeed(String),
   /// Report a feed that failed to fetch or parse
   FeedError { name: String, error: String },
   /// All feeds finished fetching
@@ -111,8 +119,8 @@ impl LoadingState {
 }
 
 pub struct App {
-  feeds: Vec<Feed>,                  // Raw feeds from cache/fetch
-  display_feeds: Vec<DisplayFeed>,   // Combined query + regular feeds for display
+  feeds: Vec<Feed>,
+  display_feeds: Vec<DisplayFeed>,
   feed_config: Vec<FeedConfig>,
   query_config: Vec<QueryFeed>,
   feed_index: usize,
@@ -139,12 +147,9 @@ impl App {
     feed_tx: mpsc::UnboundedSender<FeedUpdate>,
     cache: FeedCache,
   ) -> Self {
-    // Set initial loading state based on whether we have cached feeds
     let is_loading = feeds.is_empty();
-    
-    // Build initial display feeds
     let display_feeds = Self::build_display_feeds(&feeds, &query_config);
-    
+
     Self {
       feeds,
       display_feeds,
@@ -174,19 +179,15 @@ impl App {
 
   /// Build display feeds by combining query feeds and regular feeds
   fn build_display_feeds(feeds: &[Feed], query_config: &[QueryFeed]) -> Vec<DisplayFeed> {
-    let mut display_feeds = Vec::new();
+    let mut display_feeds: Vec<DisplayFeed> = query_config
+      .iter()
+      .map(|qf| DisplayFeed::Query {
+        name: qf.name.clone(),
+        query: qf.query.clone(),
+        entries: query::apply_query(feeds, &qf.query),
+      })
+      .collect();
 
-    // Add query feeds first (they appear at the top)
-    for query in query_config {
-      let entries = query::apply_query(feeds, &query.query);
-      display_feeds.push(DisplayFeed::Query {
-        name: query.name.clone(),
-        query: query.query.clone(),
-        entries,
-      });
-    }
-
-    // Add regular feeds
     for feed in feeds {
       display_feeds.push(DisplayFeed::Regular(feed.clone()));
     }
@@ -196,103 +197,40 @@ impl App {
 
   /// Rebuild display feeds after feeds change
   fn rebuild_display_feeds(&mut self) {
-    self.display_feeds = Self::build_display_feeds(&self.feeds, &self.query_config);
+    let query_config = self.query_config.clone();
+    self.display_feeds = Self::build_display_feeds(&self.feeds, &query_config);
   }
 
   pub fn should_exit(&self) -> bool {
     self.exit
   }
 
-  pub fn loading_state(&self) -> &LoadingState {
-    &self.loading_state
-  }
-
-  pub fn current_feed(&self) -> Option<&str> {
-    self.current_feed.as_deref()
-  }
-
-  pub fn feed_errors(&self) -> &[FeedError] {
-    &self.feed_errors
-  }
-
-  pub fn show_error_popup(&self) -> bool {
-    self.show_error_popup
-  }
-
-  /// Handle feed updates from background tasks
   pub fn handle_feed_update(&mut self, update: FeedUpdate) {
     match update {
       FeedUpdate::Replace(new_feeds) => {
-        // Save each feed to cache with its position from config
-        for feed in &new_feeds {
-          // Find the position of this feed in the original config
-          let position = self
-            .feed_config
-            .iter()
-            .position(|config| config.link == feed.url)
-            .unwrap_or(0);
-
-          if let Err(e) = self.cache.save_feed(feed, position) {
+        // Cache each feed
+        for (i, feed) in new_feeds.iter().enumerate() {
+          if let Err(e) = self.cache.save_feed(feed, i) {
             eprintln!("Failed to cache feed {}: {}", feed.title, e);
           }
         }
-
-        // Merge new feeds with existing feeds (don't replace, merge by URL)
-        let mut merged_feeds = self.feeds.clone();
-        
-        for new_feed in new_feeds {
-          // Find if this feed already exists
-          if let Some(existing) = merged_feeds.iter_mut().find(|f| f.url == new_feed.url) {
-            // Update existing feed
-            *existing = new_feed;
-          } else {
-            // Add new feed
-            merged_feeds.push(new_feed);
-          }
-        }
-
-        // Sort feeds by their config order before displaying
-        merged_feeds.sort_by_key(|feed| {
-          self
-            .feed_config
-            .iter()
-            .position(|config| config.link == feed.url)
-            .unwrap_or(usize::MAX)
-        });
-
-        self.feeds = merged_feeds;
-        self.rebuild_display_feeds(); // Rebuild display feeds with new data
-        self.loading_state.stop();
-        self.current_feed = None;
-
-        // Reset selection if current index is out of bounds
-        if self.feed_index >= self.display_feeds.len() && !self.display_feeds.is_empty() {
-          self.feed_index = 0;
-          self.feed_list_state.select(Some(0));
-        }
-
-        // Show error popup if there were errors
-        if !self.feed_errors.is_empty() {
-          self.show_error_popup = true;
-        }
+        self.feeds = new_feeds;
+        self.rebuild_display_feeds();
       }
-      FeedUpdate::UpdateFeed(index, feed) => {
-        // Find the position of this feed in the original config
+      FeedUpdate::UpdateFeed(_, feed) => {
         let position = self
-          .feed_config
+          .feeds
           .iter()
-          .position(|config| config.link == feed.url)
-          .unwrap_or(0);
+          .position(|f| f.url == feed.url)
+          .unwrap_or(self.feeds.len());
 
-        // Save to cache
         if let Err(e) = self.cache.save_feed(&feed, position) {
           eprintln!("Failed to cache feed {}: {}", feed.title, e);
         }
 
-        // Update in the feeds list
         if let Some(existing) = self.feeds.iter_mut().find(|f| f.url == feed.url) {
           *existing = feed;
-          self.rebuild_display_feeds(); // Rebuild to update query feeds too
+          self.rebuild_display_feeds();
         }
       }
       FeedUpdate::FetchingFeed(name) => {
@@ -311,7 +249,7 @@ impl App {
   /// Trigger a refresh of all feeds
   pub fn refresh_feeds(&mut self) {
     if self.loading_state.is_loading {
-      return; // Already refreshing
+      return;
     }
 
     self.loading_state.start();
@@ -328,7 +266,6 @@ impl App {
   pub fn render(&mut self, frame: &mut Frame) {
     let area = frame.area();
 
-    // Render based on current state
     match self.state {
       AppState::ViewingEntry => {
         if let Some(display_feed) = self.display_feeds.get(self.feed_index) {
@@ -367,14 +304,13 @@ impl App {
   }
 
   pub fn handle_key(&mut self, key: KeyEvent) {
-    // Close error popup if open
     if self.show_error_popup {
       match key.code {
         KeyCode::Esc | KeyCode::Char('e') | KeyCode::Char('E') | KeyCode::Enter => {
           self.show_error_popup = false;
           return;
         }
-        _ => return, // Consume all other keys when popup is open
+        _ => return,
       }
     }
 
@@ -445,6 +381,10 @@ impl App {
         self.entry_list_state.select(Some(0));
       }
       AppState::BrowsingEntries => {
+        // Mark the selected entry as read before viewing it
+        if let Some(entry_idx) = self.entry_list_state.selected() {
+          self.mark_selected_entry_read(entry_idx);
+        }
         self.state = AppState::ViewingEntry;
         self.entry_scroll = 0;
       }
@@ -461,6 +401,85 @@ impl App {
         self.state = AppState::BrowsingFeeds;
       }
       AppState::BrowsingFeeds => {}
+    }
+  }
+
+  /// Mark the entry at `entry_idx` in the current feed as read,
+  /// both in-memory and in the database.
+  fn mark_selected_entry_read(&mut self, entry_idx: usize) {
+    let feed_idx = self.feed_index;
+
+    // Collect the info we need before mutably borrowing display_feeds
+    let info = self
+      .display_feeds
+      .get(feed_idx)
+      .and_then(|df| df.entries().get(entry_idx))
+      .map(|e| {
+        (
+          e.title.clone(),
+          e.published.clone(),
+          e.feed_title.clone(),
+          e.read,
+        )
+      });
+
+    let (title, published, feed_title_opt, already_read) = match info {
+      Some(i) => i,
+      None => return,
+    };
+
+    if already_read {
+      return; // Nothing to do
+    }
+
+    // Persist to DB and update in-memory for Regular feeds
+    match self.display_feeds.get(feed_idx) {
+      Some(DisplayFeed::Regular(feed)) => {
+        let url = feed.url.clone();
+        let _ = self
+          .cache
+          .mark_entry_read(&url, &title, published.as_deref());
+
+        // Update in-memory: display_feeds
+        if let Some(DisplayFeed::Regular(feed)) = self.display_feeds.get_mut(feed_idx) {
+          if let Some(entry) = feed.entries.get_mut(entry_idx) {
+            entry.read = true;
+          }
+        }
+        // Mirror into self.feeds
+        if let Some(raw) = self.feeds.iter_mut().find(|f| f.url == url) {
+          if let Some(entry) = raw.entries.get_mut(entry_idx) {
+            entry.read = true;
+          }
+        }
+      }
+      Some(DisplayFeed::Query { .. }) => {
+        // For query feeds, find the source feed by feed_title
+        if let Some(source_title) = feed_title_opt {
+          if let Some(raw) = self.feeds.iter_mut().find(|f| f.title == source_title) {
+            let url = raw.url.clone();
+            // Find the entry in the raw feed
+            if let Some(raw_entry) = raw
+              .entries
+              .iter_mut()
+              .find(|e| e.title == title && e.published == published)
+            {
+              raw_entry.read = true;
+              let _ =
+                self
+                  .cache
+                  .mark_entry_read(&url, &raw_entry.title, raw_entry.published.as_deref());
+            }
+          }
+        }
+        // Update the query feed entry in-memory
+        if let Some(DisplayFeed::Query { entries, .. }) = self.display_feeds.get_mut(feed_idx) {
+          if let Some(entry) = entries.get_mut(entry_idx) {
+            entry.read = true;
+          }
+        }
+      }
+      None => {}
     }
   }
 }
