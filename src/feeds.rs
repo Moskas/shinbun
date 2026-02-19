@@ -131,11 +131,16 @@ pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {
 
       let published = e.published.or(e.updated).map(|dt| dt.to_rfc3339());
 
-      let text = e
-        .summary
-        .map(|s| s.content)
-        .or_else(|| e.content.and_then(|c| c.body))
+      let html_content = e
+        .content
+        .as_ref()
+        .and_then(|c| c.body.clone())
+        .or_else(|| e.summary.as_ref().map(|s| s.content.clone()))
         .unwrap_or_default();
+
+      // Convert HTML to plain text with no wrapping
+      let text = html2text::from_read(html_content.as_bytes(), usize::MAX)
+        .unwrap_or_else(|_| String::from("Failed to parse content"));
 
       let links = e.links.into_iter().map(|l| l.href).collect();
 
