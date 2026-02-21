@@ -102,6 +102,8 @@ pub fn render(
     "<q> ".bold(),
     " Refresh ".into(),
     "<r> ".bold(),
+    " Mark read/unread ".into(),
+    "<m> ".bold(),
   ];
 
   if !feed_errors.is_empty() {

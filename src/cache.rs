@@ -60,13 +60,29 @@ impl FeedCache {
       )?;
     }
 
-    // Create index for faster lookups
+    // Create index for faster feed lookups
     conn.execute("CREATE INDEX IF NOT EXISTS idx_feed_url ON feeds(url)", [])?;
+
+    // Unique index that drives incremental upserts in save_feed.
+    // COALESCE maps NULL published dates to '' so the uniqueness check
+    // works correctly even when published is absent.
+    conn.execute(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_entry_unique
+       ON entries(feed_id, title, COALESCE(published, ''))",
+      [],
+    )?;
 
     Ok(())
   }
 
-  /// Save or update a feed and its entries, preserving existing read state
+  /// Save or update a feed and its entries incrementally.
+  ///
+  /// - The feed row itself is updated in-place (keeping its primary key so
+  ///   the ON DELETE CASCADE on entries is never accidentally triggered).
+  /// - Entries that already exist in the DB are updated with fresh content
+  ///   fields (text, links, media) but their `read` flag is left untouched.
+  /// - Entries that have aged out of the remote feed are kept in the DB so
+  ///   the user never loses history or read state.
   pub fn save_feed(&self, feed: &Feed, position: usize) -> Result<()> {
     let now = chrono::Utc::now().timestamp();
     let tags_json = feed
@@ -74,53 +90,40 @@ impl FeedCache {
       .as_ref()
       .map(|t| serde_json::to_string(t).unwrap_or_default());
 
-    // Insert or replace the feed
+    // Update the feed row without replacing it.  INSERT OR REPLACE would
+    // delete + re-insert, assigning a new primary key and cascade-deleting
+    // every entry for this feed — exactly the bug we're fixing.
     self.conn.execute(
-      "INSERT OR REPLACE INTO feeds (url, title, last_fetched, tags, position)
-       VALUES (?1, ?2, ?3, ?4, ?5)",
+      "INSERT INTO feeds (url, title, last_fetched, tags, position)
+       VALUES (?1, ?2, ?3, ?4, ?5)
+       ON CONFLICT(url) DO UPDATE SET
+         title        = excluded.title,
+         last_fetched = excluded.last_fetched,
+         tags         = excluded.tags,
+         position     = excluded.position",
       params![feed.url, feed.title, now, tags_json, position as i64],
     )?;
 
-    // Get the feed ID
     let feed_id: i64 = self.conn.query_row(
       "SELECT id FROM feeds WHERE url = ?1",
       params![feed.url],
       |row| row.get(0),
     )?;
 
-    // Collect existing read states keyed by (title, published) before deleting
-    let mut read_states: std::collections::HashMap<(String, Option<String>), bool> =
-      std::collections::HashMap::new();
-    {
-      let mut stmt = self
-        .conn
-        .prepare("SELECT title, published, read FROM entries WHERE feed_id = ?1")?;
-      let rows = stmt.query_map(params![feed_id], |row| {
-        Ok((
-          row.get::<_, String>(0)?,
-          row.get::<_, Option<String>>(1)?,
-          row.get::<_, i64>(2)?,
-        ))
-      })?;
-      for row in rows.flatten() {
-        read_states.insert((row.0, row.1), row.2 != 0);
-      }
-    }
-
-    // Delete old entries for this feed
-    self
-      .conn
-      .execute("DELETE FROM entries WHERE feed_id = ?1", params![feed_id])?;
-
-    // Insert new entries, restoring previously read state where available
+    // Upsert each entry from the freshly fetched feed:
+    //   • New entries are inserted as unread.
+    //   • Existing entries (matched by feed_id + title + published) have their
+    //     content refreshed but their `read` flag is never modified.
     for entry in &feed.entries {
       let links_json = serde_json::to_string(&entry.links).unwrap_or_default();
-      let key = (entry.title.clone(), entry.published.clone());
-      let was_read = read_states.get(&key).copied().unwrap_or(entry.read);
-
       self.conn.execute(
         "INSERT INTO entries (feed_id, title, published, text, links, media, read)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)
+         ON CONFLICT(feed_id, title, COALESCE(published, '')) DO UPDATE SET
+           text  = excluded.text,
+           links = excluded.links,
+           media = excluded.media
+           -- `read` is intentionally omitted: never reset on re-fetch",
         params![
           feed_id,
           entry.title,
@@ -128,7 +131,6 @@ impl FeedCache {
           entry.text,
           links_json,
           entry.media,
-          was_read as i64
         ],
       )?;
     }
@@ -153,9 +155,24 @@ impl FeedCache {
     Ok(())
   }
 
+  pub fn mark_entry_unread(
+    &self,
+    feed_url: &str,
+    entry_title: &str,
+    published: Option<&str>,
+  ) -> Result<()> {
+    self.conn.execute(
+      "UPDATE entries SET read = 0
+             WHERE feed_id = (SELECT id FROM feeds WHERE url = ?1)
+               AND title = ?2
+               AND (published = ?3 OR (published IS NULL AND ?3 IS NULL))",
+      params![feed_url, entry_title, published],
+    )?;
+    Ok(())
+  }
+
   /// Load a feed from cache by URL
   pub fn load_feed(&self, url: &str) -> Result<Option<Feed>> {
-    // Try to get the feed
     let feed_result: Result<(i64, String, String, Option<String>)> = self.conn.query_row(
       "SELECT id, title, url, tags FROM feeds WHERE url = ?1",
       params![url],
@@ -168,10 +185,8 @@ impl FeedCache {
       Err(e) => return Err(e),
     };
 
-    // Parse tags
     let tags = tags_json.and_then(|json| serde_json::from_str(&json).ok());
 
-    // Load entries for this feed
     let mut stmt = self.conn.prepare(
       "SELECT title, published, text, links, media, read
        FROM entries
@@ -232,7 +247,6 @@ impl FeedCache {
     for (feed_id, url, title, tags_json) in feed_data {
       let tags = tags_json.and_then(|json| serde_json::from_str(&json).ok());
 
-      // Load entries for this feed
       let mut entry_stmt = self.conn.prepare(
         "SELECT title, published, text, links, media, read
          FROM entries
