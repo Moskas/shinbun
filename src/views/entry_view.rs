@@ -78,7 +78,7 @@ pub fn render(
           .alignment(Alignment::Left)
           .position(Position::Bottom),
       )
-      .title_bottom(Line::from(" Quit <q> ").blue().right_aligned())
+      .title_bottom(Line::from(vec![" Quit ".into(), "<q> ".bold()]).right_aligned())
       .borders(Borders::ALL)
       .border_style(Style::new().blue())
       .border_set(border::PLAIN)
@@ -90,7 +90,7 @@ pub fn render(
           .alignment(Alignment::Left)
           .position(Position::Bottom),
       )
-      .title_bottom(Line::from(" Quit <q> ").blue().right_aligned())
+      .title_bottom(Line::from(vec![" Quit ".into(), " <q> ".bold()]).right_aligned())
   };
 
   let inner_area = outer_block.inner(area);
@@ -108,7 +108,7 @@ pub fn render(
   } else {
     Block::default()
       .title(" Entry ".green())
-      .padding(Padding::symmetric(4, 1))
+      .padding(Padding::symmetric(4, 0))
   };
 
   // Calculate text area dimensions (now using full width)

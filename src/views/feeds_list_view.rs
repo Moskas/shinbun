@@ -113,37 +113,10 @@ pub fn render(
 
   let instructions = Title::from(Line::from(instruction_spans));
 
-  let status_msg = if loading_state.is_loading {
-    let spinner = loading_state.spinner_frame();
-    if let Some(feed_name) = current_feed {
-      let display_name = if feed_name.len() > 30 {
-        format!("{}...", &feed_name[..27])
-      } else {
-        feed_name.to_string()
-      };
-      format!(" {} Fetching: {} ", spinner, display_name)
-    } else {
-      let elapsed = loading_state.elapsed_secs();
-      if elapsed > 0 {
-        format!(" {} Loading... ({}s) ", spinner, elapsed)
-      } else {
-        format!(" {} Loading... ", spinner)
-      }
-    }
-  } else if feeds.is_empty() {
-    " No feeds loaded - Press 'r' ".to_string()
-  } else {
-    format!(" {} feeds loaded ", feeds.len())
-  };
-
-  let status_title = Title::from(status_msg.cyan())
-    .alignment(Alignment::Right)
-    .position(Position::Top);
-
+  // Outer block no longer shows status in the border — that goes in the popup
   let outer_block = if show_borders {
     Block::default()
       .title(title.alignment(Alignment::Left))
-      .title(status_title)
       .title(
         instructions
           .alignment(Alignment::Left)
@@ -155,7 +128,6 @@ pub fn render(
   } else {
     Block::default()
       .title(title.alignment(Alignment::Left))
-      .title(status_title)
       .title(
         instructions
           .alignment(Alignment::Left)
@@ -192,6 +164,11 @@ pub fn render(
 
   if show_error_popup {
     render_error_popup(frame, area, feed_errors);
+  }
+
+  // Show loading popup in top-right while fetching and briefly after completion
+  if loading_state.should_show_popup() {
+    render_loading_popup(frame, area, loading_state, current_feed, feeds);
   }
 }
 
@@ -326,9 +303,7 @@ fn render_single_pane(
 /// Create a styled block for the feeds list
 fn create_feed_block(count: usize, show_borders: bool) -> Block<'static> {
   let title = Title::from(" Feeds ".green());
-  let count_title = Title::from(format!(" {} ", count).yellow())
-    .alignment(Alignment::Right)
-    .position(Position::Top);
+  let count_title = Title::from(format!(" {} ", count).yellow()).position(Position::Top);
 
   if show_borders {
     Block::default()
@@ -345,9 +320,7 @@ fn create_feed_block(count: usize, show_borders: bool) -> Block<'static> {
 /// Create a styled block for the entries list
 fn create_entry_block(count: usize, show_borders: bool) -> Block<'static> {
   let title = Title::from(" Entries ".green());
-  let count_title = Title::from(format!(" {} ", count).yellow())
-    .alignment(Alignment::Right)
-    .position(Position::Top);
+  let count_title = Title::from(format!(" {} ", count).yellow()).position(Position::Top);
 
   if show_borders {
     Block::default()
@@ -394,6 +367,70 @@ fn render_error_popup(frame: &mut Frame, area: Rect, feed_errors: &[FeedError]) 
         .border_set(border::PLAIN),
     )
     .wrap(Wrap { trim: false });
+
+  popup.render(popup_area, frame.buffer_mut());
+}
+
+/// Render the loading status popup in the top-right corner.
+/// Shown while fetching is in progress and for a few seconds after completion.
+fn render_loading_popup(
+  frame: &mut Frame,
+  area: Rect,
+  loading_state: &LoadingState,
+  current_feed: Option<&str>,
+  feeds: &[DisplayFeed],
+) {
+  let status_line = if loading_state.is_loading {
+    let spinner = loading_state.spinner_frame();
+    if let Some(feed_name) = current_feed {
+      let display_name = if feed_name.len() > 28 {
+        format!("{}...", &feed_name[..25])
+      } else {
+        feed_name.to_string()
+      };
+      format!(" {} Fetching: {} ", spinner, display_name)
+    } else {
+      let elapsed = loading_state.elapsed_secs();
+      if elapsed > 0 {
+        format!(" {} Loading... ({}s) ", spinner, elapsed)
+      } else {
+        format!(" {} Loading... ", spinner)
+      }
+    }
+  } else {
+    // Just finished — show loaded count
+    format!(" ✓ {} feeds loaded ", feeds.len())
+  };
+
+  // Size the popup to fit its content (title border takes 2 cols of width, 2 rows of height)
+  let popup_width = (status_line.len() as u16 + 2).min(area.width.saturating_sub(2));
+  let popup_height = 3u16; // top border + 1 content row + bottom border
+
+  // Position: top-right corner with a 1-cell margin
+  let popup_x = area.x + area.width.saturating_sub(popup_width + 1);
+  let popup_y = area.y + 1;
+
+  let popup_area = Rect {
+    x: popup_x,
+    y: popup_y,
+    width: popup_width,
+    height: popup_height,
+  };
+
+  Clear.render(popup_area, frame.buffer_mut());
+
+  let (border_style, text_style) = if loading_state.is_loading {
+    (Style::new().cyan(), Style::new().cyan())
+  } else {
+    (Style::new().green(), Style::new().green())
+  };
+
+  let popup = Paragraph::new(Line::from(status_line).style(text_style)).block(
+    Block::default()
+      .borders(Borders::ALL)
+      .border_style(border_style)
+      .border_set(border::PLAIN),
+  );
 
   popup.render(popup_area, frame.buffer_mut());
 }

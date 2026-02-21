@@ -84,6 +84,7 @@ pub struct FeedError {
 pub struct LoadingState {
   pub is_loading: bool,
   pub start_time: Instant,
+  pub finish_time: Option<Instant>,
 }
 
 impl LoadingState {
@@ -91,20 +92,35 @@ impl LoadingState {
     Self {
       is_loading: true,
       start_time: Instant::now(),
+      finish_time: None,
     }
   }
 
   pub fn start(&mut self) {
     self.is_loading = true;
     self.start_time = Instant::now();
+    self.finish_time = None;
   }
 
   pub fn stop(&mut self) {
     self.is_loading = false;
+    self.finish_time = Some(Instant::now());
   }
 
   pub fn elapsed_secs(&self) -> u64 {
     self.start_time.elapsed().as_secs()
+  }
+
+  /// Returns true while loading, and for 3 seconds after loading finishes.
+  /// Used to decide whether to show the loading popup.
+  pub fn should_show_popup(&self) -> bool {
+    if self.is_loading {
+      return true;
+    }
+    if let Some(finish) = self.finish_time {
+      return finish.elapsed().as_secs() < 3;
+    }
+    false
   }
 
   pub fn spinner_frame(&self) -> &'static str {
