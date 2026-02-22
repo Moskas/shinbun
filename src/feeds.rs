@@ -12,16 +12,20 @@ pub struct Feed {
   pub tags: Option<Vec<String>>,
 }
 
+// ─── Entry ────────────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone)]
 pub struct FeedEntry {
   pub title: String,
   pub published: Option<String>,
   pub text: String,
   pub links: Vec<String>,
-  pub media: String,
+  pub media: Option<String>,      // Media attachment URL if present
   pub feed_title: Option<String>, // Source feed title (for query feeds)
   pub read: bool,                 // Whether this entry has been read
 }
+
+// ─── Fetching ─────────────────────────────────────────────────────────────────
 
 /// Fetch multiple feeds concurrently with progress reporting
 pub async fn fetch_feed_with_progress(
@@ -33,31 +37,24 @@ pub async fn fetch_feed_with_progress(
   for feed_config in feeds {
     let tx_clone = tx.clone();
     let task = tokio::spawn(async move {
-      // Report that we're fetching this feed
       let feed_name = feed_config
         .name
         .clone()
         .unwrap_or_else(|| feed_config.link.clone());
       let _ = tx_clone.send(FeedUpdate::FetchingFeed(feed_name.clone()));
 
-      // Fetch the feed
       match fetch_single_feed(&feed_config.link).await {
-        Ok(body) => {
-          // Parse the feed
-          match parse_single_feed(feed_config.clone(), &body) {
-            Some(feed) => Some(feed),
-            None => {
-              // Parsing failed
-              let _ = tx_clone.send(FeedUpdate::FeedError {
-                name: feed_name,
-                error: "Failed to parse feed".to_string(),
-              });
-              None
-            }
+        Ok(body) => match parse_single_feed(feed_config.clone(), &body) {
+          Some(feed) => Some(feed),
+          None => {
+            let _ = tx_clone.send(FeedUpdate::FeedError {
+              name: feed_name,
+              error: "Failed to parse feed".to_string(),
+            });
+            None
           }
-        }
+        },
         Err(err) => {
-          // Fetch failed
           let _ = tx_clone.send(FeedUpdate::FeedError {
             name: feed_name,
             error: format!("Failed to fetch: {}", err),
@@ -69,7 +66,6 @@ pub async fn fetch_feed_with_progress(
     tasks.push(task);
   }
 
-  // Wait for all tasks to complete
   let mut feed_list = Vec::new();
   for task in tasks {
     if let Ok(Some(feed)) = task.await {
@@ -77,7 +73,6 @@ pub async fn fetch_feed_with_progress(
     }
   }
 
-  // Send the final result
   let _ = tx.send(FeedUpdate::Replace(feed_list));
   let _ = tx.send(FeedUpdate::FetchComplete);
 }
@@ -99,6 +94,8 @@ async fn fetch_single_feed(url: &str) -> Result<String, ReqError> {
     Err(err) => Err(err),
   }
 }
+
+// ─── Parsing ──────────────────────────────────────────────────────────────────
 
 /// Parse feed results into structured Feed objects
 pub fn parse_feed(results: Vec<(FeedConfig, Result<String, ReqError>)>) -> Vec<Feed> {
@@ -139,19 +136,18 @@ pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {
         .or_else(|| e.summary.as_ref().map(|s| s.content.clone()))
         .unwrap_or_default();
 
-      // Convert HTML to plain text with no wrapping
       let text = html2text::from_read(html_content.as_bytes(), usize::MAX)
         .unwrap_or_else(|_| String::from("Failed to parse content"));
 
       let links = e.links.into_iter().map(|l| l.href).collect();
 
+      // Grab the first media URL if present — no type classification needed.
       let media = e
         .media
         .first()
         .and_then(|m| m.content.first())
         .and_then(|c| c.url.as_ref())
-        .map(|u| u.to_string())
-        .unwrap_or_default();
+        .map(|u| u.to_string());
 
       FeedEntry {
         title: entry_title,
@@ -160,7 +156,7 @@ pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {
         links,
         media,
         feed_title: None,
-        read: false, // New entries start as unread
+        read: false,
       }
     })
     .collect();

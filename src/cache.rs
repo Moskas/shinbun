@@ -92,7 +92,7 @@ impl FeedCache {
 
     // Update the feed row without replacing it.  INSERT OR REPLACE would
     // delete + re-insert, assigning a new primary key and cascade-deleting
-    // every entry for this feed — exactly the bug we're fixing.
+    // every entry for this feed.
     self.conn.execute(
       "INSERT INTO feeds (url, title, last_fetched, tags, position)
        VALUES (?1, ?2, ?3, ?4, ?5)
@@ -112,10 +112,11 @@ impl FeedCache {
 
     // Upsert each entry from the freshly fetched feed:
     //   • New entries are inserted as unread.
-    //   • Existing entries (matched by feed_id + title + published) have their
-    //     content refreshed but their `read` flag is never modified.
+    //   • Existing entries have their content refreshed but `read` is untouched.
     for entry in &feed.entries {
       let links_json = serde_json::to_string(&entry.links).unwrap_or_default();
+      let media_str = entry.media.as_deref().unwrap_or("");
+
       self.conn.execute(
         "INSERT INTO entries (feed_id, title, published, text, links, media, read)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)
@@ -130,7 +131,7 @@ impl FeedCache {
           entry.published,
           entry.text,
           links_json,
-          entry.media,
+          media_str,
         ],
       )?;
     }
@@ -147,9 +148,9 @@ impl FeedCache {
   ) -> Result<()> {
     self.conn.execute(
       "UPDATE entries SET read = 1
-             WHERE feed_id = (SELECT id FROM feeds WHERE url = ?1)
-               AND title = ?2
-               AND (published = ?3 OR (published IS NULL AND ?3 IS NULL))",
+       WHERE feed_id = (SELECT id FROM feeds WHERE url = ?1)
+         AND title = ?2
+         AND (published = ?3 OR (published IS NULL AND ?3 IS NULL))",
       params![feed_url, entry_title, published],
     )?;
     Ok(())
@@ -163,9 +164,9 @@ impl FeedCache {
   ) -> Result<()> {
     self.conn.execute(
       "UPDATE entries SET read = 0
-             WHERE feed_id = (SELECT id FROM feeds WHERE url = ?1)
-               AND title = ?2
-               AND (published = ?3 OR (published IS NULL AND ?3 IS NULL))",
+       WHERE feed_id = (SELECT id FROM feeds WHERE url = ?1)
+         AND title = ?2
+         AND (published = ?3 OR (published IS NULL AND ?3 IS NULL))",
       params![feed_url, entry_title, published],
     )?;
     Ok(())
@@ -200,10 +201,15 @@ impl FeedCache {
         let published: Option<String> = row.get(1)?;
         let text: String = row.get(2)?;
         let links_json: String = row.get(3)?;
-        let media: String = row.get(4)?;
+        let media_str: String = row.get(4)?;
         let read: i64 = row.get(5)?;
 
         let links: Vec<String> = serde_json::from_str(&links_json).unwrap_or_default();
+        let media = if media_str.is_empty() {
+          None
+        } else {
+          Some(media_str)
+        };
 
         Ok(FeedEntry {
           title,
@@ -260,10 +266,15 @@ impl FeedCache {
           let published: Option<String> = row.get(1)?;
           let text: String = row.get(2)?;
           let links_json: String = row.get(3)?;
-          let media: String = row.get(4)?;
+          let media_str: String = row.get(4)?;
           let read: i64 = row.get(5)?;
 
           let links: Vec<String> = serde_json::from_str(&links_json).unwrap_or_default();
+          let media = if media_str.is_empty() {
+            None
+          } else {
+            Some(media_str)
+          };
 
           Ok(FeedEntry {
             title,

@@ -8,6 +8,8 @@ use ratatui::{
   },
 };
 
+// ─── Date formatting ──────────────────────────────────────────────────────────
+
 /// Format a date string for display in entry list.
 /// Returns formatted date like "02 May" or a blank placeholder.
 fn format_entry_date(date_str: Option<&str>) -> String {
@@ -37,6 +39,8 @@ fn format_entry_date(date_str: Option<&str>) -> String {
   "     ".to_string()
 }
 
+// ─── Row builders ─────────────────────────────────────────────────────────────
+
 /// Build a Table Row for a feed.
 /// Columns: count  |  icon+title
 fn feed_row(feed: &DisplayFeed) -> Row<'static> {
@@ -57,28 +61,36 @@ fn feed_row(feed: &DisplayFeed) -> Row<'static> {
 }
 
 /// Build a Table Row for an entry.
-/// Columns: date  |  feed_title (query only)  |  title
 fn entry_row(entry: &crate::feeds::FeedEntry, is_query: bool) -> Row<'static> {
   let date = format_entry_date(entry.published.as_deref());
 
-  let source = if is_query {
-    entry.feed_title.clone().unwrap_or_default()
+  let date_cell = if entry.media.is_some() {
+    Cell::from(format!("{}", date)).style(Style::default().fg(Color::Cyan))
   } else {
-    String::new()
+    Cell::from(date)
   };
 
-  let style = if entry.read {
+  let title_style = if entry.read {
     Style::default().fg(Color::DarkGray)
   } else {
-    Style::default()
+    Style::default().bold()
   };
 
-  Row::new(vec![
-    Cell::from(date),
-    Cell::from(Text::from(source).alignment(Alignment::Center)),
-    Cell::from(entry.title.clone()),
-  ])
-  .style(style)
+  if is_query {
+    let source = entry.feed_title.clone().unwrap_or_default();
+    Row::new(vec![
+      date_cell,
+      Cell::from(Text::from(source).alignment(Alignment::Center))
+        .style(Style::default().fg(Color::Yellow)),
+      Cell::from(entry.title.clone()).style(title_style),
+    ])
+  } else {
+    Row::new(vec![
+      date_cell,
+      Cell::from(String::new()),
+      Cell::from(entry.title.clone()).style(title_style),
+    ])
+  }
 }
 
 // ─── Public render entry-point ────────────────────────────────────────────────
@@ -106,6 +118,10 @@ pub fn render(
     "<r> ".bold(),
     " Mark read/unread ".into(),
     "<m> ".bold(),
+    " Open link ".into(),
+    "<o> ".bold(),
+    " Play media ".into(),
+    "<p> ".bold(),
   ];
   if !feed_errors.is_empty() {
     instruction_spans.push(" Errors ".into());
@@ -203,7 +219,6 @@ fn render_dual_pane(
     feeds.iter().map(feed_row).collect()
   };
 
-  // Count column width: widen enough for "unread/total" e.g. "999/999"
   let count_width = feeds
     .iter()
     .map(|f| {
@@ -213,12 +228,9 @@ fn render_dual_pane(
     })
     .max()
     .unwrap_or(5)
-    .max(5); // at least "0/000"
+    .max(5);
 
-  let feed_widths = [
-    Constraint::Length(count_width),
-    Constraint::Fill(1), // title
-  ];
+  let feed_widths = [Constraint::Length(count_width), Constraint::Fill(1)];
 
   let feeds_table = Table::new(feed_rows, feed_widths)
     .block(create_feed_block(feeds.len(), show_borders))
@@ -236,10 +248,9 @@ fn render_dual_pane(
   };
 
   let (entry_rows, is_query, source_width) = build_entry_rows(feeds, selected_feed_idx);
-
   let entry_widths = entry_column_widths(is_query, source_width);
-
   let entry_count = entry_rows.len();
+
   let entries_table = Table::new(entry_rows, entry_widths)
     .block(create_entry_block(entry_count, show_borders))
     .column_spacing(2)
@@ -297,7 +308,6 @@ fn render_single_pane(
     AppState::BrowsingEntries | AppState::ViewingEntry => {
       let selected_feed_idx = feed_state.selected().unwrap_or(0);
       let (entry_rows, is_query, source_width) = build_entry_rows(feeds, selected_feed_idx);
-
       let entry_widths = entry_column_widths(is_query, source_width);
       let entry_count = entry_rows.len();
 
@@ -312,6 +322,9 @@ fn render_single_pane(
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Width of the date column in the entries table.
+const DATE_COL_WIDTH: u16 = 6;
 
 /// Build entry rows, returning (rows, is_query, max_source_col_width).
 fn build_entry_rows(
@@ -333,7 +346,6 @@ fn build_entry_rows(
 
     let is_query = feed.is_query();
 
-    // Compute widest source label so all rows align.
     let source_width: u16 = if is_query {
       feed
         .entries()
@@ -361,15 +373,15 @@ fn build_entry_rows(
 fn entry_column_widths(is_query: bool, source_width: u16) -> Vec<Constraint> {
   if is_query && source_width > 0 {
     vec![
-      Constraint::Length(6),            // date  "DD Mon"
-      Constraint::Length(source_width), // feed name
-      Constraint::Fill(1),              // entry title
+      Constraint::Length(DATE_COL_WIDTH), // badge + date  "♫ 02 May"
+      Constraint::Length(source_width),   // feed name (query feeds only)
+      Constraint::Fill(1),                // entry title
     ]
   } else {
     vec![
-      Constraint::Length(6), // date
-      Constraint::Length(0), // hidden source col
-      Constraint::Fill(1),   // entry title
+      Constraint::Length(DATE_COL_WIDTH), // badge + date
+      Constraint::Length(0),              // hidden source col
+      Constraint::Fill(1),                // entry title
     ]
   }
 }

@@ -6,6 +6,7 @@ use crate::views::{entry_view, feeds_list_view};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
 use ratatui::widgets::TableState;
+use std::process::Command;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
@@ -44,14 +45,6 @@ impl DisplayFeed {
       DisplayFeed::Query { entries, .. } => entries,
     }
   }
-
-  /// Get mutable entries for this feed
-  //pub fn entries_mut(&mut self) -> &mut Vec<FeedEntry> {
-  //  match self {
-  //    DisplayFeed::Regular(feed) => &mut feed.entries,
-  //    DisplayFeed::Query { entries, .. } => entries,
-  //  }
-  //}
 
   /// Check if this is a query feed
   pub fn is_query(&self) -> bool {
@@ -222,15 +215,11 @@ impl App {
   pub fn handle_feed_update(&mut self, update: FeedUpdate) {
     match update {
       FeedUpdate::Replace(new_feeds) => {
-        // Persist new entries to cache (incremental upsert, read flags untouched)
         for (i, feed) in new_feeds.iter().enumerate() {
           if let Err(e) = self.cache.save_feed(feed, i) {
             eprintln!("Failed to cache feed {}: {}", feed.title, e);
           }
         }
-        // Reload from cache so in-memory state reflects the preserved read flags.
-        // Using `new_feeds` directly would reset every entry to `read: false`
-        // because that's what the parser produces for freshly fetched content.
         self.feeds = self.cache.load_all_feeds().unwrap_or(new_feeds);
         self.rebuild_display_feeds();
       }
@@ -245,8 +234,6 @@ impl App {
           eprintln!("Failed to cache feed {}: {}", feed.title, e);
         }
 
-        // Same as Replace: reload the single feed from cache so read state is
-        // preserved rather than replaced with the freshly parsed version.
         let reloaded = self
           .cache
           .load_feed(&feed.url)
@@ -348,15 +335,24 @@ impl App {
         }
       }
       KeyCode::Char('m') | KeyCode::Char('M') => match self.state {
-        AppState::BrowsingEntries => {
+        AppState::BrowsingEntries | AppState::ViewingEntry => {
           if let Some(entry_idx) = self.entry_list_state.selected() {
             self.toggle_selected_entry_read(entry_idx);
           }
         }
-        AppState::ViewingEntry => {
-          if let Some(entry_idx) = self.entry_list_state.selected() {
-            self.toggle_selected_entry_read(entry_idx);
-          }
+        _ => {}
+      },
+      // Open entry link in browser
+      KeyCode::Char('o') | KeyCode::Char('O') => match self.state {
+        AppState::BrowsingEntries | AppState::ViewingEntry => {
+          self.open_current_entry_in_browser();
+        }
+        _ => {}
+      },
+      // Open media attachment (podcast / video) in the configured player
+      KeyCode::Char('p') | KeyCode::Char('P') => match self.state {
+        AppState::BrowsingEntries | AppState::ViewingEntry => {
+          self.open_media_in_player();
         }
         _ => {}
       },
@@ -419,7 +415,6 @@ impl App {
         self.entry_list_state.select(Some(0));
       }
       AppState::BrowsingEntries => {
-        // Mark the selected entry as read before viewing it
         if let Some(entry_idx) = self.entry_list_state.selected() {
           self.mark_selected_entry_read(entry_idx);
         }
@@ -442,15 +437,77 @@ impl App {
     }
   }
 
-  /// Synchronise the `read` flag for an entry across every display feed and
-  /// the underlying `self.feeds` vec.  Call this after persisting to the DB.
-  ///
-  /// Matching is done by (feed_url, title, published) for regular feeds and
-  /// by (source_feed_title, title, published) for query feed entries.
-  /// Synchronise a `read` flag change across self.feeds and every DisplayFeed.
-  /// `read` is the new target state (true = read, false = unread).
+  // ─── Browser / player helpers ─────────────────────────────────────────────
+
+  /// Spawn a command, splitting the config string on whitespace to allow flags
+  /// like `"firefox --private-window"`.
+  fn spawn_cmd(cmd: &str, url: &str) {
+    let mut parts = cmd.split_whitespace();
+    if let Some(bin) = parts.next() {
+      let args: Vec<&str> = parts.collect();
+      if let Err(e) = Command::new(bin).args(args).arg(url).spawn() {
+        eprintln!("Failed to launch '{}': {}", cmd, e);
+      }
+    }
+  }
+
+  /// Open the first link of the currently selected entry in a web browser.
+  /// Uses `config.ui.browser` when set, otherwise the OS default.
+  fn open_current_entry_in_browser(&self) {
+    let entry_idx = match self.entry_list_state.selected() {
+      Some(i) => i,
+      None => return,
+    };
+
+    let url = self
+      .display_feeds
+      .get(self.feed_index)
+      .and_then(|df| df.entries().get(entry_idx))
+      .and_then(|e| e.links.first())
+      .cloned();
+
+    let url = match url {
+      Some(u) => u,
+      None => return,
+    };
+
+    if let Some(ref cmd) = self.ui_config.browser {
+      Self::spawn_cmd(cmd, &url);
+    } else if let Err(e) = open::that(&url) {
+      eprintln!("Failed to open URL in default browser: {}", e);
+    }
+  }
+
+  /// Open the media attachment of the currently selected entry.
+  /// Uses `config.ui.media_player` when set, otherwise the OS default.
+  fn open_media_in_player(&self) {
+    let entry_idx = match self.entry_list_state.selected() {
+      Some(i) => i,
+      None => return,
+    };
+
+    let url = self
+      .display_feeds
+      .get(self.feed_index)
+      .and_then(|df| df.entries().get(entry_idx))
+      .and_then(|e| e.media.clone());
+
+    let url = match url {
+      Some(u) => u,
+      None => return, // entry has no media attachment
+    };
+
+    if let Some(ref cmd) = self.ui_config.media_player {
+      Self::spawn_cmd(cmd, &url);
+    } else if let Err(e) = open::that(&url) {
+      eprintln!("Failed to open media URL with OS default: {}", e);
+    }
+  }
+
+  // ─── Read-state helpers ───────────────────────────────────────────────────
+
+  /// Synchronise a `read` flag change across `self.feeds` and every `DisplayFeed`.
   fn sync_read_state(&mut self, feed_url: &str, title: &str, published: Option<&str>, read: bool) {
-    // Update self.feeds and capture the source feed's title for query matching
     let source_feed_title = self
       .feeds
       .iter_mut()
@@ -466,7 +523,6 @@ impl App {
         raw.title.clone()
       });
 
-    // Update every DisplayFeed
     for display_feed in self.display_feeds.iter_mut() {
       match display_feed {
         DisplayFeed::Regular(feed) if feed.url == feed_url => {
@@ -495,7 +551,6 @@ impl App {
   }
 
   /// Toggle the read/unread state of the entry at `entry_idx`.
-  /// Works from both BrowsingEntries and ViewingEntry.
   fn toggle_selected_entry_read(&mut self, entry_idx: usize) {
     let feed_idx = self.feed_index;
 

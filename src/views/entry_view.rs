@@ -43,8 +43,8 @@ fn build_entry_content(feed_title: &str, entry: &FeedEntry) -> Vec<Line<'static>
     lines.push(Line::from(format!("Link: {}", entry.links.join(", "))).blue());
   }
 
-  if !entry.media.is_empty() {
-    lines.push(Line::from(format!("Media: {}", entry.media)).blue());
+  if let Some(ref url) = entry.media {
+    lines.push(Line::from(format!("Media: {}", url)).blue());
   }
 
   lines.push(Line::from("")); // separator
@@ -68,7 +68,12 @@ pub fn render(
 ) {
   // Create the outer container
   let title = Title::from(" Shinbun ".bold().yellow());
-  let instructions = Title::from(Line::from(vec![" Back ".into(), "<h> ".bold()]));
+  let instructions = Title::from(Line::from(vec![
+    " Back ".into(),
+    "<h> ".bold(),
+    " Open entry ".into(),
+    " <o>".bold(),
+  ]));
 
   let outer_block = if show_borders {
     Block::default()
