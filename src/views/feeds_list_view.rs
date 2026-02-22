@@ -4,12 +4,12 @@ use ratatui::{
   symbols::border,
   widgets::{
     block::{Position, Title},
-    Block, Borders, Clear, List, ListItem, ListState, Paragraph, StatefulWidget, Wrap,
+    Block, Borders, Cell, Clear, Padding, Paragraph, Row, StatefulWidget, Table, TableState, Wrap,
   },
 };
 
-/// Format a date string for display in entry list
-/// Returns formatted date like "02 May" or empty string if parsing fails
+/// Format a date string for display in entry list.
+/// Returns formatted date like "02 May" or a blank placeholder.
 fn format_entry_date(date_str: Option<&str>) -> String {
   let date_str = match date_str {
     Some(s) if !s.is_empty() => s,
@@ -19,74 +19,76 @@ fn format_entry_date(date_str: Option<&str>) -> String {
   if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(date_str) {
     return dt.format("%d %b").to_string();
   }
-
   if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(date_str) {
     return dt.format("%d %b").to_string();
   }
 
   use chrono::NaiveDate;
-
-  if let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
-    return date.format("%d %b").to_string();
+  if let Ok(d) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+    return d.format("%d %b").to_string();
   }
-
-  if let Ok(date) = NaiveDate::parse_from_str(date_str, "%d/%m/%Y") {
-    return date.format("%d %b").to_string();
+  if let Ok(d) = NaiveDate::parse_from_str(date_str, "%d/%m/%Y") {
+    return d.format("%d %b").to_string();
   }
-
-  if let Ok(date) = NaiveDate::parse_from_str(date_str, "%m/%d/%Y") {
-    return date.format("%d %b").to_string();
+  if let Ok(d) = NaiveDate::parse_from_str(date_str, "%m/%d/%Y") {
+    return d.format("%d %b").to_string();
   }
 
   "     ".to_string()
 }
 
-/// Build a ListItem for a feed, showing (unread/total) counts
-fn feed_list_item(feed: &DisplayFeed) -> ListItem<'static> {
+/// Build a Table Row for a feed.
+/// Columns: count  |  icon+title
+fn feed_row(feed: &DisplayFeed) -> Row<'static> {
   let total = feed.entries().len();
   let unread = feed.entries().iter().filter(|e| !e.read).count();
 
-  let label = if feed.is_query() {
-    format!(" ({}/{}) | 🔍 {}", unread, total, feed.title())
+  let count_str = format!("{}/{}", unread, total);
+  let icon = if feed.is_query() { "🔍 " } else { "" };
+  let title = format!("{}{}", icon, feed.title());
+
+  let style = if unread == 0 {
+    Style::default().fg(Color::DarkGray)
   } else {
-    format!(" ({}/{}) | {}", unread, total, feed.title())
+    Style::default()
   };
 
-  if unread == 0 {
-    ListItem::new(label).style(Style::default().fg(Color::DarkGray))
-  } else {
-    ListItem::new(label)
-  }
+  Row::new(vec![Cell::from(count_str), Cell::from(title)]).style(style)
 }
 
-/// Build a ListItem for an entry, applying gray style if already read
-fn entry_list_item(entry: &crate::feeds::FeedEntry, is_query: bool) -> ListItem<'static> {
+/// Build a Table Row for an entry.
+/// Columns: date  |  feed_title (query only)  |  title
+fn entry_row(entry: &crate::feeds::FeedEntry, is_query: bool) -> Row<'static> {
   let date = format_entry_date(entry.published.as_deref());
 
-  let text = if is_query {
-    if let Some(feed_title) = &entry.feed_title {
-      format!(" {} [{}] {}", date, feed_title, entry.title)
-    } else {
-      format!(" {} {}", date, entry.title)
-    }
+  let source = if is_query {
+    entry.feed_title.clone().unwrap_or_default()
   } else {
-    format!(" {} {}", date, entry.title)
+    String::new()
   };
 
-  if entry.read {
-    ListItem::new(text).style(Style::default().fg(Color::DarkGray))
+  let style = if entry.read {
+    Style::default().fg(Color::DarkGray)
   } else {
-    ListItem::new(text)
-  }
+    Style::default()
+  };
+
+  Row::new(vec![
+    Cell::from(date),
+    Cell::from(Text::from(source).alignment(Alignment::Center)),
+    Cell::from(entry.title.clone()),
+  ])
+  .style(style)
 }
 
-/// Render the feeds and entries list view
+// ─── Public render entry-point ────────────────────────────────────────────────
+
 pub fn render(
   frame: &mut Frame,
   area: Rect,
   feeds: &[DisplayFeed],
-  feed_state: &mut ListState,
-  entry_state: &mut ListState,
+  feed_state: &mut TableState,
+  entry_state: &mut TableState,
   app_state: AppState,
   split_view: bool,
   show_borders: bool,
@@ -105,15 +107,12 @@ pub fn render(
     " Mark read/unread ".into(),
     "<m> ".bold(),
   ];
-
   if !feed_errors.is_empty() {
     instruction_spans.push(" Errors ".into());
     instruction_spans.push("<e> ".bold().red());
   }
-
   let instructions = Title::from(Line::from(instruction_spans));
 
-  // Outer block no longer shows status in the border — that goes in the popup
   let outer_block = if show_borders {
     Block::default()
       .title(title.alignment(Alignment::Left))
@@ -165,146 +164,221 @@ pub fn render(
   if show_error_popup {
     render_error_popup(frame, area, feed_errors);
   }
-
-  // Show loading popup in top-right while fetching and briefly after completion
   if loading_state.should_show_popup() {
     render_loading_popup(frame, area, loading_state, current_feed, feeds);
   }
 }
 
-/// Render dual-pane layout (feeds on left, entries on right)
+// ─── Dual-pane ────────────────────────────────────────────────────────────────
+
 fn render_dual_pane(
   frame: &mut Frame,
   area: Rect,
   feeds: &[DisplayFeed],
-  feed_state: &mut ListState,
-  entry_state: &mut ListState,
+  feed_state: &mut TableState,
+  entry_state: &mut TableState,
   app_state: AppState,
   show_borders: bool,
   loading_state: &LoadingState,
 ) {
   let chunks = Layout::default()
     .direction(Direction::Horizontal)
-    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+    .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
     .split(area);
 
-  // Render feeds list
-  let feed_items: Vec<ListItem> = if feeds.is_empty() {
-    if loading_state.is_loading {
-      let spinner = loading_state.spinner_frame();
-      vec![ListItem::new(format!(" {} Loading feeds...", spinner))]
-    } else {
-      vec![ListItem::new(
-        " No feeds configured. Press 'r' to load.".to_string(),
-      )]
-    }
-  } else {
-    feeds.iter().map(|feed| feed_list_item(feed)).collect()
-  };
-
+  // ── Feeds table ──────────────────────────────────────────────────────────
   let feed_highlight = match app_state {
     AppState::BrowsingFeeds => Style::default().bg(Color::Yellow).fg(Color::Black),
     _ => Style::default().yellow(),
   };
 
-  let feeds_list = List::new(feed_items)
+  let feed_rows: Vec<Row> = if feeds.is_empty() {
+    let msg = if loading_state.is_loading {
+      format!(" {} Loading feeds...", loading_state.spinner_frame())
+    } else {
+      " No feeds configured. Press 'r' to load.".to_string()
+    };
+    vec![Row::new(vec![Cell::from(""), Cell::from(msg)])]
+  } else {
+    feeds.iter().map(feed_row).collect()
+  };
+
+  // Count column width: widen enough for "unread/total" e.g. "999/999"
+  let count_width = feeds
+    .iter()
+    .map(|f| {
+      let total = f.entries().len();
+      let unread = f.entries().iter().filter(|e| !e.read).count();
+      format!("{}/{}", unread, total).len() as u16
+    })
+    .max()
+    .unwrap_or(5)
+    .max(5); // at least "0/000"
+
+  let feed_widths = [
+    Constraint::Length(count_width),
+    Constraint::Fill(1), // title
+  ];
+
+  let feeds_table = Table::new(feed_rows, feed_widths)
     .block(create_feed_block(feeds.len(), show_borders))
+    .column_spacing(2)
     .highlight_style(feed_highlight);
 
-  StatefulWidget::render(feeds_list, chunks[0], frame.buffer_mut(), feed_state);
+  StatefulWidget::render(feeds_table, chunks[0], frame.buffer_mut(), feed_state);
 
-  // Render entries list
+  // ── Entries table ────────────────────────────────────────────────────────
   let selected_feed_idx = feed_state.selected().unwrap_or(0);
-  let entry_items: Vec<ListItem> = if let Some(feed) = feeds.get(selected_feed_idx) {
-    if feed.entries().is_empty() {
-      vec![ListItem::new(" No entries".to_string())]
-    } else {
-      let is_query = feed.is_query();
-      feed
-        .entries()
-        .iter()
-        .map(|entry| entry_list_item(entry, is_query))
-        .collect()
-    }
-  } else {
-    vec![]
-  };
 
   let entry_highlight = match app_state {
     AppState::BrowsingEntries => Style::default().bg(Color::Yellow).fg(Color::Black).bold(),
     _ => Style::default(),
   };
 
-  let entries_list = List::new(entry_items.clone())
-    .block(create_entry_block(entry_items.len(), show_borders))
+  let (entry_rows, is_query, source_width) = build_entry_rows(feeds, selected_feed_idx);
+
+  let entry_widths = entry_column_widths(is_query, source_width);
+
+  let entry_count = entry_rows.len();
+  let entries_table = Table::new(entry_rows, entry_widths)
+    .block(create_entry_block(entry_count, show_borders))
+    .column_spacing(2)
     .highlight_style(entry_highlight);
 
-  StatefulWidget::render(entries_list, chunks[1], frame.buffer_mut(), entry_state);
+  StatefulWidget::render(entries_table, chunks[1], frame.buffer_mut(), entry_state);
 }
 
-/// Render single-pane layout (one list at a time)
+// ─── Single-pane ──────────────────────────────────────────────────────────────
+
 fn render_single_pane(
   frame: &mut Frame,
   area: Rect,
   feeds: &[DisplayFeed],
-  feed_state: &mut ListState,
-  entry_state: &mut ListState,
+  feed_state: &mut TableState,
+  entry_state: &mut TableState,
   app_state: AppState,
   show_borders: bool,
   loading_state: &LoadingState,
 ) {
   match app_state {
     AppState::BrowsingFeeds => {
-      let feed_items: Vec<ListItem> = if feeds.is_empty() {
-        if loading_state.is_loading {
-          let spinner = loading_state.spinner_frame();
-          vec![ListItem::new(format!(" {} Loading feeds...", spinner))]
+      let feed_rows: Vec<Row> = if feeds.is_empty() {
+        let msg = if loading_state.is_loading {
+          format!(" {} Loading feeds...", loading_state.spinner_frame())
         } else {
-          vec![ListItem::new(
-            " No feeds configured. Press 'r' to load.".to_string(),
-          )]
-        }
+          " No feeds configured. Press 'r' to load.".to_string()
+        };
+        vec![Row::new(vec![Cell::from(""), Cell::from(msg)])]
       } else {
-        feeds.iter().map(|feed| feed_list_item(feed)).collect()
+        feeds.iter().map(feed_row).collect()
       };
 
-      let feeds_list = List::new(feed_items)
+      let count_width = feeds
+        .iter()
+        .map(|f| {
+          let total = f.entries().len();
+          let unread = f.entries().iter().filter(|e| !e.read).count();
+          format!("{}/{}", unread, total).len() as u16
+        })
+        .max()
+        .unwrap_or(5)
+        .max(5);
+
+      let feed_widths = [Constraint::Length(count_width), Constraint::Fill(1)];
+
+      let feeds_table = Table::new(feed_rows, feed_widths)
         .block(create_feed_block(feeds.len(), show_borders))
+        .column_spacing(2)
         .highlight_style(Style::default().bg(Color::Yellow).fg(Color::Black));
 
-      StatefulWidget::render(feeds_list, area, frame.buffer_mut(), feed_state);
+      StatefulWidget::render(feeds_table, area, frame.buffer_mut(), feed_state);
     }
+
     AppState::BrowsingEntries | AppState::ViewingEntry => {
       let selected_feed_idx = feed_state.selected().unwrap_or(0);
-      let entry_items: Vec<ListItem> = if let Some(feed) = feeds.get(selected_feed_idx) {
-        if feed.entries().is_empty() {
-          vec![ListItem::new(" No entries".to_string())]
-        } else {
-          let is_query = feed.is_query();
-          feed
-            .entries()
-            .iter()
-            .map(|entry| entry_list_item(entry, is_query))
-            .collect()
-        }
-      } else {
-        vec![]
-      };
+      let (entry_rows, is_query, source_width) = build_entry_rows(feeds, selected_feed_idx);
 
-      let entries_list = List::new(entry_items.clone())
-        .block(create_entry_block(entry_items.len(), show_borders))
+      let entry_widths = entry_column_widths(is_query, source_width);
+      let entry_count = entry_rows.len();
+
+      let entries_table = Table::new(entry_rows, entry_widths)
+        .block(create_entry_block(entry_count, show_borders))
+        .column_spacing(2)
         .highlight_style(Style::default().bg(Color::Yellow).fg(Color::Black).bold());
 
-      StatefulWidget::render(entries_list, area, frame.buffer_mut(), entry_state);
+      StatefulWidget::render(entries_table, area, frame.buffer_mut(), entry_state);
     }
   }
 }
 
-/// Create a styled block for the feeds list
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Build entry rows, returning (rows, is_query, max_source_col_width).
+fn build_entry_rows(
+  feeds: &[DisplayFeed],
+  selected_feed_idx: usize,
+) -> (Vec<Row<'static>>, bool, u16) {
+  if let Some(feed) = feeds.get(selected_feed_idx) {
+    if feed.entries().is_empty() {
+      return (
+        vec![Row::new(vec![
+          Cell::from(""),
+          Cell::from(""),
+          Cell::from(" No entries"),
+        ])],
+        false,
+        0,
+      );
+    }
+
+    let is_query = feed.is_query();
+
+    // Compute widest source label so all rows align.
+    let source_width: u16 = if is_query {
+      feed
+        .entries()
+        .iter()
+        .map(|e| e.feed_title.as_deref().map(|t| t.len() as u16).unwrap_or(0))
+        .max()
+        .unwrap_or(0)
+    } else {
+      0
+    };
+
+    let rows = feed
+      .entries()
+      .iter()
+      .map(|e| entry_row(e, is_query))
+      .collect();
+
+    (rows, is_query, source_width)
+  } else {
+    (vec![], false, 0)
+  }
+}
+
+/// Column width constraints for the entries table.
+fn entry_column_widths(is_query: bool, source_width: u16) -> Vec<Constraint> {
+  if is_query && source_width > 0 {
+    vec![
+      Constraint::Length(6),            // date  "DD Mon"
+      Constraint::Length(source_width), // feed name
+      Constraint::Fill(1),              // entry title
+    ]
+  } else {
+    vec![
+      Constraint::Length(6), // date
+      Constraint::Length(0), // hidden source col
+      Constraint::Fill(1),   // entry title
+    ]
+  }
+}
+
+// ─── Blocks ───────────────────────────────────────────────────────────────────
+
 fn create_feed_block(count: usize, show_borders: bool) -> Block<'static> {
   let title = Title::from(" Feeds ".green());
   let count_title = Title::from(format!(" {} ", count).yellow()).position(Position::Top);
-
   if show_borders {
     Block::default()
       .title(title)
@@ -312,16 +386,18 @@ fn create_feed_block(count: usize, show_borders: bool) -> Block<'static> {
       .borders(Borders::ALL)
       .border_style(Style::new().blue())
       .border_set(border::PLAIN)
+      .padding(Padding::horizontal(1))
   } else {
-    Block::default().title(title).title(count_title)
+    Block::default()
+      .title(title)
+      .title(count_title)
+      .padding(Padding::horizontal(1))
   }
 }
 
-/// Create a styled block for the entries list
 fn create_entry_block(count: usize, show_borders: bool) -> Block<'static> {
   let title = Title::from(" Entries ".green());
   let count_title = Title::from(format!(" {} ", count).yellow()).position(Position::Top);
-
   if show_borders {
     Block::default()
       .title(title)
@@ -329,12 +405,17 @@ fn create_entry_block(count: usize, show_borders: bool) -> Block<'static> {
       .borders(Borders::ALL)
       .border_style(Style::new().blue())
       .border_set(border::PLAIN)
+      .padding(Padding::horizontal(1))
   } else {
-    Block::default().title(title).title(count_title)
+    Block::default()
+      .title(title)
+      .title(count_title)
+      .padding(Padding::horizontal(1))
   }
 }
 
-/// Render the error popup
+// ─── Popups ───────────────────────────────────────────────────────────────────
+
 fn render_error_popup(frame: &mut Frame, area: Rect, feed_errors: &[FeedError]) {
   let popup_width = area.width.saturating_sub(10).min(80);
   let popup_height = (feed_errors.len() as u16 + 4).min(area.height.saturating_sub(4));
@@ -371,8 +452,6 @@ fn render_error_popup(frame: &mut Frame, area: Rect, feed_errors: &[FeedError]) 
   popup.render(popup_area, frame.buffer_mut());
 }
 
-/// Render the loading status popup in the top-right corner.
-/// Shown while fetching is in progress and for a few seconds after completion.
 fn render_loading_popup(
   frame: &mut Frame,
   area: Rect,
@@ -398,15 +477,11 @@ fn render_loading_popup(
       }
     }
   } else {
-    // Just finished — show loaded count
     format!(" ✓ {} feeds loaded ", feeds.len())
   };
 
-  // Size the popup to fit its content (title border takes 2 cols of width, 2 rows of height)
   let popup_width = (status_line.len() as u16 + 2).min(area.width.saturating_sub(2));
-  let popup_height = 3u16; // top border + 1 content row + bottom border
-
-  // Position: top-right corner with a 1-cell margin
+  let popup_height = 3u16;
   let popup_x = area.x + area.width.saturating_sub(popup_width + 1);
   let popup_y = area.y + 1;
 

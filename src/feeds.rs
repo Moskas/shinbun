@@ -115,10 +115,11 @@ pub fn parse_feed(results: Vec<(FeedConfig, Result<String, ReqError>)>) -> Vec<F
 pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {
   let parsed = parser::parse(body.as_bytes()).ok()?;
 
-  let title = parsed
-    .title
-    .map(|t| t.content)
-    .unwrap_or_else(|| feed_config.name.unwrap_or_else(|| feed_config.link.clone()));
+  let rss_title = parsed.title.map(|t| t.content);
+  let title = feed_config
+    .name
+    .or(rss_title)
+    .unwrap_or_else(|| feed_config.link.clone());
 
   let entries = parsed
     .entries

@@ -5,7 +5,7 @@ use crate::query;
 use crate::views::{entry_view, feeds_list_view};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
-use ratatui::widgets::ListState;
+use ratatui::widgets::TableState;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
@@ -139,8 +139,8 @@ pub struct App {
   feed_config: Vec<FeedConfig>,
   query_config: Vec<QueryFeed>,
   feed_index: usize,
-  feed_list_state: ListState,
-  entry_list_state: ListState,
+  feed_list_state: TableState,
+  entry_list_state: TableState,
   state: AppState,
   entry_scroll: usize,
   ui_config: UiConfig,
@@ -171,8 +171,8 @@ impl App {
       feed_config,
       query_config,
       feed_index: 0,
-      feed_list_state: ListState::default().with_selected(Some(0)),
-      entry_list_state: ListState::default(),
+      feed_list_state: TableState::default().with_selected(Some(0)),
+      entry_list_state: TableState::default(),
       state: AppState::BrowsingFeeds,
       entry_scroll: 0,
       ui_config,
