@@ -56,6 +56,7 @@ async fn main() -> io::Result<()> {
   // Create and run the app with cached feeds
   let mut app = App::new(
     cached_feeds,
+    config.general,
     config.ui,
     config.feeds,
     config.queries,

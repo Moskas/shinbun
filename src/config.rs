@@ -20,7 +20,10 @@ pub struct UiConfig {
   pub split_view: bool,
   #[serde(default = "default_show_borders")]
   pub show_borders: bool,
+}
 
+#[derive(Debug, Deserialize, Default, Clone)]
+pub struct GeneralConfig {
   /// Command used to open entry links (default: system browser via `open` crate).
   /// Supports arguments, e.g. `"firefox --private-window"`.
   #[serde(default)]
@@ -45,6 +48,8 @@ pub struct QueryFeed {
 #[derive(Debug, Deserialize, Default)]
 struct ConfigFile {
   #[serde(default)]
+  general: GeneralConfig,
+  #[serde(default)]
   ui: UiConfig,
   #[serde(default)]
   queries: Vec<QueryFeed>,
@@ -52,6 +57,7 @@ struct ConfigFile {
 
 pub struct Config {
   pub feeds: Vec<Feed>,
+  pub general: GeneralConfig,
   pub ui: UiConfig,
   pub queries: Vec<QueryFeed>,
 }
@@ -59,34 +65,35 @@ pub struct Config {
 /// Parse complete configuration from config.toml and feeds.toml
 pub fn parse_config() -> Config {
   let config_dir = get_config_dir();
-  let (ui_config, queries) = parse_config_file(&config_dir);
+  let (general_config, ui_config, queries) = parse_config_file(&config_dir);
   let feeds = parse_feeds(&config_dir);
   Config {
     feeds,
+    general: general_config,
     ui: ui_config,
     queries,
   }
 }
 
 /// Parse configuration file (config.toml)
-fn parse_config_file(config_dir: &PathBuf) -> (UiConfig, Vec<QueryFeed>) {
+fn parse_config_file(config_dir: &PathBuf) -> (GeneralConfig, UiConfig, Vec<QueryFeed>) {
   let config_path = config_dir.join("config.toml");
 
   if !config_path.exists() {
-    return (UiConfig::default(), Vec::new());
+    return (GeneralConfig::default(), UiConfig::default(), Vec::new());
   }
 
   let content = match fs::read_to_string(&config_path) {
     Ok(c) => c,
-    Err(_) => return (UiConfig::default(), Vec::new()),
+    Err(_) => return (GeneralConfig::default(), UiConfig::default(), Vec::new()),
   };
 
   match toml::from_str::<ConfigFile>(&content) {
-    Ok(config) => (config.ui, config.queries),
+    Ok(config) => (config.general, config.ui, config.queries),
     Err(err) => {
       eprintln!("Warning: Failed to parse config.toml: {}", err);
       eprintln!("Using default configuration");
-      (UiConfig::default(), Vec::new())
+      (GeneralConfig::default(), UiConfig::default(), Vec::new())
     }
   }
 }

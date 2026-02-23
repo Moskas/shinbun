@@ -1,5 +1,5 @@
 use crate::cache::FeedCache;
-use crate::config::{Feed as FeedConfig, QueryFeed, UiConfig};
+use crate::config::{Feed as FeedConfig, GeneralConfig, QueryFeed, UiConfig};
 use crate::feeds::{self, Feed, FeedEntry};
 use crate::query;
 use crate::views::{entry_view, feeds_list_view};
@@ -136,6 +136,7 @@ pub struct App {
   entry_list_state: TableState,
   state: AppState,
   entry_scroll: usize,
+  general_config: GeneralConfig,
   ui_config: UiConfig,
   exit: bool,
   feed_tx: mpsc::UnboundedSender<FeedUpdate>,
@@ -149,6 +150,7 @@ pub struct App {
 impl App {
   pub fn new(
     feeds: Vec<Feed>,
+    general_config: GeneralConfig,
     ui_config: UiConfig,
     feed_config: Vec<FeedConfig>,
     query_config: Vec<QueryFeed>,
@@ -168,6 +170,7 @@ impl App {
       entry_list_state: TableState::default(),
       state: AppState::BrowsingFeeds,
       entry_scroll: 0,
+      general_config,
       ui_config,
       exit: false,
       feed_tx,
@@ -464,7 +467,7 @@ impl App {
       return;
     };
 
-    if let Some(ref cmd) = self.ui_config.browser {
+    if let Some(ref cmd) = self.general_config.browser {
       Self::spawn_cmd(cmd, url);
     } else if let Err(e) = open::that(url) {
       eprintln!("Failed to open URL in default browser: {}", e);
@@ -486,7 +489,7 @@ impl App {
     };
     let Some(url) = &entry.media else { return };
 
-    if let Some(ref cmd) = self.ui_config.media_player {
+    if let Some(ref cmd) = self.general_config.media_player {
       Self::spawn_cmd(cmd, url);
     } else if let Err(e) = open::that(url) {
       eprintln!("Failed to open media URL with OS default: {}", e);
