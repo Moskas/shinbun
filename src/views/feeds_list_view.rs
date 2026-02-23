@@ -48,8 +48,7 @@ fn feed_row(feed: &DisplayFeed, raw_feeds: &[Feed]) -> Row<'static> {
   let unread = entries.iter().filter(|e| !e.read).count();
 
   let count_str = format!("{}/{}", unread, total);
-  let icon = if feed.is_query() { "🔍 " } else { "" };
-  let title = format!("{}{}", icon, feed.title(raw_feeds));
+  let title = format!("{}", feed.title(raw_feeds));
 
   let style = if unread == 0 {
     Style::default().fg(Color::DarkGray)
@@ -57,18 +56,23 @@ fn feed_row(feed: &DisplayFeed, raw_feeds: &[Feed]) -> Row<'static> {
     Style::default()
   };
 
-  Row::new(vec![Cell::from(count_str), Cell::from(title)]).style(style)
+  Row::new(vec![
+    Cell::from(
+      Text::from(count_str)
+        .alignment(Alignment::Right)
+        .fg(Color::Blue),
+    ),
+    Cell::from(title),
+  ])
+  .style(style)
 }
 
 /// Build a Table Row for an entry.
 fn entry_row(entry: &crate::feeds::FeedEntry, is_query: bool) -> Row<'static> {
   let date = format_entry_date(entry.published.as_deref());
 
-  let date_cell = if entry.media.is_some() {
-    Cell::from(format!("{}", date)).style(Style::default().fg(Color::Cyan))
-  } else {
-    Cell::from(date)
-  };
+  let date_cell = Cell::from(Text::from(format!(" {} ", date)).alignment(Alignment::Right))
+    .style(Style::default().fg(Color::Cyan));
 
   let title_style = if entry.read {
     Style::default().fg(Color::DarkGray)
@@ -80,8 +84,7 @@ fn entry_row(entry: &crate::feeds::FeedEntry, is_query: bool) -> Row<'static> {
     let source = entry.feed_title.clone().unwrap_or_default();
     Row::new(vec![
       date_cell,
-      Cell::from(Text::from(source).alignment(Alignment::Center))
-        .style(Style::default().fg(Color::Yellow)),
+      Cell::from(Text::from(source)).style(Style::default().fg(Color::Yellow)),
       Cell::from(entry.title.clone()).style(title_style),
     ])
   } else {
@@ -119,10 +122,6 @@ pub fn render(
     "<r> ".bold(),
     " Mark read/unread ".into(),
     "<m> ".bold(),
-    " Open link ".into(),
-    "<o> ".bold(),
-    " Play media ".into(),
-    "<p> ".bold(),
   ];
   if !feed_errors.is_empty() {
     instruction_spans.push(" Errors ".into());
@@ -339,7 +338,7 @@ fn render_single_pane(
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Width of the date column in the entries table.
-const DATE_COL_WIDTH: u16 = 6;
+const DATE_COL_WIDTH: u16 = 8;
 
 /// Build entry rows for the selected feed, returning (rows, is_query, max_source_col_width).
 fn build_entry_rows(

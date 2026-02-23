@@ -73,6 +73,8 @@ pub fn render(
     "<h> ".bold(),
     " Open entry ".into(),
     " <o>".bold(),
+    " Play media ".into(),
+    "<p> ".bold(),
   ]));
 
   let outer_block = if show_borders {

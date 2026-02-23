@@ -434,7 +434,13 @@ impl App {
     let mut parts = cmd.split_whitespace();
     if let Some(bin) = parts.next() {
       let args: Vec<&str> = parts.collect();
-      if let Err(e) = Command::new(bin).args(args).arg(url).spawn() {
+      if let Err(e) = Command::new(bin)
+        .args(args)
+        .arg(url)
+        .stdout(std::process::Stdio::null()) // TODO Move info to a popup or smaller window
+        .stderr(std::process::Stdio::null()) // Not ideal but will work for now
+        .spawn()
+      {
         eprintln!("Failed to launch '{}': {}", cmd, e);
       }
     }
