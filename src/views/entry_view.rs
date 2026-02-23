@@ -108,13 +108,13 @@ pub fn render(
   // Create the entry block with padding
   let entry_block = if show_borders {
     Block::default()
-      .title(" Entry ".yellow())
+      .title(format!(" Entry  - {}", entry.title).yellow())
       .borders(Borders::ALL)
       .border_style(Style::new().blue())
       .padding(Padding::symmetric(4, 1))
   } else {
     Block::default()
-      .title(" Entry ".green())
+      .title(format!(" {} - {}", feed_title, entry.title).green())
       .padding(Padding::symmetric(4, 0))
   };
 
