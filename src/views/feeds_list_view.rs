@@ -1,4 +1,5 @@
 use crate::app::{AppState, DisplayFeed, FeedError, LoadingState};
+use crate::feeds::Feed;
 use ratatui::{
   prelude::*,
   symbols::border,
@@ -10,8 +11,6 @@ use ratatui::{
 
 // ─── Date formatting ──────────────────────────────────────────────────────────
 
-/// Format a date string for display in entry list.
-/// Returns formatted date like "02 May" or a blank placeholder.
 fn format_entry_date(date_str: Option<&str>) -> String {
   let date_str = match date_str {
     Some(s) if !s.is_empty() => s,
@@ -42,14 +41,15 @@ fn format_entry_date(date_str: Option<&str>) -> String {
 // ─── Row builders ─────────────────────────────────────────────────────────────
 
 /// Build a Table Row for a feed.
-/// Columns: count  |  icon+title
-fn feed_row(feed: &DisplayFeed) -> Row<'static> {
-  let total = feed.entries().len();
-  let unread = feed.entries().iter().filter(|e| !e.read).count();
+/// `raw_feeds` is the canonical feed list used to resolve Regular indices.
+fn feed_row(feed: &DisplayFeed, raw_feeds: &[Feed]) -> Row<'static> {
+  let entries = feed.entries(raw_feeds);
+  let total = entries.len();
+  let unread = entries.iter().filter(|e| !e.read).count();
 
   let count_str = format!("{}/{}", unread, total);
   let icon = if feed.is_query() { "🔍 " } else { "" };
-  let title = format!("{}{}", icon, feed.title());
+  let title = format!("{}{}", icon, feed.title(raw_feeds));
 
   let style = if unread == 0 {
     Style::default().fg(Color::DarkGray)
@@ -98,7 +98,8 @@ fn entry_row(entry: &crate::feeds::FeedEntry, is_query: bool) -> Row<'static> {
 pub fn render(
   frame: &mut Frame,
   area: Rect,
-  feeds: &[DisplayFeed],
+  raw_feeds: &[Feed],
+  display_feeds: &[DisplayFeed],
   feed_state: &mut TableState,
   entry_state: &mut TableState,
   app_state: AppState,
@@ -157,7 +158,8 @@ pub fn render(
     render_dual_pane(
       frame,
       inner_area,
-      feeds,
+      raw_feeds,
+      display_feeds,
       feed_state,
       entry_state,
       app_state,
@@ -168,7 +170,8 @@ pub fn render(
     render_single_pane(
       frame,
       inner_area,
-      feeds,
+      raw_feeds,
+      display_feeds,
       feed_state,
       entry_state,
       app_state,
@@ -181,7 +184,7 @@ pub fn render(
     render_error_popup(frame, area, feed_errors);
   }
   if loading_state.should_show_popup() {
-    render_loading_popup(frame, area, loading_state, current_feed, feeds);
+    render_loading_popup(frame, area, loading_state, current_feed, display_feeds);
   }
 }
 
@@ -190,7 +193,8 @@ pub fn render(
 fn render_dual_pane(
   frame: &mut Frame,
   area: Rect,
-  feeds: &[DisplayFeed],
+  raw_feeds: &[Feed],
+  display_feeds: &[DisplayFeed],
   feed_state: &mut TableState,
   entry_state: &mut TableState,
   app_state: AppState,
@@ -208,7 +212,7 @@ fn render_dual_pane(
     _ => Style::default().yellow(),
   };
 
-  let feed_rows: Vec<Row> = if feeds.is_empty() {
+  let feed_rows: Vec<Row> = if display_feeds.is_empty() {
     let msg = if loading_state.is_loading {
       format!(" {} Loading feeds...", loading_state.spinner_frame())
     } else {
@@ -216,14 +220,18 @@ fn render_dual_pane(
     };
     vec![Row::new(vec![Cell::from(""), Cell::from(msg)])]
   } else {
-    feeds.iter().map(feed_row).collect()
+    display_feeds
+      .iter()
+      .map(|f| feed_row(f, raw_feeds))
+      .collect()
   };
 
-  let count_width = feeds
+  let count_width = display_feeds
     .iter()
     .map(|f| {
-      let total = f.entries().len();
-      let unread = f.entries().iter().filter(|e| !e.read).count();
+      let entries = f.entries(raw_feeds);
+      let total = entries.len();
+      let unread = entries.iter().filter(|e| !e.read).count();
       format!("{}/{}", unread, total).len() as u16
     })
     .max()
@@ -233,7 +241,7 @@ fn render_dual_pane(
   let feed_widths = [Constraint::Length(count_width), Constraint::Fill(1)];
 
   let feeds_table = Table::new(feed_rows, feed_widths)
-    .block(create_feed_block(feeds.len(), show_borders))
+    .block(create_feed_block(display_feeds.len(), show_borders))
     .column_spacing(2)
     .highlight_style(feed_highlight);
 
@@ -247,7 +255,8 @@ fn render_dual_pane(
     _ => Style::default(),
   };
 
-  let (entry_rows, is_query, source_width) = build_entry_rows(feeds, selected_feed_idx);
+  let (entry_rows, is_query, source_width) =
+    build_entry_rows(display_feeds, raw_feeds, selected_feed_idx);
   let entry_widths = entry_column_widths(is_query, source_width);
   let entry_count = entry_rows.len();
 
@@ -264,7 +273,8 @@ fn render_dual_pane(
 fn render_single_pane(
   frame: &mut Frame,
   area: Rect,
-  feeds: &[DisplayFeed],
+  raw_feeds: &[Feed],
+  display_feeds: &[DisplayFeed],
   feed_state: &mut TableState,
   entry_state: &mut TableState,
   app_state: AppState,
@@ -273,7 +283,7 @@ fn render_single_pane(
 ) {
   match app_state {
     AppState::BrowsingFeeds => {
-      let feed_rows: Vec<Row> = if feeds.is_empty() {
+      let feed_rows: Vec<Row> = if display_feeds.is_empty() {
         let msg = if loading_state.is_loading {
           format!(" {} Loading feeds...", loading_state.spinner_frame())
         } else {
@@ -281,14 +291,18 @@ fn render_single_pane(
         };
         vec![Row::new(vec![Cell::from(""), Cell::from(msg)])]
       } else {
-        feeds.iter().map(feed_row).collect()
+        display_feeds
+          .iter()
+          .map(|f| feed_row(f, raw_feeds))
+          .collect()
       };
 
-      let count_width = feeds
+      let count_width = display_feeds
         .iter()
         .map(|f| {
-          let total = f.entries().len();
-          let unread = f.entries().iter().filter(|e| !e.read).count();
+          let entries = f.entries(raw_feeds);
+          let total = entries.len();
+          let unread = entries.iter().filter(|e| !e.read).count();
           format!("{}/{}", unread, total).len() as u16
         })
         .max()
@@ -298,7 +312,7 @@ fn render_single_pane(
       let feed_widths = [Constraint::Length(count_width), Constraint::Fill(1)];
 
       let feeds_table = Table::new(feed_rows, feed_widths)
-        .block(create_feed_block(feeds.len(), show_borders))
+        .block(create_feed_block(display_feeds.len(), show_borders))
         .column_spacing(2)
         .highlight_style(Style::default().bg(Color::Yellow).fg(Color::Black));
 
@@ -307,7 +321,8 @@ fn render_single_pane(
 
     AppState::BrowsingEntries | AppState::ViewingEntry => {
       let selected_feed_idx = feed_state.selected().unwrap_or(0);
-      let (entry_rows, is_query, source_width) = build_entry_rows(feeds, selected_feed_idx);
+      let (entry_rows, is_query, source_width) =
+        build_entry_rows(display_feeds, raw_feeds, selected_feed_idx);
       let entry_widths = entry_column_widths(is_query, source_width);
       let entry_count = entry_rows.len();
 
@@ -326,13 +341,16 @@ fn render_single_pane(
 /// Width of the date column in the entries table.
 const DATE_COL_WIDTH: u16 = 6;
 
-/// Build entry rows, returning (rows, is_query, max_source_col_width).
+/// Build entry rows for the selected feed, returning (rows, is_query, max_source_col_width).
 fn build_entry_rows(
-  feeds: &[DisplayFeed],
+  display_feeds: &[DisplayFeed],
+  raw_feeds: &[Feed],
   selected_feed_idx: usize,
 ) -> (Vec<Row<'static>>, bool, u16) {
-  if let Some(feed) = feeds.get(selected_feed_idx) {
-    if feed.entries().is_empty() {
+  if let Some(feed) = display_feeds.get(selected_feed_idx) {
+    let entries = feed.entries(raw_feeds);
+
+    if entries.is_empty() {
       return (
         vec![Row::new(vec![
           Cell::from(""),
@@ -347,8 +365,7 @@ fn build_entry_rows(
     let is_query = feed.is_query();
 
     let source_width: u16 = if is_query {
-      feed
-        .entries()
+      entries
         .iter()
         .map(|e| e.feed_title.as_deref().map(|t| t.len() as u16).unwrap_or(0))
         .max()
@@ -357,11 +374,7 @@ fn build_entry_rows(
       0
     };
 
-    let rows = feed
-      .entries()
-      .iter()
-      .map(|e| entry_row(e, is_query))
-      .collect();
+    let rows = entries.iter().map(|e| entry_row(e, is_query)).collect();
 
     (rows, is_query, source_width)
   } else {
@@ -373,15 +386,15 @@ fn build_entry_rows(
 fn entry_column_widths(is_query: bool, source_width: u16) -> Vec<Constraint> {
   if is_query && source_width > 0 {
     vec![
-      Constraint::Length(DATE_COL_WIDTH), // badge + date  "♫ 02 May"
-      Constraint::Length(source_width),   // feed name (query feeds only)
-      Constraint::Fill(1),                // entry title
+      Constraint::Length(DATE_COL_WIDTH),
+      Constraint::Length(source_width),
+      Constraint::Fill(1),
     ]
   } else {
     vec![
-      Constraint::Length(DATE_COL_WIDTH), // badge + date
-      Constraint::Length(0),              // hidden source col
-      Constraint::Fill(1),                // entry title
+      Constraint::Length(DATE_COL_WIDTH),
+      Constraint::Length(0),
+      Constraint::Fill(1),
     ]
   }
 }
@@ -469,7 +482,7 @@ fn render_loading_popup(
   area: Rect,
   loading_state: &LoadingState,
   current_feed: Option<&str>,
-  feeds: &[DisplayFeed],
+  display_feeds: &[DisplayFeed],
 ) {
   let status_line = if loading_state.is_loading {
     let spinner = loading_state.spinner_frame();
@@ -489,7 +502,7 @@ fn render_loading_popup(
       }
     }
   } else {
-    format!(" ✓ {} feeds loaded ", feeds.len())
+    format!(" ✓ {} feeds loaded ", display_feeds.len())
   };
 
   let popup_width = (status_line.len() as u16 + 2).min(area.width.saturating_sub(2));

@@ -77,16 +77,6 @@ pub async fn fetch_feed_with_progress(
   let _ = tx.send(FeedUpdate::FetchComplete);
 }
 
-/// Fetch multiple feeds concurrently (original function for compatibility)
-pub async fn fetch_feed(feeds: Vec<FeedConfig>) -> Vec<(FeedConfig, Result<String, ReqError>)> {
-  let futures = feeds.into_iter().map(|feed| async move {
-    let result = fetch_single_feed(&feed.link).await;
-    (feed, result)
-  });
-
-  futures::future::join_all(futures).await
-}
-
 /// Fetch a single feed from URL
 async fn fetch_single_feed(url: &str) -> Result<String, ReqError> {
   match get(url).await {
@@ -96,18 +86,6 @@ async fn fetch_single_feed(url: &str) -> Result<String, ReqError> {
 }
 
 // ─── Parsing ──────────────────────────────────────────────────────────────────
-
-/// Parse feed results into structured Feed objects
-pub fn parse_feed(results: Vec<(FeedConfig, Result<String, ReqError>)>) -> Vec<Feed> {
-  results
-    .into_iter()
-    .filter_map(|(feed_config, body_result)| {
-      let body = body_result.ok()?;
-      parse_single_feed(feed_config, &body)
-    })
-    .collect()
-}
-
 /// Parse a single feed from its body content
 pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {
   let parsed = parser::parse(body.as_bytes()).ok()?;

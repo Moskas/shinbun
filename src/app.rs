@@ -17,12 +17,16 @@ pub enum AppState {
   ViewingEntry,
 }
 
-/// Represents a feed or query feed in the display list
+/// Represents a feed or query feed in the display list.
+///
+/// `Regular` stores an *index* into `App::feeds` rather than a clone of the
+/// feed data.  This means feed content lives in exactly one place in memory
+/// (`App::feeds`) and the display list is just a thin index + query layer.
 #[derive(Debug, Clone)]
 pub enum DisplayFeed {
-  /// A regular RSS feed
-  Regular(Feed),
-  /// A query feed with its name, query string, and aggregated entries
+  /// Index into App::feeds — zero extra allocation.
+  Regular(usize),
+  /// A query feed with aggregated entries (cross-feed, so must own its data).
   Query {
     name: String,
     entries: Vec<FeedEntry>,
@@ -30,23 +34,22 @@ pub enum DisplayFeed {
 }
 
 impl DisplayFeed {
-  /// Get the display title of the feed
-  pub fn title(&self) -> &str {
+  /// Resolve the display title, borrowing from `feeds` for Regular variants.
+  pub fn title<'a>(&'a self, feeds: &'a [Feed]) -> &'a str {
     match self {
-      DisplayFeed::Regular(feed) => &feed.title,
+      DisplayFeed::Regular(i) => feeds.get(*i).map(|f| f.title.as_str()).unwrap_or(""),
       DisplayFeed::Query { name, .. } => name,
     }
   }
 
-  /// Get the entries for this feed
-  pub fn entries(&self) -> &[FeedEntry] {
+  /// Resolve the entry slice, borrowing from `feeds` for Regular variants.
+  pub fn entries<'a>(&'a self, feeds: &'a [Feed]) -> &'a [FeedEntry] {
     match self {
-      DisplayFeed::Regular(feed) => &feed.entries,
+      DisplayFeed::Regular(i) => feeds.get(*i).map(|f| f.entries.as_slice()).unwrap_or(&[]),
       DisplayFeed::Query { entries, .. } => entries,
     }
   }
 
-  /// Check if this is a query feed
   pub fn is_query(&self) -> bool {
     matches!(self, DisplayFeed::Query { .. })
   }
@@ -57,13 +60,11 @@ impl DisplayFeed {
 pub enum FeedUpdate {
   /// Replace all feeds with new data
   Replace(Vec<Feed>),
-  /// Update a specific feed
-  UpdateFeed(usize, Feed),
   /// Report progress on a specific feed
   FetchingFeed(String),
   /// Report a feed that failed to fetch or parse
   FeedError { name: String, error: String },
-  /// All feeds finished fetching
+  /// All feeds finished fetching — reload from cache now
   FetchComplete,
 }
 
@@ -105,7 +106,6 @@ impl LoadingState {
   }
 
   /// Returns true while loading, and for 3 seconds after loading finishes.
-  /// Used to decide whether to show the loading popup.
   pub fn should_show_popup(&self) -> bool {
     if self.is_loading {
       return true;
@@ -185,27 +185,33 @@ impl App {
     }
   }
 
-  /// Build display feeds by combining query feeds and regular feeds
+  /// Build display feeds from the canonical feed list.
+  ///
+  /// Regular feeds are stored as plain indices — no Feed data is cloned.
+  /// Query feeds must own their aggregated entry list (cross-feed aggregation).
   fn build_display_feeds(feeds: &[Feed], query_config: &[QueryFeed]) -> Vec<DisplayFeed> {
     let mut display_feeds: Vec<DisplayFeed> = query_config
       .iter()
       .map(|qf| DisplayFeed::Query {
-        name: qf.name.clone(),
+        name: qf.name.clone(), // owned String required by the enum variant
         entries: query::apply_query(feeds, &qf.query),
       })
       .collect();
 
-    for feed in feeds {
-      display_feeds.push(DisplayFeed::Regular(feed.clone()));
+    for i in 0..feeds.len() {
+      display_feeds.push(DisplayFeed::Regular(i));
     }
 
     display_feeds
   }
 
-  /// Rebuild display feeds after feeds change
+  /// Rebuild display feeds, freeing the old allocation before building the new one.
   fn rebuild_display_feeds(&mut self) {
-    let query_config = self.query_config.clone();
-    self.display_feeds = Self::build_display_feeds(&self.feeds, &query_config);
+    // Drop old display data before allocating the new set so they never coexist.
+    drop(std::mem::take(&mut self.display_feeds));
+    // Pass &self.query_config directly — no clone needed now that display_feeds
+    // is empty and no longer holds a borrow conflict.
+    self.display_feeds = Self::build_display_feeds(&self.feeds, &self.query_config);
   }
 
   pub fn should_exit(&self) -> bool {
@@ -220,45 +226,30 @@ impl App {
             eprintln!("Failed to cache feed {}: {}", feed.title, e);
           }
         }
-        self.feeds = self.cache.load_all_feeds().unwrap_or(new_feeds);
+        drop(new_feeds);
+        self.feeds.clear();
+        self.feeds = self.cache.load_all_feeds().unwrap_or_default();
         self.rebuild_display_feeds();
       }
-      FeedUpdate::UpdateFeed(_, feed) => {
-        let position = self
-          .feeds
-          .iter()
-          .position(|f| f.url == feed.url)
-          .unwrap_or(self.feeds.len());
 
-        if let Err(e) = self.cache.save_feed(&feed, position) {
-          eprintln!("Failed to cache feed {}: {}", feed.title, e);
-        }
-
-        let reloaded = self
-          .cache
-          .load_feed(&feed.url)
-          .ok()
-          .flatten()
-          .unwrap_or(feed);
-        if let Some(existing) = self.feeds.iter_mut().find(|f| f.url == reloaded.url) {
-          *existing = reloaded;
-          self.rebuild_display_feeds();
-        }
-      }
       FeedUpdate::FetchingFeed(name) => {
         self.current_feed = Some(name);
       }
+
       FeedUpdate::FeedError { name, error } => {
         self.feed_errors.push(FeedError { name, error });
       }
+
       FeedUpdate::FetchComplete => {
+        self.feeds.clear();
+        self.feeds = self.cache.load_all_feeds().unwrap_or_default();
+        self.rebuild_display_feeds();
         self.loading_state.stop();
         self.current_feed = None;
       }
     }
   }
 
-  /// Trigger a refresh of all feeds
   pub fn refresh_feeds(&mut self) {
     if self.loading_state.is_loading {
       return;
@@ -267,6 +258,8 @@ impl App {
     self.loading_state.start();
     self.feed_errors.clear();
     self.show_error_popup = false;
+    // These two clones are genuinely required: the spawned task needs ownership
+    // of the config vec, and UnboundedSender is designed to be cloned for sharing.
     let feeds = self.feed_config.clone();
     let tx = self.feed_tx.clone();
 
@@ -282,11 +275,11 @@ impl App {
       AppState::ViewingEntry => {
         if let Some(display_feed) = self.display_feeds.get(self.feed_index) {
           if let Some(entry_idx) = self.entry_list_state.selected() {
-            if let Some(entry) = display_feed.entries().get(entry_idx) {
+            if let Some(entry) = display_feed.entries(&self.feeds).get(entry_idx) {
               entry_view::render(
                 frame,
                 area,
-                display_feed.title(),
+                display_feed.title(&self.feeds),
                 entry,
                 &mut self.entry_scroll,
                 self.ui_config.show_borders,
@@ -300,6 +293,7 @@ impl App {
         feeds_list_view::render(
           frame,
           area,
+          &self.feeds,
           &self.display_feeds,
           &mut self.feed_list_state,
           &mut self.entry_list_state,
@@ -342,14 +336,12 @@ impl App {
         }
         _ => {}
       },
-      // Open entry link in browser
       KeyCode::Char('o') | KeyCode::Char('O') => match self.state {
         AppState::BrowsingEntries | AppState::ViewingEntry => {
           self.open_current_entry_in_browser();
         }
         _ => {}
       },
-      // Open media attachment (podcast / video) in the configured player
       KeyCode::Char('p') | KeyCode::Char('P') => match self.state {
         AppState::BrowsingEntries | AppState::ViewingEntry => {
           self.open_media_in_player();
@@ -395,10 +387,13 @@ impl App {
       }
       AppState::BrowsingEntries => {
         if let Some(selected) = self.entry_list_state.selected() {
-          if let Some(display_feed) = self.display_feeds.get(self.feed_index) {
-            if selected + 1 < display_feed.entries().len() {
-              self.entry_list_state.select(Some(selected + 1));
-            }
+          let len = self
+            .display_feeds
+            .get(self.feed_index)
+            .map(|df| df.entries(&self.feeds).len())
+            .unwrap_or(0);
+          if selected + 1 < len {
+            self.entry_list_state.select(Some(selected + 1));
           }
         }
       }
@@ -427,20 +422,14 @@ impl App {
 
   fn handle_back(&mut self) {
     match self.state {
-      AppState::ViewingEntry => {
-        self.state = AppState::BrowsingEntries;
-      }
-      AppState::BrowsingEntries => {
-        self.state = AppState::BrowsingFeeds;
-      }
+      AppState::ViewingEntry => self.state = AppState::BrowsingEntries,
+      AppState::BrowsingEntries => self.state = AppState::BrowsingFeeds,
       AppState::BrowsingFeeds => {}
     }
   }
 
   // ─── Browser / player helpers ─────────────────────────────────────────────
 
-  /// Spawn a command, splitting the config string on whitespace to allow flags
-  /// like `"firefox --private-window"`.
   fn spawn_cmd(cmd: &str, url: &str) {
     let mut parts = cmd.split_whitespace();
     if let Some(bin) = parts.next() {
@@ -451,150 +440,177 @@ impl App {
     }
   }
 
-  /// Open the first link of the currently selected entry in a web browser.
-  /// Uses `config.ui.browser` when set, otherwise the OS default.
+  /// Open the first link of the currently selected entry in a browser.
+  ///
+  /// All borrows are immutable (&self), so we can hold &str references into
+  /// self.display_feeds / self.feeds / self.ui_config simultaneously — no clone needed.
   fn open_current_entry_in_browser(&self) {
-    let entry_idx = match self.entry_list_state.selected() {
-      Some(i) => i,
-      None => return,
+    let Some(entry_idx) = self.entry_list_state.selected() else {
+      return;
     };
-
-    let url = self
-      .display_feeds
-      .get(self.feed_index)
-      .and_then(|df| df.entries().get(entry_idx))
-      .and_then(|e| e.links.first())
-      .cloned();
-
-    let url = match url {
-      Some(u) => u,
-      None => return,
+    let Some(df) = self.display_feeds.get(self.feed_index) else {
+      return;
+    };
+    let Some(entry) = df.entries(&self.feeds).get(entry_idx) else {
+      return;
+    };
+    let Some(url) = entry.links.first() else {
+      return;
     };
 
     if let Some(ref cmd) = self.ui_config.browser {
-      Self::spawn_cmd(cmd, &url);
-    } else if let Err(e) = open::that(&url) {
+      Self::spawn_cmd(cmd, url);
+    } else if let Err(e) = open::that(url) {
       eprintln!("Failed to open URL in default browser: {}", e);
     }
   }
 
   /// Open the media attachment of the currently selected entry.
-  /// Uses `config.ui.media_player` when set, otherwise the OS default.
+  ///
+  /// Same &self approach — no clone needed.
   fn open_media_in_player(&self) {
-    let entry_idx = match self.entry_list_state.selected() {
-      Some(i) => i,
-      None => return,
+    let Some(entry_idx) = self.entry_list_state.selected() else {
+      return;
     };
-
-    let url = self
-      .display_feeds
-      .get(self.feed_index)
-      .and_then(|df| df.entries().get(entry_idx))
-      .and_then(|e| e.media.clone());
-
-    let url = match url {
-      Some(u) => u,
-      None => return, // entry has no media attachment
+    let Some(df) = self.display_feeds.get(self.feed_index) else {
+      return;
     };
+    let Some(entry) = df.entries(&self.feeds).get(entry_idx) else {
+      return;
+    };
+    let Some(url) = &entry.media else { return };
 
     if let Some(ref cmd) = self.ui_config.media_player {
-      Self::spawn_cmd(cmd, &url);
-    } else if let Err(e) = open::that(&url) {
+      Self::spawn_cmd(cmd, url);
+    } else if let Err(e) = open::that(url) {
       eprintln!("Failed to open media URL with OS default: {}", e);
     }
   }
 
   // ─── Read-state helpers ───────────────────────────────────────────────────
 
-  /// Synchronise a `read` flag change across `self.feeds` and every `DisplayFeed`.
-  fn sync_read_state(&mut self, feed_url: &str, title: &str, published: Option<&str>, read: bool) {
-    let source_feed_title = self
-      .feeds
-      .iter_mut()
-      .find(|f| f.url == feed_url)
-      .map(|raw| {
-        if let Some(entry) = raw
-          .entries
-          .iter_mut()
-          .find(|e| e.title == title && e.published.as_deref() == published)
-        {
-          entry.read = read;
-        }
-        raw.title.clone()
-      });
+  /// Resolve a display entry to `(feed_vec_idx, entry_vec_idx, currently_read)`.
+  ///
+  /// Returns only `Copy` values so all borrows on `self` are fully released
+  /// before the caller proceeds to mutate — eliminating the need to clone any
+  /// string data.
+  ///
+  /// For `Regular` feeds the display-list entry index equals the raw entry index.
+  /// For `Query` feeds the function locates the matching canonical entry in
+  /// `self.feeds` by title + published date.  Because `self.display_feeds` and
+  /// `self.feeds` are distinct struct fields, the borrow checker allows both to
+  /// be borrowed simultaneously without conflict.
+  fn resolve_entry(
+    &self,
+    display_feed_idx: usize,
+    entry_idx: usize,
+  ) -> Option<(usize, usize, bool)> {
+    match self.display_feeds.get(display_feed_idx)? {
+      DisplayFeed::Regular(i) => {
+        let i = *i;
+        let currently_read = self.feeds.get(i)?.entries.get(entry_idx)?.read;
+        Some((i, entry_idx, currently_read))
+      }
 
-    for display_feed in self.display_feeds.iter_mut() {
-      match display_feed {
-        DisplayFeed::Regular(feed) if feed.url == feed_url => {
-          if let Some(entry) = feed
-            .entries
-            .iter_mut()
-            .find(|e| e.title == title && e.published.as_deref() == published)
-          {
-            entry.read = read;
-          }
-        }
-        DisplayFeed::Query { entries, .. } => {
-          for entry in entries.iter_mut() {
-            let same_source = source_feed_title
-              .as_deref()
-              .map(|sft| entry.feed_title.as_deref() == Some(sft))
-              .unwrap_or(false);
-            if same_source && entry.title == title && entry.published.as_deref() == published {
-              entry.read = read;
-            }
-          }
-        }
-        _ => {}
+      DisplayFeed::Query { entries, .. } => {
+        let entry = entries.get(entry_idx)?;
+        let currently_read = entry.read;
+
+        // Locate the source feed by its title.
+        // self.feeds is a different field from self.display_feeds → simultaneous
+        // immutable borrows are permitted by the borrow checker.
+        let feed_vec_idx = entry
+          .feed_title
+          .as_deref()
+          .and_then(|ft| self.feeds.iter().position(|f| f.title == ft))?;
+
+        // Locate the raw entry by title + published date.
+        let entry_title = entry.title.as_str();
+        let entry_published = entry.published.as_deref();
+        let entry_vec_idx = self.feeds[feed_vec_idx]
+          .entries
+          .iter()
+          .position(|e| e.title == entry_title && e.published.as_deref() == entry_published)?;
+
+        // Return only Copy values — all borrows on self are released here.
+        Some((feed_vec_idx, entry_vec_idx, currently_read))
       }
     }
   }
 
-  /// Toggle the read/unread state of the entry at `entry_idx`.
+  /// Update the `read` flag on the canonical entry and mirror the change into
+  /// any query `DisplayFeed`s that reference the same entry.
+  ///
+  /// Takes indices instead of string keys.  This allows:
+  ///   • a mutable borrow of `self.feeds` (to update the canonical entry), then
+  ///   • an immutable borrow of `self.feeds` (for title/published match data), and
+  ///   • a simultaneous mutable borrow of `self.display_feeds` (to update query copies),
+  /// all without allocating — Rust's borrow checker permits simultaneous borrows
+  /// of distinct struct fields.
+  fn sync_read_state(&mut self, feed_vec_idx: usize, entry_vec_idx: usize, read: bool) {
+    // 1. Update the one canonical copy in self.feeds.
+    if let Some(entry) = self
+      .feeds
+      .get_mut(feed_vec_idx)
+      .and_then(|f| f.entries.get_mut(entry_vec_idx))
+    {
+      entry.read = read;
+    }
+
+    // 2. Borrow title/published from self.feeds for query-entry matching.
+    //    self.display_feeds is a different field → the mutable borrow below is allowed.
+    let Some(feed) = self.feeds.get(feed_vec_idx) else {
+      return;
+    };
+    let Some(entry) = feed.entries.get(entry_vec_idx) else {
+      return;
+    };
+    let feed_title = feed.title.as_str();
+    let entry_title = entry.title.as_str();
+    let entry_published = entry.published.as_deref();
+
+    // 3. Mirror into query DisplayFeeds (different field from self.feeds).
+    for df in self.display_feeds.iter_mut() {
+      if let DisplayFeed::Query { entries, .. } = df {
+        for qe in entries.iter_mut() {
+          if qe.feed_title.as_deref() == Some(feed_title)
+            && qe.title == entry_title
+            && qe.published.as_deref() == entry_published
+          {
+            qe.read = read;
+          }
+        }
+      }
+    }
+  }
+
   fn toggle_selected_entry_read(&mut self, entry_idx: usize) {
-    let feed_idx = self.feed_index;
-
-    let info = self
-      .display_feeds
-      .get(feed_idx)
-      .and_then(|df| df.entries().get(entry_idx))
-      .map(|e| {
-        (
-          e.title.clone(),
-          e.published.clone(),
-          e.feed_title.clone(),
-          e.read,
-        )
-      });
-
-    let (title, published, feed_title_opt, currently_read) = match info {
-      Some(i) => i,
-      None => return,
+    let Some((feed_vec_idx, entry_vec_idx, currently_read)) =
+      self.resolve_entry(self.feed_index, entry_idx)
+    else {
+      return;
     };
-
-    let feed_url: Option<String> = match self.display_feeds.get(feed_idx) {
-      Some(DisplayFeed::Regular(feed)) => Some(feed.url.clone()),
-      Some(DisplayFeed::Query { .. }) => feed_title_opt.as_deref().and_then(|ft| {
-        self
-          .feeds
-          .iter()
-          .find(|f| f.title == ft)
-          .map(|f| f.url.clone())
-      }),
-      None => None,
-    };
-
-    let Some(feed_url) = feed_url else { return };
 
     let new_read = !currently_read;
+
+    // self.cache is a distinct struct field from self.feeds, so &mut self.cache
+    // and &self.feeds[..] can coexist — no string clones needed for the arguments.
     let db_result = if new_read {
-      self
-        .cache
-        .mark_entry_read(&feed_url, &title, published.as_deref())
+      self.cache.mark_entry_read(
+        &self.feeds[feed_vec_idx].url,
+        &self.feeds[feed_vec_idx].entries[entry_vec_idx].title,
+        self.feeds[feed_vec_idx].entries[entry_vec_idx]
+          .published
+          .as_deref(),
+      )
     } else {
-      self
-        .cache
-        .mark_entry_unread(&feed_url, &title, published.as_deref())
+      self.cache.mark_entry_unread(
+        &self.feeds[feed_vec_idx].url,
+        &self.feeds[feed_vec_idx].entries[entry_vec_idx].title,
+        self.feeds[feed_vec_idx].entries[entry_vec_idx]
+          .published
+          .as_deref(),
+      )
     };
 
     if let Err(e) = db_result {
@@ -602,57 +618,32 @@ impl App {
       return;
     }
 
-    self.sync_read_state(&feed_url, &title, published.as_deref(), new_read);
+    self.sync_read_state(feed_vec_idx, entry_vec_idx, new_read);
   }
 
-  /// Mark the entry at `entry_idx` as read (used on Enter).
   fn mark_selected_entry_read(&mut self, entry_idx: usize) {
-    let feed_idx = self.feed_index;
-
-    let info = self
-      .display_feeds
-      .get(feed_idx)
-      .and_then(|df| df.entries().get(entry_idx))
-      .map(|e| {
-        (
-          e.title.clone(),
-          e.published.clone(),
-          e.feed_title.clone(),
-          e.read,
-        )
-      });
-
-    let (title, published, feed_title_opt, already_read) = match info {
-      Some(i) => i,
-      None => return,
+    let Some((feed_vec_idx, entry_vec_idx, already_read)) =
+      self.resolve_entry(self.feed_index, entry_idx)
+    else {
+      return;
     };
 
     if already_read {
       return;
     }
 
-    let feed_url: Option<String> = match self.display_feeds.get(feed_idx) {
-      Some(DisplayFeed::Regular(feed)) => Some(feed.url.clone()),
-      Some(DisplayFeed::Query { .. }) => feed_title_opt.as_deref().and_then(|ft| {
-        self
-          .feeds
-          .iter()
-          .find(|f| f.title == ft)
-          .map(|f| f.url.clone())
-      }),
-      None => None,
-    };
-
-    let Some(feed_url) = feed_url else { return };
-
-    if let Err(e) = self
-      .cache
-      .mark_entry_read(&feed_url, &title, published.as_deref())
-    {
+    // Same field-borrow trick — no clone needed.
+    if let Err(e) = self.cache.mark_entry_read(
+      &self.feeds[feed_vec_idx].url,
+      &self.feeds[feed_vec_idx].entries[entry_vec_idx].title,
+      self.feeds[feed_vec_idx].entries[entry_vec_idx]
+        .published
+        .as_deref(),
+    ) {
       eprintln!("Failed to mark entry read: {}", e);
       return;
     }
 
-    self.sync_read_state(&feed_url, &title, published.as_deref(), true);
+    self.sync_read_state(feed_vec_idx, entry_vec_idx, true);
   }
 }

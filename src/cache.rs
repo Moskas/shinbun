@@ -60,7 +60,6 @@ impl FeedCache {
       )?;
     }
 
-    // Create index for faster feed lookups
     conn.execute("CREATE INDEX IF NOT EXISTS idx_feed_url ON feeds(url)", [])?;
 
     // Unique index that drives incremental upserts in save_feed.
@@ -79,10 +78,12 @@ impl FeedCache {
   ///
   /// - The feed row itself is updated in-place (keeping its primary key so
   ///   the ON DELETE CASCADE on entries is never accidentally triggered).
-  /// - Entries that already exist in the DB are updated with fresh content
-  ///   fields (text, links, media) but their `read` flag is left untouched.
+  /// - Entries that already exist in the DB have their content refreshed but
+  ///   their `read` flag is left untouched.
   /// - Entries that have aged out of the remote feed are kept in the DB so
   ///   the user never loses history or read state.
+  /// - All entry upserts are wrapped in a single transaction so the operation
+  ///   is both atomic and fast (one fsync instead of one per entry).
   pub fn save_feed(&self, feed: &Feed, position: usize) -> Result<()> {
     let now = chrono::Utc::now().timestamp();
     let tags_json = feed
@@ -90,70 +91,79 @@ impl FeedCache {
       .as_ref()
       .map(|t| serde_json::to_string(t).unwrap_or_default());
 
-    // Update the feed row without replacing it.  INSERT OR REPLACE would
-    // delete + re-insert, assigning a new primary key and cascade-deleting
-    // every entry for this feed.
-    self.conn.execute(
+    // Upsert the feed row and retrieve its id in a single round-trip using
+    // RETURNING (available since SQLite 3.35.0, released March 2021).
+    let feed_id: i64 = self.conn.query_row(
       "INSERT INTO feeds (url, title, last_fetched, tags, position)
        VALUES (?1, ?2, ?3, ?4, ?5)
        ON CONFLICT(url) DO UPDATE SET
          title        = excluded.title,
          last_fetched = excluded.last_fetched,
          tags         = excluded.tags,
-         position     = excluded.position",
+         position     = excluded.position
+       RETURNING id",
       params![feed.url, feed.title, now, tags_json, position as i64],
-    )?;
-
-    let feed_id: i64 = self.conn.query_row(
-      "SELECT id FROM feeds WHERE url = ?1",
-      params![feed.url],
       |row| row.get(0),
     )?;
 
-    // Upsert each entry from the freshly fetched feed:
-    //   • New entries are inserted as unread.
-    //   • Existing entries have their content refreshed but `read` is untouched.
+    // Wrap all entry upserts in one explicit transaction.
+    // Without this each execute() starts and commits its own implicit
+    // transaction, which requires a full fsync per entry — very slow for
+    // feeds with many items (e.g. planet.emacslife.com).
+    let tx = self.conn.unchecked_transaction()?;
+
+    let mut stmt = tx.prepare_cached(
+      "INSERT INTO entries (feed_id, title, published, text, links, media, read)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)
+       ON CONFLICT(feed_id, title, COALESCE(published, '')) DO UPDATE SET
+         text  = excluded.text,
+         links = excluded.links,
+         media = excluded.media
+         -- `read` is intentionally omitted: never reset on re-fetch",
+    )?;
+
     for entry in &feed.entries {
       let links_json = serde_json::to_string(&entry.links).unwrap_or_default();
       let media_str = entry.media.as_deref().unwrap_or("");
-
-      self.conn.execute(
-        "INSERT INTO entries (feed_id, title, published, text, links, media, read)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)
-         ON CONFLICT(feed_id, title, COALESCE(published, '')) DO UPDATE SET
-           text  = excluded.text,
-           links = excluded.links,
-           media = excluded.media
-           -- `read` is intentionally omitted: never reset on re-fetch",
-        params![
-          feed_id,
-          entry.title,
-          entry.published,
-          entry.text,
-          links_json,
-          media_str,
-        ],
-      )?;
+      stmt.execute(params![
+        feed_id,
+        entry.title,
+        entry.published,
+        entry.text,
+        links_json,
+        media_str,
+      ])?;
     }
 
+    drop(stmt); // release borrow on tx before commit
+    tx.commit()
+  }
+
+  /// Internal helper — sets `read = 1` or `read = 0` for a specific entry.
+  fn set_entry_read(
+    &self,
+    feed_url: &str,
+    entry_title: &str,
+    published: Option<&str>,
+    read: bool,
+  ) -> Result<()> {
+    self.conn.execute(
+      "UPDATE entries SET read = ?4
+       WHERE feed_id = (SELECT id FROM feeds WHERE url = ?1)
+         AND title = ?2
+         AND (published = ?3 OR (published IS NULL AND ?3 IS NULL))",
+      params![feed_url, entry_title, published, read as i64],
+    )?;
     Ok(())
   }
 
-  /// Mark an entry as read by feed URL + title + published date
   pub fn mark_entry_read(
     &self,
     feed_url: &str,
     entry_title: &str,
     published: Option<&str>,
   ) -> Result<()> {
-    self.conn.execute(
-      "UPDATE entries SET read = 1
-       WHERE feed_id = (SELECT id FROM feeds WHERE url = ?1)
-         AND title = ?2
-         AND (published = ?3 OR (published IS NULL AND ?3 IS NULL))",
-      params![feed_url, entry_title, published],
-    )?;
-    Ok(())
+    self.set_entry_read(feed_url, entry_title, published, true)
   }
 
   pub fn mark_entry_unread(
@@ -162,82 +172,27 @@ impl FeedCache {
     entry_title: &str,
     published: Option<&str>,
   ) -> Result<()> {
-    self.conn.execute(
-      "UPDATE entries SET read = 0
-       WHERE feed_id = (SELECT id FROM feeds WHERE url = ?1)
-         AND title = ?2
-         AND (published = ?3 OR (published IS NULL AND ?3 IS NULL))",
-      params![feed_url, entry_title, published],
-    )?;
-    Ok(())
+    self.set_entry_read(feed_url, entry_title, published, false)
   }
 
-  /// Load a feed from cache by URL
-  pub fn load_feed(&self, url: &str) -> Result<Option<Feed>> {
-    let feed_result: Result<(i64, String, String, Option<String>)> = self.conn.query_row(
-      "SELECT id, title, url, tags FROM feeds WHERE url = ?1",
-      params![url],
-      |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-    );
+  /// Load all cached feeds ordered by position.
+  ///
+  /// The entry statement is prepared once outside the per-feed loop so the
+  /// query is compiled only a single time regardless of how many feeds exist.
+  pub fn load_all_feeds(&self) -> Result<Vec<Feed>> {
+    let mut feed_stmt = self
+      .conn
+      .prepare("SELECT id, url, title, tags FROM feeds ORDER BY position")?;
 
-    let (feed_id, title, url, tags_json) = match feed_result {
-      Ok(data) => data,
-      Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
-      Err(e) => return Err(e),
-    };
-
-    let tags = tags_json.and_then(|json| serde_json::from_str(&json).ok());
-
-    let mut stmt = self.conn.prepare(
+    // Prepare the entry query once — reused for every feed in the loop below.
+    let mut entry_stmt = self.conn.prepare(
       "SELECT title, published, text, links, media, read
        FROM entries
        WHERE feed_id = ?1
        ORDER BY published DESC",
     )?;
 
-    let entries = stmt
-      .query_map(params![feed_id], |row| {
-        let title: String = row.get(0)?;
-        let published: Option<String> = row.get(1)?;
-        let text: String = row.get(2)?;
-        let links_json: String = row.get(3)?;
-        let media_str: String = row.get(4)?;
-        let read: i64 = row.get(5)?;
-
-        let links: Vec<String> = serde_json::from_str(&links_json).unwrap_or_default();
-        let media = if media_str.is_empty() {
-          None
-        } else {
-          Some(media_str)
-        };
-
-        Ok(FeedEntry {
-          title,
-          published,
-          text,
-          links,
-          media,
-          feed_title: None,
-          read: read != 0,
-        })
-      })?
-      .collect::<Result<Vec<_>>>()?;
-
-    Ok(Some(Feed {
-      url,
-      title,
-      entries,
-      tags,
-    }))
-  }
-
-  /// Load all cached feeds
-  pub fn load_all_feeds(&self) -> Result<Vec<Feed>> {
-    let mut stmt = self
-      .conn
-      .prepare("SELECT id, url, title, tags FROM feeds ORDER BY position")?;
-
-    let feed_data = stmt
+    let feed_data = feed_stmt
       .query_map([], |row| {
         Ok((
           row.get::<_, i64>(0)?,
@@ -248,17 +203,10 @@ impl FeedCache {
       })?
       .collect::<Result<Vec<_>>>()?;
 
-    let mut feeds = Vec::new();
+    let mut feeds = Vec::with_capacity(feed_data.len());
 
     for (feed_id, url, title, tags_json) in feed_data {
       let tags = tags_json.and_then(|json| serde_json::from_str(&json).ok());
-
-      let mut entry_stmt = self.conn.prepare(
-        "SELECT title, published, text, links, media, read
-         FROM entries
-         WHERE feed_id = ?1
-         ORDER BY published DESC",
-      )?;
 
       let entries = entry_stmt
         .query_map(params![feed_id], |row| {
@@ -299,21 +247,6 @@ impl FeedCache {
     Ok(feeds)
   }
 
-  /// Get the last fetch timestamp for a feed
-  pub fn get_last_fetch(&self, url: &str) -> Result<Option<i64>> {
-    let result: Result<i64> = self.conn.query_row(
-      "SELECT last_fetched FROM feeds WHERE url = ?1",
-      params![url],
-      |row| row.get(0),
-    );
-
-    match result {
-      Ok(timestamp) => Ok(Some(timestamp)),
-      Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-      Err(e) => Err(e),
-    }
-  }
-
   /// Check if a feed exists in cache
   pub fn has_feed(&self, url: &str) -> Result<bool> {
     let count: i64 = self.conn.query_row(
@@ -322,20 +255,5 @@ impl FeedCache {
       |row| row.get(0),
     )?;
     Ok(count > 0)
-  }
-
-  /// Delete a feed and its entries from cache
-  pub fn delete_feed(&self, url: &str) -> Result<()> {
-    self
-      .conn
-      .execute("DELETE FROM feeds WHERE url = ?1", params![url])?;
-    Ok(())
-  }
-
-  /// Clear all cached data
-  pub fn clear_all(&self) -> Result<()> {
-    self.conn.execute("DELETE FROM entries", [])?;
-    self.conn.execute("DELETE FROM feeds", [])?;
-    Ok(())
   }
 }
