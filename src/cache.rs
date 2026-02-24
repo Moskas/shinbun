@@ -1,5 +1,6 @@
 use crate::feeds::{Feed, FeedEntry};
 use rusqlite::{params, Connection, Result};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 pub struct FeedCache {
@@ -255,5 +256,37 @@ impl FeedCache {
       |row| row.get(0),
     )?;
     Ok(count > 0)
+  }
+
+  /// Remove every feed from the cache whose URL is **not** present in
+  /// `active_urls` (i.e. feeds that have been deleted from `feeds.toml`).
+  ///
+  /// Entries belonging to removed feeds are deleted automatically thanks to
+  /// the `ON DELETE CASCADE` constraint defined in `init_schema`.
+  ///
+  /// Returns the number of feeds that were pruned.
+  pub fn remove_dead_feeds(&self, active_urls: &[&str]) -> Result<usize> {
+    // Foreign-key enforcement must be ON for ON DELETE CASCADE to fire.
+    self.conn.execute("PRAGMA foreign_keys = ON", [])?;
+
+    // Load every URL currently stored in the cache.
+    let mut stmt = self.conn.prepare("SELECT url FROM feeds")?;
+    let cached: Vec<String> = stmt
+      .query_map([], |row| row.get(0))?
+      .collect::<Result<Vec<_>>>()?;
+
+    let active: HashSet<&str> = active_urls.iter().copied().collect();
+
+    let mut removed = 0usize;
+    for url in cached {
+      if !active.contains(url.as_str()) {
+        self
+          .conn
+          .execute("DELETE FROM feeds WHERE url = ?1", params![url])?;
+        removed += 1;
+      }
+    }
+
+    Ok(removed)
   }
 }

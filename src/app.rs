@@ -144,6 +144,7 @@ pub struct App {
   current_feed: Option<String>,
   feed_errors: Vec<FeedError>,
   show_error_popup: bool,
+  pending_g: bool,
   cache: FeedCache,
 }
 
@@ -184,6 +185,7 @@ impl App {
       current_feed: None,
       feed_errors: Vec::new(),
       show_error_popup: false,
+pending_g: false,
       cache,
     }
   }
@@ -351,11 +353,45 @@ impl App {
         }
         _ => {}
       },
-      KeyCode::Up | KeyCode::Char('k') => self.handle_up(),
-      KeyCode::Down | KeyCode::Char('j') => self.handle_down(),
-      KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => self.handle_enter(),
-      KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace => self.handle_back(),
-      _ => {}
+KeyCode::Up | KeyCode::Char('k') => {
+        self.pending_g = false;
+        self.handle_up();
+      }
+      KeyCode::Down | KeyCode::Char('j') => {
+        self.pending_g = false;
+        self.handle_down();
+      }
+      KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => {
+        self.pending_g = false;
+        self.handle_enter();
+      }
+      KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace => {
+        self.pending_g = false;
+        self.handle_back();
+      }
+      KeyCode::Home => {
+        self.pending_g = false;
+        self.handle_go_top();
+      }
+      KeyCode::End => {
+        self.pending_g = false;
+        self.handle_go_bottom();
+      }
+      KeyCode::Char('G') => {
+        self.pending_g = false;
+        self.handle_go_bottom();
+      }
+      KeyCode::Char('g') => {
+        if self.pending_g {
+          self.pending_g = false;
+          self.handle_go_top();
+        } else {
+          self.pending_g = true;
+        }
+      }
+      _ => {
+        self.pending_g = false;
+      }
     }
   }
 
@@ -402,6 +438,43 @@ impl App {
       }
       AppState::ViewingEntry => {
         self.entry_scroll = self.entry_scroll.saturating_add(1);
+      }
+    }
+  }
+
+fn handle_go_top(&mut self) {
+    match self.state {
+      AppState::BrowsingFeeds => {
+        self.feed_index = 0;
+        self.feed_list_state.select(Some(0));
+      }
+      AppState::BrowsingEntries => {
+        self.entry_list_state.select(Some(0));
+      }
+      AppState::ViewingEntry => {
+        self.entry_scroll = 0;
+      }
+    }
+  }
+
+  fn handle_go_bottom(&mut self) {
+    match self.state {
+      AppState::BrowsingFeeds => {
+        let last = self.display_feeds.len().saturating_sub(1);
+        self.feed_index = last;
+        self.feed_list_state.select(Some(last));
+      }
+      AppState::BrowsingEntries => {
+        let last = self
+          .display_feeds
+          .get(self.feed_index)
+          .map(|df| df.entries(&self.feeds).len().saturating_sub(1))
+          .unwrap_or(0);
+        self.entry_list_state.select(Some(last));
+      }
+      AppState::ViewingEntry => {
+        // Set to usize::MAX; the render fn clamps it to max_scroll automatically
+        self.entry_scroll = usize::MAX;
       }
     }
   }

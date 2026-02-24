@@ -25,6 +25,17 @@ async fn main() -> io::Result<()> {
   let cache_path = config::get_cache_path();
   let cache = FeedCache::new(cache_path).expect("Failed to initialize cache");
 
+  // Remove any feeds that are in the cache but no longer listed in feeds.toml.
+  // Their entries are cascade-deleted automatically.
+  {
+    let active_urls: Vec<&str> = config.feeds.iter().map(|f| f.link.as_str()).collect();
+    match cache.remove_dead_feeds(&active_urls) {
+      Ok(0) => {}
+      Ok(n) => eprintln!("Pruned {n} stale feed(s) from cache (removed from feeds.toml)"),
+      Err(e) => eprintln!("Warning: failed to prune dead feeds: {e}"),
+    }
+  }
+
   // Load cached feeds (already sorted by position)
   let cached_feeds = cache.load_all_feeds().unwrap_or_default();
 
