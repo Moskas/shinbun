@@ -72,7 +72,7 @@ pub fn render(
     " Back ".into(),
     "<h> ".bold(),
     " Open entry ".into(),
-    " <o>".bold(),
+    "<o>".bold(),
     " Play media ".into(),
     "<p> ".bold(),
   ]));
@@ -114,7 +114,7 @@ pub fn render(
       .padding(Padding::symmetric(4, 1))
   } else {
     Block::default()
-      .title(format!(" {} - {}", feed_title, entry.title).green())
+      .title(format!(" Entry - {}", entry.title).green())
       .padding(Padding::symmetric(4, 0))
   };
 

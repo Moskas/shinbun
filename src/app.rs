@@ -126,6 +126,26 @@ impl LoadingState {
   }
 }
 
+/// Tracks all state that is created and mutated directly by keypresses.
+#[derive(Debug, Default)]
+pub struct InputState {
+  /// True while waiting for a second 'g' to complete the `gg` (go-to-top) sequence.
+  pub vim_g: bool,
+  /// When true, read entries are hidden from the entry list.
+  pub hide_read: bool,
+  /// The real (unfiltered) entry index captured the moment Enter is pressed to
+  /// open an entry. Stored before the entry is marked read so the visible→real
+  /// mapping stays stable for the entire duration of ViewingEntry.
+  pub current_entry_relative_index: Option<usize>,
+}
+
+impl InputState {
+  /// Clear any multi-key sequence in progress.
+  pub fn cancel_sequence(&mut self) {
+    self.vim_g = false;
+  }
+}
+
 pub struct App {
   feeds: Vec<Feed>,
   display_feeds: Vec<DisplayFeed>,
@@ -144,7 +164,7 @@ pub struct App {
   current_feed: Option<String>,
   feed_errors: Vec<FeedError>,
   show_error_popup: bool,
-  pending_g: bool,
+  input: InputState,
   cache: FeedCache,
 }
 
@@ -185,7 +205,7 @@ impl App {
       current_feed: None,
       feed_errors: Vec::new(),
       show_error_popup: false,
-pending_g: false,
+      input: InputState::default(),
       cache,
     }
   }
@@ -278,9 +298,9 @@ pending_g: false,
 
     match self.state {
       AppState::ViewingEntry => {
-        if let Some(display_feed) = self.display_feeds.get(self.feed_index) {
-          if let Some(entry_idx) = self.entry_list_state.selected() {
-            if let Some(entry) = display_feed.entries(&self.feeds).get(entry_idx) {
+        if let Some(real_idx) = self.input.current_entry_relative_index {
+          if let Some(display_feed) = self.display_feeds.get(self.feed_index) {
+            if let Some(entry) = display_feed.entries(&self.feeds).get(real_idx) {
               entry_view::render(
                 frame,
                 area,
@@ -309,6 +329,7 @@ pending_g: false,
           self.current_feed.as_deref(),
           &self.feed_errors,
           self.show_error_popup,
+          self.input.hide_read,
         );
       }
     }
@@ -333,10 +354,24 @@ pending_g: false,
           self.show_error_popup = !self.show_error_popup;
         }
       }
+      KeyCode::Char('u') | KeyCode::Char('U') => {
+        self.input.cancel_sequence();
+        self.input.hide_read = !self.input.hide_read;
+        // Reset selection so it doesn't point out-of-bounds in the filtered list
+        self.entry_list_state.select(Some(0));
+      }
       KeyCode::Char('m') | KeyCode::Char('M') => match self.state {
-        AppState::BrowsingEntries | AppState::ViewingEntry => {
-          if let Some(entry_idx) = self.entry_list_state.selected() {
-            self.toggle_selected_entry_read(entry_idx);
+        AppState::BrowsingEntries => {
+          if let Some(visible_idx) = self.entry_list_state.selected() {
+            let real_idx = self
+              .visible_to_real_entry_idx(visible_idx)
+              .unwrap_or(visible_idx);
+            self.toggle_selected_entry_read(real_idx);
+          }
+        }
+        AppState::ViewingEntry => {
+          if let Some(real_idx) = self.input.current_entry_relative_index {
+            self.toggle_selected_entry_read(real_idx);
           }
         }
         _ => {}
@@ -353,47 +388,71 @@ pending_g: false,
         }
         _ => {}
       },
-KeyCode::Up | KeyCode::Char('k') => {
-        self.pending_g = false;
+      KeyCode::Up | KeyCode::Char('k') => {
+        self.input.cancel_sequence();
         self.handle_up();
       }
       KeyCode::Down | KeyCode::Char('j') => {
-        self.pending_g = false;
+        self.input.cancel_sequence();
         self.handle_down();
       }
       KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => {
-        self.pending_g = false;
+        self.input.cancel_sequence();
         self.handle_enter();
       }
       KeyCode::Left | KeyCode::Char('h') | KeyCode::Backspace => {
-        self.pending_g = false;
+        self.input.cancel_sequence();
         self.handle_back();
       }
       KeyCode::Home => {
-        self.pending_g = false;
+        self.input.cancel_sequence();
         self.handle_go_top();
       }
       KeyCode::End => {
-        self.pending_g = false;
+        self.input.cancel_sequence();
         self.handle_go_bottom();
       }
       KeyCode::Char('G') => {
-        self.pending_g = false;
+        self.input.cancel_sequence();
         self.handle_go_bottom();
       }
       KeyCode::Char('g') => {
-        if self.pending_g {
-          self.pending_g = false;
+        if self.input.vim_g {
+          self.input.vim_g = false;
           self.handle_go_top();
         } else {
-          self.pending_g = true;
+          self.input.vim_g = true;
         }
       }
       _ => {
-        self.pending_g = false;
+        self.input.cancel_sequence();
       }
     }
   }
+
+  // ─── Visible entry helpers ────────────────────────────────────────────────
+
+  /// Returns the real (unfiltered) entry indices that are currently visible
+  /// given the `hide_read` setting. When `hide_read` is false this is simply
+  /// every index; when true only unread entries are included.
+  fn visible_entry_indices(&self) -> Vec<usize> {
+    let Some(df) = self.display_feeds.get(self.feed_index) else {
+      return vec![];
+    };
+    df.entries(&self.feeds)
+      .iter()
+      .enumerate()
+      .filter(|(_, e)| !self.input.hide_read || !e.read)
+      .map(|(i, _)| i)
+      .collect()
+  }
+
+  /// Maps a visible (filtered) list position to the real entry index in the feed.
+  fn visible_to_real_entry_idx(&self, visible_idx: usize) -> Option<usize> {
+    self.visible_entry_indices().get(visible_idx).copied()
+  }
+
+  // ─── Navigation helpers ───────────────────────────────────────────────────
 
   fn handle_up(&mut self) {
     match self.state {
@@ -426,11 +485,7 @@ KeyCode::Up | KeyCode::Char('k') => {
       }
       AppState::BrowsingEntries => {
         if let Some(selected) = self.entry_list_state.selected() {
-          let len = self
-            .display_feeds
-            .get(self.feed_index)
-            .map(|df| df.entries(&self.feeds).len())
-            .unwrap_or(0);
+          let len = self.visible_entry_indices().len();
           if selected + 1 < len {
             self.entry_list_state.select(Some(selected + 1));
           }
@@ -442,7 +497,7 @@ KeyCode::Up | KeyCode::Char('k') => {
     }
   }
 
-fn handle_go_top(&mut self) {
+  fn handle_go_top(&mut self) {
     match self.state {
       AppState::BrowsingFeeds => {
         self.feed_index = 0;
@@ -465,11 +520,7 @@ fn handle_go_top(&mut self) {
         self.feed_list_state.select(Some(last));
       }
       AppState::BrowsingEntries => {
-        let last = self
-          .display_feeds
-          .get(self.feed_index)
-          .map(|df| df.entries(&self.feeds).len().saturating_sub(1))
-          .unwrap_or(0);
+        let last = self.visible_entry_indices().len().saturating_sub(1);
         self.entry_list_state.select(Some(last));
       }
       AppState::ViewingEntry => {
@@ -486,8 +537,14 @@ fn handle_go_top(&mut self) {
         self.entry_list_state.select(Some(0));
       }
       AppState::BrowsingEntries => {
-        if let Some(entry_idx) = self.entry_list_state.selected() {
-          self.mark_selected_entry_read(entry_idx);
+        if let Some(visible_idx) = self.entry_list_state.selected() {
+          let real_idx = self
+            .visible_to_real_entry_idx(visible_idx)
+            .unwrap_or(visible_idx);
+          // Store the real index BEFORE marking as read — once read, this entry
+          // may vanish from the visible list and the mapping would shift.
+          self.input.current_entry_relative_index = Some(real_idx);
+          self.mark_selected_entry_read(real_idx);
         }
         self.state = AppState::ViewingEntry;
         self.entry_scroll = 0;
@@ -498,7 +555,10 @@ fn handle_go_top(&mut self) {
 
   fn handle_back(&mut self) {
     match self.state {
-      AppState::ViewingEntry => self.state = AppState::BrowsingEntries,
+      AppState::ViewingEntry => {
+        self.input.current_entry_relative_index = None;
+        self.state = AppState::BrowsingEntries;
+      }
       AppState::BrowsingEntries => self.state = AppState::BrowsingFeeds,
       AppState::BrowsingFeeds => {}
     }
@@ -513,8 +573,8 @@ fn handle_go_top(&mut self) {
       if let Err(e) = Command::new(bin)
         .args(args)
         .arg(url)
-        .stdout(std::process::Stdio::null()) // TODO Move info to a popup or smaller window
-        .stderr(std::process::Stdio::null()) // Not ideal but will work for now
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
       {
         eprintln!("Failed to launch '{}': {}", cmd, e);
@@ -523,17 +583,26 @@ fn handle_go_top(&mut self) {
   }
 
   /// Open the first link of the currently selected entry in a browser.
-  ///
-  /// All borrows are immutable (&self), so we can hold &str references into
-  /// self.display_feeds / self.feeds / self.ui_config simultaneously — no clone needed.
   fn open_current_entry_in_browser(&self) {
-    let Some(entry_idx) = self.entry_list_state.selected() else {
-      return;
+    let real_idx = match self.state {
+      AppState::ViewingEntry => match self.input.current_entry_relative_index {
+        Some(i) => i,
+        None => return,
+      },
+      _ => {
+        let visible_idx = match self.entry_list_state.selected() {
+          Some(i) => i,
+          None => return,
+        };
+        self
+          .visible_to_real_entry_idx(visible_idx)
+          .unwrap_or(visible_idx)
+      }
     };
     let Some(df) = self.display_feeds.get(self.feed_index) else {
       return;
     };
-    let Some(entry) = df.entries(&self.feeds).get(entry_idx) else {
+    let Some(entry) = df.entries(&self.feeds).get(real_idx) else {
       return;
     };
     let Some(url) = entry.links.first() else {
@@ -548,16 +617,26 @@ fn handle_go_top(&mut self) {
   }
 
   /// Open the media attachment of the currently selected entry.
-  ///
-  /// Same &self approach — no clone needed.
   fn open_media_in_player(&self) {
-    let Some(entry_idx) = self.entry_list_state.selected() else {
-      return;
+    let real_idx = match self.state {
+      AppState::ViewingEntry => match self.input.current_entry_relative_index {
+        Some(i) => i,
+        None => return,
+      },
+      _ => {
+        let visible_idx = match self.entry_list_state.selected() {
+          Some(i) => i,
+          None => return,
+        };
+        self
+          .visible_to_real_entry_idx(visible_idx)
+          .unwrap_or(visible_idx)
+      }
     };
     let Some(df) = self.display_feeds.get(self.feed_index) else {
       return;
     };
-    let Some(entry) = df.entries(&self.feeds).get(entry_idx) else {
+    let Some(entry) = df.entries(&self.feeds).get(real_idx) else {
       return;
     };
     let Some(url) = &entry.media else { return };

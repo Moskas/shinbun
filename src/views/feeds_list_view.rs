@@ -1,5 +1,5 @@
 use crate::app::{AppState, DisplayFeed, FeedError, LoadingState};
-use crate::feeds::Feed;
+use crate::feeds::{Feed, FeedEntry};
 use ratatui::{
   prelude::*,
   symbols::border,
@@ -68,7 +68,7 @@ fn feed_row(feed: &DisplayFeed, raw_feeds: &[Feed]) -> Row<'static> {
 }
 
 /// Build a Table Row for an entry.
-fn entry_row(entry: &crate::feeds::FeedEntry, is_query: bool) -> Row<'static> {
+fn entry_row(entry: &FeedEntry, is_query: bool) -> Row<'static> {
   let date = format_entry_date(entry.published.as_deref());
 
   let date_style = if entry.read {
@@ -128,6 +128,7 @@ pub fn render(
   current_feed: Option<&str>,
   feed_errors: &[FeedError],
   show_error_popup: bool,
+  hide_read: bool,
 ) {
   let title = Title::from(" Shinbun ".bold().yellow());
 
@@ -138,6 +139,8 @@ pub fn render(
     "<r> ".bold(),
     " Mark read/unread ".into(),
     "<m> ".bold(),
+    " Hide read ".into(),
+    "<u> ".bold(),
   ];
   if !feed_errors.is_empty() {
     instruction_spans.push(" Errors ".into());
@@ -180,6 +183,7 @@ pub fn render(
       app_state,
       show_borders,
       loading_state,
+      hide_read,
     );
   } else {
     render_single_pane(
@@ -192,6 +196,7 @@ pub fn render(
       app_state,
       show_borders,
       loading_state,
+      hide_read,
     );
   }
 
@@ -215,6 +220,7 @@ fn render_dual_pane(
   app_state: AppState,
   show_borders: bool,
   loading_state: &LoadingState,
+  hide_read: bool,
 ) {
   let chunks = Layout::default()
     .direction(Direction::Horizontal)
@@ -271,7 +277,7 @@ fn render_dual_pane(
   };
 
   let (entry_rows, is_query, source_width) =
-    build_entry_rows(display_feeds, raw_feeds, selected_feed_idx);
+    build_entry_rows(display_feeds, raw_feeds, selected_feed_idx, hide_read);
   let entry_widths = entry_column_widths(is_query, source_width);
   let entry_count = entry_rows.len();
 
@@ -295,6 +301,7 @@ fn render_single_pane(
   app_state: AppState,
   show_borders: bool,
   loading_state: &LoadingState,
+  hide_read: bool,
 ) {
   match app_state {
     AppState::BrowsingFeeds => {
@@ -337,7 +344,7 @@ fn render_single_pane(
     AppState::BrowsingEntries | AppState::ViewingEntry => {
       let selected_feed_idx = feed_state.selected().unwrap_or(0);
       let (entry_rows, is_query, source_width) =
-        build_entry_rows(display_feeds, raw_feeds, selected_feed_idx);
+        build_entry_rows(display_feeds, raw_feeds, selected_feed_idx, hide_read);
       let entry_widths = entry_column_widths(is_query, source_width);
       let entry_count = entry_rows.len();
 
@@ -357,13 +364,21 @@ fn render_single_pane(
 const DATE_COL_WIDTH: u16 = 8;
 
 /// Build entry rows for the selected feed, returning (rows, is_query, max_source_col_width).
+/// When `hide_read` is true, entries marked as read are excluded from the result.
 fn build_entry_rows(
   display_feeds: &[DisplayFeed],
   raw_feeds: &[Feed],
   selected_feed_idx: usize,
+  hide_read: bool,
 ) -> (Vec<Row<'static>>, bool, u16) {
   if let Some(feed) = display_feeds.get(selected_feed_idx) {
-    let entries = feed.entries(raw_feeds);
+    let all_entries = feed.entries(raw_feeds);
+
+    // Apply the hide-read filter
+    let entries: Vec<&FeedEntry> = all_entries
+      .iter()
+      .filter(|e| !hide_read || !e.read)
+      .collect();
 
     if entries.is_empty() {
       return (
