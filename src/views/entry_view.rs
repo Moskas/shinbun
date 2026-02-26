@@ -24,7 +24,8 @@ fn calculate_wrapped_height(lines: &[Line], content_width: u16) -> usize {
         (raw_width + width - 1) / width // ceil division
       }
     })
-    .sum()
+    .sum::<usize>()
+    + 2
 }
 
 /// Build the content lines for an entry view
@@ -43,7 +44,7 @@ fn build_entry_content<'a>(feed_title: &'a str, entry: &'a FeedEntry) -> Vec<Lin
   );
 
   if !entry.links.is_empty() {
-    lines.push(Line::from(format!("Link: {}", entry.links.join(", "))).blue());
+    lines.push(Line::from(format!("Link: {}", entry.links[0])).blue());
   }
 
   if let Some(ref url) = entry.media {
@@ -52,15 +53,21 @@ fn build_entry_content<'a>(feed_title: &'a str, entry: &'a FeedEntry) -> Vec<Lin
 
   lines.push(Line::from("")); // separator
 
-  // Body content
-  // for line in entry.text.lines() {
-  //   lines.push(Line::from(line.to_owned()));
-  // }
   let md = tui_markdown::from_str(&entry.text);
   lines.extend(md.lines);
-  //for line in md.lines {
-  //  lines.push(ratatui::prelude::Line::from(line.to_string()));
-  //}
+
+  if entry.links.len() > 1 {
+    lines.push(Line::from("")); // separator
+    lines.push(Line::from("Links:").bold()); // separator
+    lines.extend(
+      entry
+        .links
+        .iter()
+        .skip(1)
+        .enumerate()
+        .map(|(i, link)| Line::from(format!("[{}]: {}", i + 1, link).blue())),
+    );
+  }
 
   lines
 }

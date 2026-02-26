@@ -122,7 +122,9 @@ pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {
       let text = html2text::from_read(html_content.as_bytes(), usize::MAX)
         .unwrap_or_else(|_| String::from("Failed to parse content"));
 
-      let links = e.links.into_iter().map(|l| l.href).collect();
+      let mut links: Vec<_> = e.links.into_iter().map(|l| l.href).collect();
+
+      links.extend(extract_html_links(&html_content));
 
       let media = e
         .media
@@ -149,4 +151,19 @@ pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {
     entries,
     tags: feed_config.tags,
   })
+}
+
+fn extract_html_links(html: &str) -> Vec<String> {
+  let dom = tl::parse(html, tl::ParserOptions::default()).ok();
+  let Some(dom) = dom else { return vec![] };
+  let parser = dom.parser();
+  dom
+    .query_selector("a[href]")
+    .into_iter()
+    .flatten()
+    .filter_map(|h| h.get(parser)?.as_tag())
+    .filter_map(|tag| tag.attributes().get("href"))
+    .map(|b| b.unwrap().as_utf8_str().into_owned())
+    .filter(|href| href.starts_with("http"))
+    .collect()
 }
