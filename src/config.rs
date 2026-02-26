@@ -18,6 +18,11 @@ struct FeedsFile {
 pub struct UiConfig {
   #[serde(default = "default_show_borders")]
   pub show_borders: bool,
+
+  /// Display read entries
+  /// Default true, display can be toggled with a keybind
+  #[serde(default = "default_show_read_entries")]
+  pub show_read_entries: bool,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -34,6 +39,10 @@ pub struct GeneralConfig {
 }
 
 fn default_show_borders() -> bool {
+  true
+}
+
+fn default_show_read_entries() -> bool {
   true
 }
 

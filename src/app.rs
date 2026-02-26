@@ -192,7 +192,7 @@ impl App {
       state: AppState::BrowsingFeeds,
       entry_scroll: 0,
       general_config,
-      ui_config,
+      ui_config: ui_config.clone(),
       exit: false,
       feed_tx,
       loading_state: if is_loading {
@@ -205,7 +205,10 @@ impl App {
       current_feed: None,
       feed_errors: Vec::new(),
       show_error_popup: false,
-      input: InputState::default(),
+      input: InputState {
+        hide_read: !ui_config.show_read_entries,
+        ..InputState::default()
+      },
       cache,
     }
   }

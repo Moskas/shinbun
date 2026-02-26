@@ -1,12 +1,15 @@
 use crate::feeds::FeedEntry;
 use ratatui::{
-  prelude::*,
+  layout::Rect,
+  prelude::{Alignment, Line, Style, Stylize},
   symbols::border,
   widgets::{
-    block::{Position, Title},
-    Block, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+    Block, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    StatefulWidget, Widget, Wrap,
   },
+  Frame,
 };
+use tui_markdown;
 
 /// Calculate the wrapped height of text lines given a content width
 fn calculate_wrapped_height(lines: &[Line], content_width: u16) -> usize {
@@ -25,7 +28,7 @@ fn calculate_wrapped_height(lines: &[Line], content_width: u16) -> usize {
 }
 
 /// Build the content lines for an entry view
-fn build_entry_content(feed_title: &str, entry: &FeedEntry) -> Vec<Line<'static>> {
+fn build_entry_content<'a>(feed_title: &'a str, entry: &'a FeedEntry) -> Vec<Line<'a>> {
   let mut lines = Vec::new();
 
   // Metadata
@@ -50,9 +53,14 @@ fn build_entry_content(feed_title: &str, entry: &FeedEntry) -> Vec<Line<'static>
   lines.push(Line::from("")); // separator
 
   // Body content
-  for line in entry.text.lines() {
-    lines.push(Line::from(line.to_owned()));
-  }
+  // for line in entry.text.lines() {
+  //   lines.push(Line::from(line.to_owned()));
+  // }
+  let md = tui_markdown::from_str(&entry.text);
+  lines.extend(md.lines);
+  //for line in md.lines {
+  //  lines.push(ratatui::prelude::Line::from(line.to_string()));
+  //}
 
   lines
 }
@@ -67,36 +75,30 @@ pub fn render(
   show_borders: bool,
 ) {
   // Create the outer container
-  let title = Title::from(" Shinbun ".bold().yellow());
-  let instructions = Title::from(Line::from(vec![
+  let title = " Shinbun ".bold().yellow();
+  let mut instructions = Line::from(vec![
     " Back ".into(),
     "<h> ".bold(),
     " Open entry ".into(),
     "<o>".bold(),
-    " Play media ".into(),
-    "<p> ".bold(),
-  ]));
+  ]);
+
+  if entry.media.is_some() {
+    instructions.extend(vec![" Play media ".into(), "<p> ".bold()])
+  }
 
   let outer_block = if show_borders {
     Block::default()
-      .title(title.alignment(Alignment::Left))
-      .title(
-        instructions
-          .alignment(Alignment::Left)
-          .position(Position::Bottom),
-      )
+      .title(title)
+      .title_bottom(instructions.alignment(Alignment::Left))
       .title_bottom(Line::from(vec![" Quit ".into(), "<q> ".bold()]).right_aligned())
       .borders(Borders::ALL)
       .border_style(Style::new().blue())
       .border_set(border::PLAIN)
   } else {
     Block::default()
-      .title(title.alignment(Alignment::Left))
-      .title(
-        instructions
-          .alignment(Alignment::Left)
-          .position(Position::Bottom),
-      )
+      .title(title)
+      .title_bottom(instructions.alignment(Alignment::Left))
       .title_bottom(Line::from(vec![" Quit ".into(), " <q> ".bold()]).right_aligned())
   };
 

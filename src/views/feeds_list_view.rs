@@ -4,7 +4,6 @@ use ratatui::{
   prelude::*,
   symbols::border,
   widgets::{
-    block::{Position, Title},
     Block, Borders, Cell, Clear, Padding, Paragraph, Row, StatefulWidget, Table, TableState, Wrap,
   },
 };
@@ -129,7 +128,7 @@ pub fn render(
   show_error_popup: bool,
   hide_read: bool,
 ) {
-  let title = Title::from(" Shinbun ".bold().yellow());
+  let title = " Shinbun ".bold().yellow();
 
   let mut instruction_spans = vec![
     " Quit ".into(),
@@ -145,27 +144,17 @@ pub fn render(
     instruction_spans.push(" Errors ".into());
     instruction_spans.push("<e> ".bold().red());
   }
-  let instructions = Title::from(Line::from(instruction_spans));
+  let instructions = instruction_spans;
 
   let outer_block = if show_borders {
     Block::default()
-      .title(title.alignment(Alignment::Left))
-      .title(
-        instructions
-          .alignment(Alignment::Left)
-          .position(Position::Bottom),
-      )
+      .title(title)
+      .title_bottom(instructions)
       .borders(Borders::ALL)
       .border_style(Style::new().blue())
       .border_set(border::PLAIN)
   } else {
-    Block::default()
-      .title(title.alignment(Alignment::Left))
-      .title(
-        instructions
-          .alignment(Alignment::Left)
-          .position(Position::Bottom),
-      )
+    Block::default().title(title).title_bottom(instructions)
   };
 
   let inner_area = outer_block.inner(area);
@@ -237,7 +226,7 @@ fn render_main_pane(
       let feeds_table = Table::new(feed_rows, feed_widths)
         .block(create_feed_block(display_feeds.len(), show_borders))
         .column_spacing(2)
-        .highlight_style(Style::default().bg(Color::Yellow).fg(Color::Black));
+        .row_highlight_style(Style::default().bg(Color::Yellow).fg(Color::Black));
 
       StatefulWidget::render(feeds_table, area, frame.buffer_mut(), feed_state);
     }
@@ -252,7 +241,7 @@ fn render_main_pane(
       let entries_table = Table::new(entry_rows, entry_widths)
         .block(create_entry_block(entry_count, show_borders))
         .column_spacing(2)
-        .highlight_style(Style::default().bg(Color::Yellow).fg(Color::Black).bold());
+        .row_highlight_style(Style::default().bg(Color::Yellow).fg(Color::Black).bold());
 
       StatefulWidget::render(entries_table, area, frame.buffer_mut(), entry_state);
     }
@@ -325,8 +314,8 @@ fn entry_column_widths(is_query: bool, source_width: u16) -> Vec<Constraint> {
 // ─── Blocks ───────────────────────────────────────────────────────────────────
 
 fn create_feed_block(count: usize, show_borders: bool) -> Block<'static> {
-  let title = Title::from(" Feeds ".green());
-  let count_title = Title::from(format!(" {} ", count).yellow()).position(Position::Top);
+  let title = " Feeds ".green();
+  let count_title = format!(" {} ", count).yellow();
   if show_borders {
     Block::default()
       .title(title)
@@ -344,8 +333,8 @@ fn create_feed_block(count: usize, show_borders: bool) -> Block<'static> {
 }
 
 fn create_entry_block(count: usize, show_borders: bool) -> Block<'static> {
-  let title = Title::from(" Entries ".green());
-  let count_title = Title::from(format!(" {} ", count).yellow()).position(Position::Top);
+  let title = " Entries ".green();
+  let count_title = format!(" {} ", count).yellow();
   if show_borders {
     Block::default()
       .title(title)
@@ -386,11 +375,7 @@ fn render_error_popup(frame: &mut Frame, area: Rect, feed_errors: &[FeedError]) 
     .block(
       Block::default()
         .title(" Feed Errors ".red().bold())
-        .title(
-          Title::from(" <e> or <Esc> to close ".gray())
-            .position(Position::Bottom)
-            .alignment(Alignment::Right),
-        )
+        .title_bottom(" <e> or <Esc> to close ".gray())
         .borders(Borders::ALL)
         .border_style(Style::new().red())
         .border_set(border::PLAIN),

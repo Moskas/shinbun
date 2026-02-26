@@ -111,6 +111,11 @@ pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {
         .content
         .as_ref()
         .and_then(|c| c.body.clone())
+        .or_else(|| {
+          e.media
+            .first()
+            .and_then(|m| m.description.as_ref().map(|d| d.content.clone()))
+        })
         .or_else(|| e.summary.as_ref().map(|s| s.content.clone()))
         .unwrap_or_default();
 
@@ -119,7 +124,6 @@ pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {
 
       let links = e.links.into_iter().map(|l| l.href).collect();
 
-      // Grab the first media URL if present — no type classification needed.
       let media = e
         .media
         .first()
