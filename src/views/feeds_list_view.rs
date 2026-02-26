@@ -122,7 +122,6 @@ pub fn render(
   feed_state: &mut TableState,
   entry_state: &mut TableState,
   app_state: AppState,
-  split_view: bool,
   show_borders: bool,
   loading_state: &LoadingState,
   current_feed: Option<&str>,
@@ -172,33 +171,18 @@ pub fn render(
   let inner_area = outer_block.inner(area);
   outer_block.render(area, frame.buffer_mut());
 
-  if split_view {
-    render_dual_pane(
-      frame,
-      inner_area,
-      raw_feeds,
-      display_feeds,
-      feed_state,
-      entry_state,
-      app_state,
-      show_borders,
-      loading_state,
-      hide_read,
-    );
-  } else {
-    render_single_pane(
-      frame,
-      inner_area,
-      raw_feeds,
-      display_feeds,
-      feed_state,
-      entry_state,
-      app_state,
-      show_borders,
-      loading_state,
-      hide_read,
-    );
-  }
+  render_main_pane(
+    frame,
+    inner_area,
+    raw_feeds,
+    display_feeds,
+    feed_state,
+    entry_state,
+    app_state,
+    show_borders,
+    loading_state,
+    hide_read,
+  );
 
   if show_error_popup {
     render_error_popup(frame, area, feed_errors);
@@ -208,90 +192,7 @@ pub fn render(
   }
 }
 
-// ─── Dual-pane ────────────────────────────────────────────────────────────────
-
-fn render_dual_pane(
-  frame: &mut Frame,
-  area: Rect,
-  raw_feeds: &[Feed],
-  display_feeds: &[DisplayFeed],
-  feed_state: &mut TableState,
-  entry_state: &mut TableState,
-  app_state: AppState,
-  show_borders: bool,
-  loading_state: &LoadingState,
-  hide_read: bool,
-) {
-  let chunks = Layout::default()
-    .direction(Direction::Horizontal)
-    .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
-    .split(area);
-
-  // ── Feeds table ──────────────────────────────────────────────────────────
-  let feed_highlight = match app_state {
-    AppState::BrowsingFeeds => Style::default().bg(Color::Yellow).fg(Color::Black),
-    _ => Style::default().yellow(),
-  };
-
-  let feed_rows: Vec<Row> = if display_feeds.is_empty() {
-    let msg = if loading_state.is_loading {
-      format!(" {} Loading feeds...", loading_state.spinner_frame())
-    } else {
-      " No feeds configured. Press 'r' to load.".to_string()
-    };
-    vec![Row::new(vec![Cell::from(""), Cell::from(msg)])]
-  } else {
-    display_feeds
-      .iter()
-      .map(|f| feed_row(f, raw_feeds))
-      .collect()
-  };
-
-  let count_width = display_feeds
-    .iter()
-    .map(|f| {
-      let entries = f.entries(raw_feeds);
-      let total = entries.len();
-      let unread = entries.iter().filter(|e| !e.read).count();
-      format!("{}/{}", unread, total).len() as u16
-    })
-    .max()
-    .unwrap_or(5)
-    .max(5);
-
-  let feed_widths = [Constraint::Length(count_width), Constraint::Fill(1)];
-
-  let feeds_table = Table::new(feed_rows, feed_widths)
-    .block(create_feed_block(display_feeds.len(), show_borders))
-    .column_spacing(2)
-    .highlight_style(feed_highlight);
-
-  StatefulWidget::render(feeds_table, chunks[0], frame.buffer_mut(), feed_state);
-
-  // ── Entries table ────────────────────────────────────────────────────────
-  let selected_feed_idx = feed_state.selected().unwrap_or(0);
-
-  let entry_highlight = match app_state {
-    AppState::BrowsingEntries => Style::default().bg(Color::Yellow).fg(Color::Black).bold(),
-    _ => Style::default(),
-  };
-
-  let (entry_rows, is_query, source_width) =
-    build_entry_rows(display_feeds, raw_feeds, selected_feed_idx, hide_read);
-  let entry_widths = entry_column_widths(is_query, source_width);
-  let entry_count = entry_rows.len();
-
-  let entries_table = Table::new(entry_rows, entry_widths)
-    .block(create_entry_block(entry_count, show_borders))
-    .column_spacing(2)
-    .highlight_style(entry_highlight);
-
-  StatefulWidget::render(entries_table, chunks[1], frame.buffer_mut(), entry_state);
-}
-
-// ─── Single-pane ──────────────────────────────────────────────────────────────
-
-fn render_single_pane(
+fn render_main_pane(
   frame: &mut Frame,
   area: Rect,
   raw_feeds: &[Feed],

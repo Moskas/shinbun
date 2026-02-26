@@ -16,8 +16,6 @@ struct FeedsFile {
 
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct UiConfig {
-  #[serde(default)]
-  pub split_view: bool,
   #[serde(default = "default_show_borders")]
   pub show_borders: bool,
 }

@@ -323,7 +323,6 @@ impl App {
           &mut self.feed_list_state,
           &mut self.entry_list_state,
           self.state,
-          self.ui_config.split_view,
           self.ui_config.show_borders,
           &self.loading_state,
           self.current_feed.as_deref(),
