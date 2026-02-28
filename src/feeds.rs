@@ -85,6 +85,52 @@ async fn fetch_single_feed(url: &str) -> Result<String, ReqError> {
   }
 }
 
+/// Fetch a single feed with progress reporting
+/// Fetch a subset of feeds concurrently, sending UpdateSingle for each result.
+pub async fn fetch_feeds_subset_with_progress(
+  feeds: Vec<FeedConfig>,
+  tx: mpsc::UnboundedSender<FeedUpdate>,
+) {
+  let mut tasks = Vec::new();
+
+  for feed_config in feeds {
+    let tx_clone = tx.clone();
+    let task = tokio::spawn(async move {
+      let feed_name = feed_config
+        .name
+        .clone()
+        .unwrap_or_else(|| feed_config.link.clone());
+      let _ = tx_clone.send(FeedUpdate::FetchingFeed(feed_name.clone()));
+
+      match fetch_single_feed(&feed_config.link).await {
+        Ok(body) => match parse_single_feed(feed_config, &body) {
+          Some(feed) => {
+            let _ = tx_clone.send(FeedUpdate::UpdateSingle(feed));
+          }
+          None => {
+            let _ = tx_clone.send(FeedUpdate::FeedError {
+              name: feed_name,
+              error: "Failed to parse feed".to_string(),
+            });
+          }
+        },
+        Err(err) => {
+          let _ = tx_clone.send(FeedUpdate::FeedError {
+            name: feed_name,
+            error: format!("Failed to fetch: {}", err),
+          });
+        }
+      }
+    });
+    tasks.push(task);
+  }
+
+  for task in tasks {
+    let _ = task.await;
+  }
+  let _ = tx.send(FeedUpdate::FetchComplete);
+}
+
 // ─── Parsing ──────────────────────────────────────────────────────────────────
 /// Parse a single feed from its body content
 pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {

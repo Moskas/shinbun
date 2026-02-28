@@ -60,10 +60,14 @@ impl DisplayFeed {
 pub enum FeedUpdate {
   /// Replace all feeds with new data
   Replace(Vec<Feed>),
+  UpdateSingle(Feed),
   /// Report progress on a specific feed
   FetchingFeed(String),
   /// Report a feed that failed to fetch or parse
-  FeedError { name: String, error: String },
+  FeedError {
+    name: String,
+    error: String,
+  },
   /// All feeds finished fetching — reload from cache now
   FetchComplete,
 }
@@ -74,26 +78,32 @@ pub struct FeedError {
   pub error: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct LoadingState {
   pub is_loading: bool,
   pub start_time: Instant,
+  pub is_initial_load: bool,
   pub finish_time: Option<Instant>,
+  pub updated_feeds: Vec<String>,
 }
 
 impl LoadingState {
   pub fn new() -> Self {
     Self {
       is_loading: true,
+      is_initial_load: true,
       start_time: Instant::now(),
       finish_time: None,
+      updated_feeds: Vec::new(),
     }
   }
 
   pub fn start(&mut self) {
     self.is_loading = true;
+    self.is_initial_load = false;
     self.start_time = Instant::now();
     self.finish_time = None;
+    self.updated_feeds.clear();
   }
 
   pub fn stop(&mut self) {
@@ -249,6 +259,9 @@ impl App {
   pub fn handle_feed_update(&mut self, update: FeedUpdate) {
     match update {
       FeedUpdate::Replace(new_feeds) => {
+        for feed in new_feeds.iter() {
+          self.loading_state.updated_feeds.push(feed.title.clone());
+        }
         for (i, feed) in new_feeds.iter().enumerate() {
           if let Err(e) = self.cache.save_feed(feed, i) {
             eprintln!("Failed to cache feed {}: {}", feed.title, e);
@@ -268,9 +281,26 @@ impl App {
         self.feed_errors.push(FeedError { name, error });
       }
 
+      FeedUpdate::UpdateSingle(feed) => {
+        let pos = self
+          .feed_config
+          .iter()
+          .position(|fc| fc.link == feed.url)
+          .unwrap_or(0);
+        self.loading_state.updated_feeds.push(feed.title.clone());
+        if let Err(e) = self.cache.save_feed(&feed, pos) {
+          eprintln!("Failed to cache feed {}: {}", feed.title, e);
+        }
+        self.feeds = self.cache.load_all_feeds().unwrap_or_default();
+        self.rebuild_display_feeds();
+      }
+
       FeedUpdate::FetchComplete => {
         self.feeds.clear();
         self.feeds = self.cache.load_all_feeds().unwrap_or_default();
+        if self.loading_state.is_initial_load {
+          self.loading_state.updated_feeds = self.feeds.iter().map(|f| f.title.clone()).collect();
+        }
         self.rebuild_display_feeds();
         self.loading_state.stop();
         self.current_feed = None;
@@ -286,13 +316,70 @@ impl App {
     self.loading_state.start();
     self.feed_errors.clear();
     self.show_error_popup = false;
-    // These two clones are genuinely required: the spawned task needs ownership
-    // of the config vec, and UnboundedSender is designed to be cloned for sharing.
     let feeds = self.feed_config.clone();
     let tx = self.feed_tx.clone();
 
     tokio::spawn(async move {
       feeds::fetch_feed_with_progress(feeds, tx).await;
+    });
+  }
+
+  pub fn refresh_selected_feed(&mut self) {
+    if self.loading_state.is_loading {
+      return;
+    }
+
+    let selected = self.feed_list_state.selected().unwrap_or(0);
+
+    let feeds_to_refresh: Vec<FeedConfig> = match self.display_feeds.get(selected) {
+      Some(DisplayFeed::Regular(i)) => {
+        // Single feed — find its config by URL
+        self
+          .feeds
+          .get(*i)
+          .and_then(|f| self.feed_config.iter().find(|fc| fc.link == f.url))
+          .cloned()
+          .map(|fc| vec![fc])
+          .unwrap_or_default()
+      }
+
+      Some(DisplayFeed::Query { name, .. }) => {
+        // Find the query string for this named query feed, then filter
+        // feed_config to only the entries whose tags match.
+        let query_str = self
+          .query_config
+          .iter()
+          .find(|qf| qf.name == *name)
+          .map(|qf| qf.query.clone());
+
+        match query_str {
+          Some(q) => {
+            let filter = query::parse_query(&q);
+            self
+              .feed_config
+              .iter()
+              .filter(|fc| query::config_feed_matches(fc, &filter))
+              .cloned()
+              .collect()
+          }
+          None => vec![],
+        }
+      }
+
+      None => vec![],
+    };
+
+    if feeds_to_refresh.is_empty() {
+      return;
+    }
+
+    self.loading_state.start();
+    self.feed_errors.clear();
+    self.show_error_popup = false;
+
+    let tx = self.feed_tx.clone();
+    tokio::spawn(async move {
+      feeds::fetch_feeds_subset_with_progress(feeds_to_refresh, tx).await;
     });
   }
 
@@ -350,7 +437,8 @@ impl App {
 
     match key.code {
       KeyCode::Char('q') | KeyCode::Char('Q') => self.exit = true,
-      KeyCode::Char('r') | KeyCode::Char('R') => self.refresh_feeds(),
+      KeyCode::Char('r') => self.refresh_selected_feed(),
+      KeyCode::Char('R') => self.refresh_feeds(),
       KeyCode::Char('e') | KeyCode::Char('E') => {
         if !self.feed_errors.is_empty() {
           self.show_error_popup = !self.show_error_popup;

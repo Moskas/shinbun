@@ -177,7 +177,7 @@ pub fn render(
     render_error_popup(frame, area, feed_errors);
   }
   if loading_state.should_show_popup() {
-    render_loading_popup(frame, area, loading_state, current_feed, display_feeds);
+    render_loading_popup(frame, area, loading_state, current_feed);
   }
 }
 
@@ -390,7 +390,6 @@ fn render_loading_popup(
   area: Rect,
   loading_state: &LoadingState,
   current_feed: Option<&str>,
-  display_feeds: &[DisplayFeed],
 ) {
   let status_line = if loading_state.is_loading {
     let spinner = loading_state.spinner_frame();
@@ -409,10 +408,15 @@ fn render_loading_popup(
         format!(" {} Loading... ", spinner)
       }
     }
+  } else if loading_state.is_initial_load {
+    format!(" ✓ {} feeds loaded ", loading_state.updated_feeds.len())
   } else {
-    format!(" ✓ {} feeds loaded ", display_feeds.len())
+    match loading_state.updated_feeds.len() {
+      0 => " ✓ Updated ".to_string(),
+      1 => format!(" ✓ {} updated ", loading_state.updated_feeds[0]),
+      n => format!(" ✓ {} feeds updated ", n),
+    }
   };
-
   let popup_width = (status_line.len() as u16 + 2).min(area.width.saturating_sub(2));
   let popup_height = 3u16;
   let popup_x = area.x + area.width.saturating_sub(popup_width + 1);

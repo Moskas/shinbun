@@ -157,7 +157,7 @@ pub fn render(
   let paragraph = Paragraph::new(content)
     .block(entry_block.clone().title_bottom(line_info.yellow()))
     .scroll((*scroll as u16, 0))
-    .wrap(Wrap { trim: true });
+    .wrap(Wrap { trim: false });
 
   // Render the outer block
   outer_block.render(area, frame.buffer_mut());

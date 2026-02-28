@@ -83,6 +83,24 @@ pub fn apply_query(feeds: &[Feed], query: &str) -> Vec<FeedEntry> {
   entries
 }
 
+/// Check if a FeedConfig matches a query filter.
+/// Used by the targeted refresh to find which feeds to re-fetch.
+pub fn config_feed_matches(fc: &crate::config::Feed, filter: &QueryFilter) -> bool {
+  match filter {
+    QueryFilter::All => true,
+    QueryFilter::Tags(query_tags) => {
+      if query_tags.is_empty() {
+        return false;
+      }
+      fc.tags.as_ref().map_or(false, |feed_tags| {
+        query_tags
+          .iter()
+          .any(|qt| feed_tags.iter().any(|ft| ft == qt))
+      })
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
