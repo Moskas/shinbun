@@ -9,7 +9,45 @@ use ratatui::{
   },
   Frame,
 };
-use tui_markdown;
+use tui_markdown::{self, StyleSheet, Options};
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ShinbunStyleSheet;
+
+impl StyleSheet for ShinbunStyleSheet {
+    fn heading(&self, level: u8) -> Style {
+        match level {
+            1 => Style::new().cyan().bold().underlined(),
+            2 => Style::new().magenta().bold(),
+            3 => Style::new().blue().bold(),
+            4 => Style::new().red(),
+            5 => Style::new().light_cyan(),
+            _ => Style::new(),
+        }
+    }
+
+    fn code(&self) -> Style {
+        Style::new().on_black().white()
+    }
+
+    fn link(&self) -> Style {
+        Style::new().blue().underlined()
+    }
+
+    fn blockquote(&self) -> Style {
+        Style::new().green()
+    }
+
+    fn heading_meta(&self) -> Style {
+        Style::new().dim()
+    }
+
+    fn metadata_block(&self) -> Style {
+        Style::new().light_yellow()
+    }
+
+}
+
 
 /// Calculate the wrapped height of text lines given a content width
 fn calculate_wrapped_height(lines: &[Line], content_width: u16) -> usize {
@@ -53,7 +91,7 @@ fn build_entry_content<'a>(feed_title: &'a str, entry: &'a FeedEntry) -> Vec<Lin
 
   lines.push(Line::from("")); // separator
 
-  let md = tui_markdown::from_str(&entry.text);
+  let md = tui_markdown::from_str_with_options(&entry.text, &Options::new(ShinbunStyleSheet) );
   lines.extend(md.lines);
 
   if entry.links.len() > 1 {
