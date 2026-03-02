@@ -1,23 +1,111 @@
-#+title: 新聞
+#+title: shinbun
 #+author: Moskas
 #+options: \n:t
 
-新聞(shinbun) is a TUI application for reading feeds. Heavily inspired by newsboat.
+shinbun (新聞) is a terminal-based RSS/Atom feed reader written in Rust, using ratatui and crossterm. It draws some inspiration from newsboat.
+
 [[./examples/feed_list.png]]
 
-* Configuration
-Feeds are being read from user config directory. The format follows newsboat urls file so each feed url is a separate line.
-** Linux
+* Features
+
+- RSS and Atom feed support
+- Local SQLite cache for offline reading and persistent read state
+- Tag-based feed organization
+- Query feeds that aggregate entries across multiple feeds by tag
+- Read/unread tracking with per-entry and per-feed bulk marking
+- Hide/show read entries
+- Open entries in a configurable browser or media player
+- Vim-style keybindings
+
+* Installation
+
+Requires Rust (stable). Clone the repository and build with cargo:
+
 #+begin_src shell
-$HOME/.config/shinbun/urls
-#+end_src
-** Windows
-#+begin_src shell
-$HOME/AppData/Roaming/shinbun/ursl
+cargo build --release
 #+end_src
 
-** Example
-#+begin_src shell
-https://moskas.github.io/feeds.xml
-https://xn--gckvb8fzb.com/index.xml
+The binary will be at =target/release/shinbun=.
+
+* Configuration
+
+Configuration files are stored in the platform config directory under =shinbun/=.
+
+** Linux / macOS
+#+begin_src
+~/.config/shinbun/
 #+end_src
+
+** Windows
+#+begin_src
+%APPDATA%\shinbun\
+#+end_src
+
+Two files are used:
+- =feeds.toml= (required) -- defines the feeds to subscribe to
+- =config.toml= (optional) -- UI settings, general options, and query feeds
+
+** feeds.toml
+
+Each feed is declared as a =[[feeds]]= entry. The =link= field is required. =name= and =tags= are optional.
+
+#+begin_src toml
+[[feeds]]
+link = "https://example.com/feed.xml"
+
+[[feeds]]
+link = "https://blog.example.org/rss"
+name = "Example Blog"
+tags = ["tech", "blog"]
+#+end_src
+
+If =name= is set, it overrides the title provided by the feed itself.
+
+** config.toml
+
+#+begin_src toml
+[general]
+browser = "firefox"           # optional, defaults to system default
+media_player = "mpv"          # optional, defaults to system default
+
+[ui]
+show_borders = true           # default: true
+show_read_entries = true      # default: true
+
+[[queries]]
+name = "Tech"
+query = "tags:tech"
+
+[[queries]]
+name = "All"
+query = "*"
+#+end_src
+
+Query feeds aggregate entries from all feeds whose tags match the query. Use =tags:tag1,tag2= to match specific tags, or =*= to match everything.
+
+* Keybindings
+
+| Key                        | Action                   |
+|----------------------------+--------------------------|
+| =j= / =Down=               | Move down                |
+| =k= / =Up=                 | Move up                  |
+| =l= / =Enter= / =Right=    | Open / Enter             |
+| =h= / =Backspace= / =Left= | Go back                  |
+| =g g= / =Home=             | Go to top                |
+| =G= / =End=                | Go to bottom             |
+| =r=                        | Refresh selected feed    |
+| =R=                        | Refresh all feeds        |
+| =m=                        | Toggle read / unread     |
+| =A=                        | Mark feed as read        |
+| =u=                        | Toggle hide read entries |
+| =o=                        | Open entry in browser    |
+| =p=                        | Play media attachment    |
+| =e=                        | Show feed errors         |
+| =?=                        | Toggle help              |
+| =q=                        | Quit                     |
+
+Press =?= inside the application to see the full keybinding reference.
+
+* Data Storage
+
+Feed data and read state are cached in a SQLite database at =shinbun/cache.db= inside the config directory. Entries that age out of a feed's remote source are preserved locally so history and read state are not lost. Feeds removed from =feeds.toml= are pruned from the cache on the next launch.
