@@ -47,7 +47,7 @@ fn feed_row(feed: &DisplayFeed, raw_feeds: &[Feed]) -> Row<'static> {
   let unread = entries.iter().filter(|e| !e.read).count();
 
   let count_str = format!("{}/{}", unread, total);
-  let title = format!("{}", feed.title(raw_feeds));
+  let title = feed.title(raw_feeds).to_string();
 
   let style = if unread == 0 {
     Style::default().fg(Color::DarkGray)
@@ -395,7 +395,8 @@ fn render_loading_popup(
     let spinner = loading_state.spinner_frame();
     if let Some(feed_name) = current_feed {
       let display_name = if feed_name.len() > 28 {
-        format!("{}...", &feed_name[..25])
+        let truncated: String = feed_name.chars().take(25).collect();
+        format!("{}...", truncated)
       } else {
         feed_name.to_string()
       };

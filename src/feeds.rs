@@ -79,10 +79,7 @@ pub async fn fetch_feed_with_progress(
 
 /// Fetch a single feed from URL
 async fn fetch_single_feed(url: &str) -> Result<String, ReqError> {
-  match get(url).await {
-    Ok(response) => response.text().await,
-    Err(err) => Err(err),
-  }
+  get(url).await?.text().await
 }
 
 /// Fetch a single feed with progress reporting

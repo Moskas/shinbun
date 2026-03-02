@@ -1,5 +1,4 @@
 use crate::feeds::{Feed, FeedEntry};
-use std::sync::Arc;
 
 /// Represents a parsed query filter
 #[derive(Debug, Clone)]
@@ -42,11 +41,11 @@ pub fn feed_matches(feed: &Feed, filter: &QueryFilter) -> bool {
         return false;
       }
 
-      // Check if feed has any of the query tags
+      // Check if feed has any of the query tags (case-insensitive)
       if let Some(feed_tags) = &feed.tags {
         query_tags
           .iter()
-          .any(|qt| feed_tags.iter().any(|ft| ft == qt))
+          .any(|qt| feed_tags.iter().any(|ft| ft.eq_ignore_ascii_case(qt)))
       } else {
         false
       }
@@ -63,11 +62,10 @@ pub fn apply_query(feeds: &[Feed], query: &str) -> Vec<FeedEntry> {
     .iter()
     .filter(|feed| feed_matches(feed, &filter))
     .flat_map(|feed| {
-      // One allocation shared across all entries from this feed.
-      let title: Arc<str> = Arc::from(feed.title.as_str());
+      let title = feed.title.clone();
       feed.entries.iter().map(move |entry| {
         let mut entry = entry.clone();
-        entry.feed_title = Some(Arc::clone(&title).to_string());
+        entry.feed_title = Some(title.clone());
         entry
       })
     })
@@ -95,7 +93,7 @@ pub fn config_feed_matches(fc: &crate::config::Feed, filter: &QueryFilter) -> bo
       fc.tags.as_ref().map_or(false, |feed_tags| {
         query_tags
           .iter()
-          .any(|qt| feed_tags.iter().any(|ft| ft == qt))
+          .any(|qt| feed_tags.iter().any(|ft| ft.eq_ignore_ascii_case(qt)))
       })
     }
   }

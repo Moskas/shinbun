@@ -98,6 +98,13 @@ impl LoadingState {
     }
   }
 
+  /// Create a loading state that starts in the idle (not loading) position.
+  pub fn idle() -> Self {
+    let mut state = Self::new();
+    state.stop();
+    state
+  }
+
   pub fn start(&mut self) {
     self.is_loading = true;
     self.is_initial_load = false;
@@ -176,6 +183,9 @@ pub struct App {
   show_error_popup: bool,
   input: InputState,
   cache: FeedCache,
+  /// Cached visible (unfiltered) entry indices for the currently selected feed.
+  /// Invalidated whenever `hide_read`, `feed_index`, or entry data changes.
+  visible_indices_cache: Vec<usize>,
 }
 
 impl App {
@@ -190,6 +200,7 @@ impl App {
   ) -> Self {
     let is_loading = feeds.is_empty();
     let display_feeds = Self::build_display_feeds(&feeds, &query_config);
+    let hide_read = !ui_config.show_read_entries;
 
     Self {
       feeds,
@@ -202,24 +213,23 @@ impl App {
       state: AppState::BrowsingFeeds,
       entry_scroll: 0,
       general_config,
-      ui_config: ui_config.clone(),
+      ui_config,
       exit: false,
       feed_tx,
       loading_state: if is_loading {
         LoadingState::new()
       } else {
-        let mut state = LoadingState::new();
-        state.stop();
-        state
+        LoadingState::idle()
       },
       current_feed: None,
       feed_errors: Vec::new(),
       show_error_popup: false,
       input: InputState {
-        hide_read: !ui_config.show_read_entries,
+        hide_read,
         ..InputState::default()
       },
       cache,
+      visible_indices_cache: Vec::new(),
     }
   }
 
@@ -245,15 +255,21 @@ impl App {
 
   /// Rebuild display feeds, freeing the old allocation before building the new one.
   fn rebuild_display_feeds(&mut self) {
-    // Drop old display data before allocating the new set so they never coexist.
-    drop(std::mem::take(&mut self.display_feeds));
-    // Pass &self.query_config directly — no clone needed now that display_feeds
-    // is empty and no longer holds a borrow conflict.
+    self.display_feeds.clear();
     self.display_feeds = Self::build_display_feeds(&self.feeds, &self.query_config);
+    self.invalidate_visible_indices();
   }
 
   pub fn should_exit(&self) -> bool {
     self.exit
+  }
+
+  /// Record an internal error so the user can see it in the TUI error popup.
+  fn push_error(&mut self, name: impl Into<String>, error: impl Into<String>) {
+    self.feed_errors.push(FeedError {
+      name: name.into(),
+      error: error.into(),
+    });
   }
 
   pub fn handle_feed_update(&mut self, update: FeedUpdate) {
@@ -264,7 +280,7 @@ impl App {
         }
         for (i, feed) in new_feeds.iter().enumerate() {
           if let Err(e) = self.cache.save_feed(feed, i) {
-            eprintln!("Failed to cache feed {}: {}", feed.title, e);
+            self.push_error(&feed.title, format!("Failed to cache: {}", e));
           }
         }
         drop(new_feeds);
@@ -289,7 +305,7 @@ impl App {
           .unwrap_or(0);
         self.loading_state.updated_feeds.push(feed.title.clone());
         if let Err(e) = self.cache.save_feed(&feed, pos) {
-          eprintln!("Failed to cache feed {}: {}", feed.title, e);
+          self.push_error(&feed.title, format!("Failed to cache: {}", e));
         }
         self.feeds = self.cache.load_all_feeds().unwrap_or_default();
         self.rebuild_display_feeds();
@@ -447,6 +463,7 @@ impl App {
       KeyCode::Char('u') | KeyCode::Char('U') => {
         self.input.cancel_sequence();
         self.input.hide_read = !self.input.hide_read;
+        self.invalidate_visible_indices();
         // Reset selection so it doesn't point out-of-bounds in the filtered list
         self.entry_list_state.select(Some(0));
       }
@@ -522,24 +539,46 @@ impl App {
 
   // ─── Visible entry helpers ────────────────────────────────────────────────
 
-  /// Returns the real (unfiltered) entry indices that are currently visible
-  /// given the `hide_read` setting. When `hide_read` is false this is simply
-  /// every index; when true only unread entries are included.
-  fn visible_entry_indices(&self) -> Vec<usize> {
+  /// Rebuild the cached visible-entry-indices vector.
+  /// Must be called whenever `hide_read`, `feed_index`, or entry read-state changes.
+  fn invalidate_visible_indices(&mut self) {
+    self.visible_indices_cache.clear();
     let Some(df) = self.display_feeds.get(self.feed_index) else {
-      return vec![];
+      return;
     };
-    df.entries(&self.feeds)
+    self.visible_indices_cache = df
+      .entries(&self.feeds)
       .iter()
       .enumerate()
       .filter(|(_, e)| !self.input.hide_read || !e.read)
       .map(|(i, _)| i)
-      .collect()
+      .collect();
+  }
+
+  /// Returns the cached visible (unfiltered) entry indices for the current feed.
+  fn visible_entry_indices(&self) -> &[usize] {
+    &self.visible_indices_cache
   }
 
   /// Maps a visible (filtered) list position to the real entry index in the feed.
   fn visible_to_real_entry_idx(&self, visible_idx: usize) -> Option<usize> {
-    self.visible_entry_indices().get(visible_idx).copied()
+    self.visible_indices_cache.get(visible_idx).copied()
+  }
+
+  /// Resolve the real entry index for the currently focused entry,
+  /// regardless of whether we are in BrowsingEntries or ViewingEntry.
+  fn resolve_current_entry_idx(&self) -> Option<usize> {
+    match self.state {
+      AppState::ViewingEntry => self.input.current_entry_relative_index,
+      _ => {
+        let visible_idx = self.entry_list_state.selected()?;
+        Some(
+          self
+            .visible_to_real_entry_idx(visible_idx)
+            .unwrap_or(visible_idx),
+        )
+      }
+    }
   }
 
   // ─── Navigation helpers ───────────────────────────────────────────────────
@@ -624,6 +663,7 @@ impl App {
     match self.state {
       AppState::BrowsingFeeds => {
         self.state = AppState::BrowsingEntries;
+        self.invalidate_visible_indices();
         self.entry_list_state.select(Some(0));
       }
       AppState::BrowsingEntries => {
@@ -656,38 +696,25 @@ impl App {
 
   // ─── Browser / player helpers ─────────────────────────────────────────────
 
-  fn spawn_cmd(cmd: &str, url: &str) {
+  fn spawn_cmd(cmd: &str, url: &str) -> Result<(), String> {
     let mut parts = cmd.split_whitespace();
     if let Some(bin) = parts.next() {
       let args: Vec<&str> = parts.collect();
-      if let Err(e) = Command::new(bin)
+      Command::new(bin)
         .args(args)
         .arg(url)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-      {
-        eprintln!("Failed to launch '{}': {}", cmd, e);
-      }
+        .map_err(|e| format!("Failed to launch '{}': {}", cmd, e))?;
     }
+    Ok(())
   }
 
   /// Open the first link of the currently selected entry in a browser.
-  fn open_current_entry_in_browser(&self) {
-    let real_idx = match self.state {
-      AppState::ViewingEntry => match self.input.current_entry_relative_index {
-        Some(i) => i,
-        None => return,
-      },
-      _ => {
-        let visible_idx = match self.entry_list_state.selected() {
-          Some(i) => i,
-          None => return,
-        };
-        self
-          .visible_to_real_entry_idx(visible_idx)
-          .unwrap_or(visible_idx)
-      }
+  fn open_current_entry_in_browser(&mut self) {
+    let Some(real_idx) = self.resolve_current_entry_idx() else {
+      return;
     };
     let Some(df) = self.display_feeds.get(self.feed_index) else {
       return;
@@ -699,29 +726,20 @@ impl App {
       return;
     };
 
-    if let Some(ref cmd) = self.general_config.browser {
-      Self::spawn_cmd(cmd, url);
-    } else if let Err(e) = open::that(url) {
-      eprintln!("Failed to open URL in default browser: {}", e);
+    let result = if let Some(ref cmd) = self.general_config.browser {
+      Self::spawn_cmd(cmd, url)
+    } else {
+      open::that(url).map_err(|e| format!("Failed to open URL in default browser: {}", e))
+    };
+    if let Err(e) = result {
+      self.push_error("Browser", e);
     }
   }
 
   /// Open the media attachment of the currently selected entry.
-  fn open_media_in_player(&self) {
-    let real_idx = match self.state {
-      AppState::ViewingEntry => match self.input.current_entry_relative_index {
-        Some(i) => i,
-        None => return,
-      },
-      _ => {
-        let visible_idx = match self.entry_list_state.selected() {
-          Some(i) => i,
-          None => return,
-        };
-        self
-          .visible_to_real_entry_idx(visible_idx)
-          .unwrap_or(visible_idx)
-      }
+  fn open_media_in_player(&mut self) {
+    let Some(real_idx) = self.resolve_current_entry_idx() else {
+      return;
     };
     let Some(df) = self.display_feeds.get(self.feed_index) else {
       return;
@@ -731,10 +749,13 @@ impl App {
     };
     let Some(url) = &entry.media else { return };
 
-    if let Some(ref cmd) = self.general_config.media_player {
-      Self::spawn_cmd(cmd, url);
-    } else if let Err(e) = open::that(url) {
-      eprintln!("Failed to open media URL with OS default: {}", e);
+    let result = if let Some(ref cmd) = self.general_config.media_player {
+      Self::spawn_cmd(cmd, url)
+    } else {
+      open::that(url).map_err(|e| format!("Failed to open media URL with OS default: {}", e))
+    };
+    if let Err(e) = result {
+      self.push_error("Media player", e);
     }
   }
 
@@ -865,11 +886,12 @@ impl App {
     };
 
     if let Err(e) = db_result {
-      eprintln!("Failed to toggle entry read state: {}", e);
+      self.push_error("Cache", format!("Failed to toggle entry read state: {}", e));
       return;
     }
 
     self.sync_read_state(feed_vec_idx, entry_vec_idx, new_read);
+    self.invalidate_visible_indices();
   }
 
   fn mark_selected_entry_read(&mut self, entry_idx: usize) {
@@ -891,10 +913,11 @@ impl App {
         .published
         .as_deref(),
     ) {
-      eprintln!("Failed to mark entry read: {}", e);
+      self.push_error("Cache", format!("Failed to mark entry read: {}", e));
       return;
     }
 
     self.sync_read_state(feed_vec_idx, entry_vec_idx, true);
+    self.invalidate_visible_indices();
   }
 }

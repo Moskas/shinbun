@@ -11,6 +11,8 @@ impl FeedCache {
   /// Create a new cache instance and initialize the database
   pub fn new(db_path: PathBuf) -> Result<Self> {
     let conn = Connection::open(db_path)?;
+    // Enable foreign key enforcement for ON DELETE CASCADE to work.
+    conn.execute("PRAGMA foreign_keys = ON", [])?;
     Self::init_schema(&conn)?;
     Ok(Self { conn })
   }
@@ -266,9 +268,6 @@ impl FeedCache {
   ///
   /// Returns the number of feeds that were pruned.
   pub fn remove_dead_feeds(&self, active_urls: &[&str]) -> Result<usize> {
-    // Foreign-key enforcement must be ON for ON DELETE CASCADE to fire.
-    self.conn.execute("PRAGMA foreign_keys = ON", [])?;
-
     // Load every URL currently stored in the cache.
     let mut stmt = self.conn.prepare("SELECT url FROM feeds")?;
     let cached: Vec<String> = stmt

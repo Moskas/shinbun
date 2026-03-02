@@ -18,8 +18,22 @@ use cache::FeedCache;
 async fn main() -> io::Result<()> {
   let mut terminal = ui::init()?;
 
+  // Restore terminal on panic so the shell isn't left in raw mode.
+  let original_hook = std::panic::take_hook();
+  std::panic::set_hook(Box::new(move |panic_info| {
+    let _ = ui::restore();
+    original_hook(panic_info);
+  }));
+
   // Parse configuration
-  let config = config::parse_config();
+  let config = match config::parse_config() {
+    Ok(c) => c,
+    Err(e) => {
+      ui::restore()?;
+      eprintln!("{}", e);
+      std::process::exit(1);
+    }
+  };
 
   // Initialize cache
   let cache_path = config::get_cache_path();
@@ -29,11 +43,8 @@ async fn main() -> io::Result<()> {
   // Their entries are cascade-deleted automatically.
   {
     let active_urls: Vec<&str> = config.feeds.iter().map(|f| f.link.as_str()).collect();
-    match cache.remove_dead_feeds(&active_urls) {
-      Ok(0) => {}
-      Ok(n) => eprintln!("Pruned {n} stale feed(s) from cache (removed from feeds.toml)"),
-      Err(e) => eprintln!("Warning: failed to prune dead feeds: {e}"),
-    }
+    // Errors here are non-fatal; stale feeds will simply remain in the cache.
+    let _ = cache.remove_dead_feeds(&active_urls);
   }
 
   // Load cached feeds (already sorted by position)
