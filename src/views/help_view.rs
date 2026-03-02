@@ -39,16 +39,12 @@ fn build_help_content() -> Vec<Line<'static>> {
       description: "Go back",
     },
     Keybind {
-      key: "g g",
+      key: "g g / Home",
       description: "Go to top",
     },
     Keybind {
       key: "G / End",
       description: "Go to bottom",
-    },
-    Keybind {
-      key: "Home",
-      description: "Go to top",
     },
   ];
   for bind in &nav_binds {
@@ -72,6 +68,10 @@ fn build_help_content() -> Vec<Line<'static>> {
     Keybind {
       key: "m",
       description: "Toggle read / unread",
+    },
+    Keybind {
+      key: "A",
+      description: "Mark feed as read",
     },
     Keybind {
       key: "u",
@@ -210,6 +210,7 @@ mod tests {
     assert!(text.iter().any(|l| l.contains("Toggle this help")));
     assert!(text.iter().any(|l| l.contains("Refresh")));
     assert!(text.iter().any(|l| l.contains("browser")));
+    assert!(text.iter().any(|l| l.contains("Mark feed as read")));
   }
 
   #[test]

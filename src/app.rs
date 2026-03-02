@@ -184,6 +184,8 @@ pub struct App {
   error_scroll: usize,
   show_help_popup: bool,
   help_scroll: usize,
+  show_confirm_popup: bool,
+  confirm_feed_name: String,
   input: InputState,
   cache: FeedCache,
   /// Cached visible (unfiltered) entry indices for the currently selected feed.
@@ -230,6 +232,8 @@ impl App {
       error_scroll: 0,
       show_help_popup: false,
       help_scroll: 0,
+      show_confirm_popup: false,
+      confirm_feed_name: String::new(),
       input: InputState {
         hide_read,
         ..InputState::default()
@@ -450,6 +454,10 @@ impl App {
     if self.show_help_popup {
       help_view::render_help_popup(frame, area, &mut self.help_scroll);
     }
+
+    if self.show_confirm_popup {
+      feeds_list_view::render_confirm_popup(frame, area, &self.confirm_feed_name);
+    }
   }
 
   pub fn handle_key(&mut self, key: KeyEvent) {
@@ -507,6 +515,21 @@ impl App {
       }
     }
 
+    if self.show_confirm_popup {
+      match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+          self.show_confirm_popup = false;
+          self.mark_current_feed_read();
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+          self.show_confirm_popup = false;
+          self.confirm_feed_name.clear();
+        }
+        _ => {} // ignore all other keys while popup is open
+      }
+      return;
+    }
+
     match key.code {
       KeyCode::Char('q') | KeyCode::Char('Q') => self.exit = true,
       KeyCode::Char('?') => {
@@ -541,6 +564,13 @@ impl App {
             self.toggle_selected_entry_read(real_idx);
           }
         }
+        _ => {}
+      },
+      KeyCode::Char('A') => match self.state {
+        AppState::BrowsingFeeds | AppState::BrowsingEntries | AppState::ViewingEntry => {
+          self.request_mark_feed_read();
+        }
+        #[allow(unreachable_patterns)]
         _ => {}
       },
       KeyCode::Char('o') | KeyCode::Char('O') => match self.state {
@@ -979,6 +1009,92 @@ impl App {
 
     self.sync_read_state(feed_vec_idx, entry_vec_idx, true);
     self.invalidate_visible_indices();
+  }
+
+  /// Show the confirmation popup for marking the currently focused feed as read.
+  fn request_mark_feed_read(&mut self) {
+    let Some(df) = self.display_feeds.get(self.feed_index) else {
+      return;
+    };
+    let name = df.title(&self.feeds).to_string();
+    if df.entries(&self.feeds).is_empty() {
+      return;
+    }
+    self.confirm_feed_name = name;
+    self.show_confirm_popup = true;
+  }
+
+  /// Actually mark every entry of the focused feed as read.
+  /// Called after the user confirms with 'y' in the popup.
+  fn mark_current_feed_read(&mut self) {
+    let Some(df) = self.display_feeds.get(self.feed_index) else {
+      self.confirm_feed_name.clear();
+      return;
+    };
+
+    match df {
+      DisplayFeed::Regular(i) => {
+        let i = *i;
+        let Some(feed) = self.feeds.get(i) else {
+          self.confirm_feed_name.clear();
+          return;
+        };
+        if let Err(e) = self.cache.mark_feed_read(&feed.url) {
+          self.push_error("Cache", format!("Failed to mark feed as read: {}", e));
+          self.confirm_feed_name.clear();
+          return;
+        }
+        // Update in-memory state for every entry
+        if let Some(feed) = self.feeds.get_mut(i) {
+          for entry in feed.entries.iter_mut() {
+            entry.read = true;
+          }
+        }
+      }
+      DisplayFeed::Query { .. } => {
+        // For query feeds, mark each source feed entry individually
+        let entries: Vec<(String, String, Option<String>)> = df
+          .entries(&self.feeds)
+          .iter()
+          .filter_map(|e| {
+            let feed_title = e.feed_title.as_deref()?;
+            let feed_url = self
+              .feeds
+              .iter()
+              .find(|f| f.title == feed_title)
+              .map(|f| f.url.clone())?;
+            Some((feed_url, e.title.clone(), e.published.clone()))
+          })
+          .collect();
+
+        for (feed_url, entry_title, published) in &entries {
+          if let Err(e) = self
+            .cache
+            .mark_entry_read(feed_url, entry_title, published.as_deref())
+          {
+            self.push_error("Cache", format!("Failed to mark entry read: {}", e));
+          }
+        }
+
+        // Update in-memory state
+        for (feed_url, entry_title, published) in &entries {
+          if let Some(feed) = self.feeds.iter_mut().find(|f| f.url == *feed_url) {
+            if let Some(entry) = feed
+              .entries
+              .iter_mut()
+              .find(|e| e.title == *entry_title && e.published.as_deref() == published.as_deref())
+            {
+              entry.read = true;
+            }
+          }
+        }
+      }
+    }
+
+    // Mirror changes into query display feeds
+    self.rebuild_display_feeds();
+    self.invalidate_visible_indices();
+    self.confirm_feed_name.clear();
   }
 }
 
@@ -1494,5 +1610,213 @@ mod tests {
     assert_eq!(app.feed_errors.len(), 1);
     assert_eq!(app.feed_errors[0].name, "Test");
     assert_eq!(app.feed_errors[0].error, "something failed");
+  }
+
+  // ─── Mark feed as read / confirmation popup tests ─────────────────────
+
+  #[test]
+  fn test_app_mark_feed_read_shows_confirmation() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![
+        make_entry("Post 1", None, false),
+        make_entry("Post 2", None, false),
+      ],
+    )];
+    let mut app = make_app_with_feeds(feeds);
+
+    // Press 'A' while browsing feeds
+    app.handle_key(KeyEvent::from(KeyCode::Char('A')));
+    assert!(app.show_confirm_popup);
+    assert_eq!(app.confirm_feed_name, "Feed A");
+  }
+
+  #[test]
+  fn test_app_mark_feed_read_no_popup_for_empty_feed() {
+    let feeds = vec![make_feed("http://a.com", "Empty Feed", vec![])];
+    let mut app = make_app_with_feeds(feeds);
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('A')));
+    assert!(!app.show_confirm_popup);
+  }
+
+  #[test]
+  fn test_app_mark_feed_read_confirm_yes() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![
+        make_entry("Post 1", Some("2024-01-01T00:00:00Z"), false),
+        make_entry("Post 2", Some("2024-02-01T00:00:00Z"), false),
+      ],
+    )];
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let cache = crate::cache::FeedCache::new_in_memory().unwrap();
+
+    // Save the feed to the cache so mark_feed_read works
+    cache.save_feed(&feeds[0], 0).unwrap();
+
+    let mut app = App::new(
+      feeds,
+      GeneralConfig::default(),
+      UiConfig {
+        show_borders: true,
+        show_read_entries: true,
+      },
+      vec![],
+      vec![],
+      tx,
+      cache,
+    );
+
+    // Press 'A' to request mark-as-read
+    app.handle_key(KeyEvent::from(KeyCode::Char('A')));
+    assert!(app.show_confirm_popup);
+
+    // Confirm with 'y'
+    app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+    assert!(!app.show_confirm_popup);
+
+    // All entries should now be read
+    assert!(app.feeds[0].entries.iter().all(|e| e.read));
+  }
+
+  #[test]
+  fn test_app_mark_feed_read_confirm_no() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let mut app = make_app_with_feeds(feeds);
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('A')));
+    assert!(app.show_confirm_popup);
+
+    // Cancel with 'n'
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    assert!(!app.show_confirm_popup);
+
+    // Entry should still be unread
+    assert!(!app.feeds[0].entries[0].read);
+  }
+
+  #[test]
+  fn test_app_mark_feed_read_confirm_esc() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let mut app = make_app_with_feeds(feeds);
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('A')));
+    assert!(app.show_confirm_popup);
+
+    // Cancel with Esc
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(!app.show_confirm_popup);
+    assert!(!app.feeds[0].entries[0].read);
+  }
+
+  #[test]
+  fn test_app_confirm_popup_blocks_other_keys() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let mut app = make_app_with_feeds(feeds);
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('A')));
+    assert!(app.show_confirm_popup);
+
+    // 'q' should NOT quit while confirm popup is open
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert!(!app.should_exit());
+    assert!(app.show_confirm_popup);
+  }
+
+  #[test]
+  fn test_app_mark_feed_read_from_entry_list() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![
+        make_entry("Post 1", Some("2024-01-01T00:00:00Z"), false),
+        make_entry("Post 2", Some("2024-02-01T00:00:00Z"), false),
+      ],
+    )];
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let cache = crate::cache::FeedCache::new_in_memory().unwrap();
+    cache.save_feed(&feeds[0], 0).unwrap();
+
+    let mut app = App::new(
+      feeds,
+      GeneralConfig::default(),
+      UiConfig {
+        show_borders: true,
+        show_read_entries: true,
+      },
+      vec![],
+      vec![],
+      tx,
+      cache,
+    );
+
+    // Navigate into the entry list
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.state, AppState::BrowsingEntries);
+
+    // Press 'A' from the entry list
+    app.handle_key(KeyEvent::from(KeyCode::Char('A')));
+    assert!(app.show_confirm_popup);
+    assert_eq!(app.confirm_feed_name, "Feed A");
+
+    // Confirm
+    app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+    assert!(!app.show_confirm_popup);
+    assert!(app.feeds[0].entries.iter().all(|e| e.read));
+  }
+
+  #[test]
+  fn test_app_mark_feed_read_from_entry_view() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![
+        make_entry("Post 1", Some("2024-01-01T00:00:00Z"), false),
+        make_entry("Post 2", Some("2024-02-01T00:00:00Z"), false),
+      ],
+    )];
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let cache = crate::cache::FeedCache::new_in_memory().unwrap();
+    cache.save_feed(&feeds[0], 0).unwrap();
+
+    let mut app = App::new(
+      feeds,
+      GeneralConfig::default(),
+      UiConfig {
+        show_borders: true,
+        show_read_entries: true,
+      },
+      vec![],
+      vec![],
+      tx,
+      cache,
+    );
+
+    // Navigate into entry view
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // BrowsingEntries
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // ViewingEntry
+    assert_eq!(app.state, AppState::ViewingEntry);
+
+    // Press 'A' from within entry view
+    app.handle_key(KeyEvent::from(KeyCode::Char('A')));
+    assert!(app.show_confirm_popup);
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+    assert!(app.feeds[0].entries.iter().all(|e| e.read));
   }
 }

@@ -471,6 +471,41 @@ fn render_loading_popup(
   popup.render(popup_area, frame.buffer_mut());
 }
 
+pub fn render_confirm_popup(frame: &mut Frame, area: Rect, feed_name: &str) {
+  let message = format!("Mark all entries in \"{}\" as read?", feed_name);
+  let prompt = " (y)es / (n)o ";
+  let content_width = (message.len().max(prompt.len()) + 4) as u16;
+  let popup_width = content_width.min(area.width.saturating_sub(4));
+  let popup_height = 5u16;
+
+  let popup_area = Rect {
+    x: area.x + (area.width.saturating_sub(popup_width)) / 2,
+    y: area.y + (area.height.saturating_sub(popup_height)) / 2,
+    width: popup_width,
+    height: popup_height,
+  };
+
+  Clear.render(popup_area, frame.buffer_mut());
+
+  let text = vec![
+    Line::from(message).fg(Color::White),
+    Line::from(""),
+    Line::from(prompt).bold().yellow(),
+  ];
+
+  let block = Block::default()
+    .title(" Confirm ".bold().yellow())
+    .borders(Borders::ALL)
+    .border_style(Style::new().yellow())
+    .border_set(border::PLAIN);
+
+  let popup = Paragraph::new(text)
+    .block(block)
+    .alignment(Alignment::Center);
+
+  popup.render(popup_area, frame.buffer_mut());
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

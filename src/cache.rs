@@ -169,6 +169,16 @@ impl FeedCache {
     self.set_entry_read(feed_url, entry_title, published, true)
   }
 
+  /// Mark every entry of a feed as read in a single statement.
+  pub fn mark_feed_read(&self, feed_url: &str) -> Result<()> {
+    self.conn.execute(
+      "UPDATE entries SET read = 1
+       WHERE feed_id = (SELECT id FROM feeds WHERE url = ?1)",
+      params![feed_url],
+    )?;
+    Ok(())
+  }
+
   pub fn mark_entry_unread(
     &self,
     feed_url: &str,
@@ -624,5 +634,36 @@ mod tests {
     // Post 1 should still be in the cache
     let feeds = cache.load_all_feeds().unwrap();
     assert_eq!(feeds[0].entries.len(), 2);
+  }
+
+  #[test]
+  fn test_mark_feed_read() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let feed = make_feed(
+      "https://example.com/rss",
+      "Feed",
+      vec![
+        make_entry("Post 1", Some("2024-01-01T00:00:00Z")),
+        make_entry("Post 2", Some("2024-02-01T00:00:00Z")),
+        make_entry("Post 3", None),
+      ],
+    );
+    cache.save_feed(&feed, 0).unwrap();
+
+    // Initially all unread
+    let feeds = cache.load_all_feeds().unwrap();
+    assert!(feeds[0].entries.iter().all(|e| !e.read));
+
+    // Mark the whole feed as read
+    cache.mark_feed_read("https://example.com/rss").unwrap();
+    let feeds = cache.load_all_feeds().unwrap();
+    assert!(feeds[0].entries.iter().all(|e| e.read));
+  }
+
+  #[test]
+  fn test_mark_feed_read_nonexistent_feed() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    // Should not error, just affect zero rows
+    cache.mark_feed_read("https://nonexistent.com/rss").unwrap();
   }
 }
