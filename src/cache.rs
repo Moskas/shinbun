@@ -288,4 +288,341 @@ impl FeedCache {
 
     Ok(removed)
   }
+
+  /// Create a cache backed by an in-memory SQLite database (for testing).
+  #[cfg(test)]
+  pub fn new_in_memory() -> Result<Self> {
+    let conn = Connection::open_in_memory()?;
+    conn.execute("PRAGMA foreign_keys = ON", [])?;
+    Self::init_schema(&conn)?;
+    Ok(Self { conn })
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn make_feed(url: &str, title: &str, entries: Vec<FeedEntry>) -> Feed {
+    Feed {
+      url: url.to_string(),
+      title: title.to_string(),
+      entries,
+      tags: None,
+    }
+  }
+
+  fn make_entry(title: &str, published: Option<&str>) -> FeedEntry {
+    FeedEntry {
+      title: title.to_string(),
+      published: published.map(|s| s.to_string()),
+      text: format!("Content of {}", title),
+      links: vec![format!("https://example.com/{}", title)],
+      media: None,
+      feed_title: None,
+      read: false,
+    }
+  }
+
+  #[test]
+  fn test_create_in_memory_cache() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let feeds = cache.load_all_feeds().unwrap();
+    assert!(feeds.is_empty());
+  }
+
+  #[test]
+  fn test_save_and_load_feed() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let feed = make_feed(
+      "https://example.com/rss",
+      "Example Feed",
+      vec![
+        make_entry("Post 1", Some("2024-01-01T00:00:00Z")),
+        make_entry("Post 2", Some("2024-02-01T00:00:00Z")),
+      ],
+    );
+
+    cache.save_feed(&feed, 0).unwrap();
+    let feeds = cache.load_all_feeds().unwrap();
+    assert_eq!(feeds.len(), 1);
+    assert_eq!(feeds[0].title, "Example Feed");
+    assert_eq!(feeds[0].url, "https://example.com/rss");
+    assert_eq!(feeds[0].entries.len(), 2);
+    // Entries should be ordered by published DESC
+    assert_eq!(feeds[0].entries[0].title, "Post 2");
+    assert_eq!(feeds[0].entries[1].title, "Post 1");
+  }
+
+  #[test]
+  fn test_save_feed_with_tags() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let mut feed = make_feed("https://example.com/rss", "Tagged Feed", vec![]);
+    feed.tags = Some(vec!["blog".to_string(), "tech".to_string()]);
+
+    cache.save_feed(&feed, 0).unwrap();
+    let feeds = cache.load_all_feeds().unwrap();
+    assert_eq!(feeds[0].tags.as_ref().unwrap().len(), 2);
+    assert!(feeds[0]
+      .tags
+      .as_ref()
+      .unwrap()
+      .contains(&"blog".to_string()));
+    assert!(feeds[0]
+      .tags
+      .as_ref()
+      .unwrap()
+      .contains(&"tech".to_string()));
+  }
+
+  #[test]
+  fn test_save_feed_upsert_updates_title() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let feed1 = make_feed("https://example.com/rss", "Old Title", vec![]);
+    cache.save_feed(&feed1, 0).unwrap();
+
+    let feed2 = make_feed("https://example.com/rss", "New Title", vec![]);
+    cache.save_feed(&feed2, 0).unwrap();
+
+    let feeds = cache.load_all_feeds().unwrap();
+    assert_eq!(feeds.len(), 1);
+    assert_eq!(feeds[0].title, "New Title");
+  }
+
+  #[test]
+  fn test_entry_upsert_preserves_read_state() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let feed = make_feed(
+      "https://example.com/rss",
+      "Feed",
+      vec![make_entry("Post 1", Some("2024-01-01T00:00:00Z"))],
+    );
+    cache.save_feed(&feed, 0).unwrap();
+
+    // Mark the entry as read
+    cache
+      .mark_entry_read(
+        "https://example.com/rss",
+        "Post 1",
+        Some("2024-01-01T00:00:00Z"),
+      )
+      .unwrap();
+
+    // Re-save the feed (simulating a refresh)
+    cache.save_feed(&feed, 0).unwrap();
+
+    // Entry should still be read
+    let feeds = cache.load_all_feeds().unwrap();
+    assert!(feeds[0].entries[0].read);
+  }
+
+  #[test]
+  fn test_mark_entry_read_and_unread() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let feed = make_feed(
+      "https://example.com/rss",
+      "Feed",
+      vec![make_entry("Post 1", Some("2024-01-01T00:00:00Z"))],
+    );
+    cache.save_feed(&feed, 0).unwrap();
+
+    // Initially unread
+    let feeds = cache.load_all_feeds().unwrap();
+    assert!(!feeds[0].entries[0].read);
+
+    // Mark read
+    cache
+      .mark_entry_read(
+        "https://example.com/rss",
+        "Post 1",
+        Some("2024-01-01T00:00:00Z"),
+      )
+      .unwrap();
+    let feeds = cache.load_all_feeds().unwrap();
+    assert!(feeds[0].entries[0].read);
+
+    // Mark unread
+    cache
+      .mark_entry_unread(
+        "https://example.com/rss",
+        "Post 1",
+        Some("2024-01-01T00:00:00Z"),
+      )
+      .unwrap();
+    let feeds = cache.load_all_feeds().unwrap();
+    assert!(!feeds[0].entries[0].read);
+  }
+
+  #[test]
+  fn test_mark_entry_read_with_null_published() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let feed = make_feed(
+      "https://example.com/rss",
+      "Feed",
+      vec![make_entry("Post No Date", None)],
+    );
+    cache.save_feed(&feed, 0).unwrap();
+
+    cache
+      .mark_entry_read("https://example.com/rss", "Post No Date", None)
+      .unwrap();
+    let feeds = cache.load_all_feeds().unwrap();
+    assert!(feeds[0].entries[0].read);
+  }
+
+  #[test]
+  fn test_has_feed() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    assert!(!cache.has_feed("https://example.com/rss").unwrap());
+
+    let feed = make_feed("https://example.com/rss", "Feed", vec![]);
+    cache.save_feed(&feed, 0).unwrap();
+
+    assert!(cache.has_feed("https://example.com/rss").unwrap());
+    assert!(!cache.has_feed("https://other.com/rss").unwrap());
+  }
+
+  #[test]
+  fn test_remove_dead_feeds() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let feed_a = make_feed("https://a.com/rss", "Feed A", vec![make_entry("A1", None)]);
+    let feed_b = make_feed("https://b.com/rss", "Feed B", vec![make_entry("B1", None)]);
+    let feed_c = make_feed("https://c.com/rss", "Feed C", vec![]);
+    cache.save_feed(&feed_a, 0).unwrap();
+    cache.save_feed(&feed_b, 1).unwrap();
+    cache.save_feed(&feed_c, 2).unwrap();
+
+    // Keep only A and C
+    let removed = cache
+      .remove_dead_feeds(&["https://a.com/rss", "https://c.com/rss"])
+      .unwrap();
+    assert_eq!(removed, 1);
+
+    let feeds = cache.load_all_feeds().unwrap();
+    assert_eq!(feeds.len(), 2);
+    let urls: Vec<&str> = feeds.iter().map(|f| f.url.as_str()).collect();
+    assert!(urls.contains(&"https://a.com/rss"));
+    assert!(urls.contains(&"https://c.com/rss"));
+    assert!(!urls.contains(&"https://b.com/rss"));
+  }
+
+  #[test]
+  fn test_remove_dead_feeds_cascades_entries() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let feed = make_feed(
+      "https://example.com/rss",
+      "Feed",
+      vec![make_entry("Post 1", None)],
+    );
+    cache.save_feed(&feed, 0).unwrap();
+
+    let removed = cache.remove_dead_feeds(&[]).unwrap();
+    assert_eq!(removed, 1);
+
+    let feeds = cache.load_all_feeds().unwrap();
+    assert!(feeds.is_empty());
+  }
+
+  #[test]
+  fn test_feed_ordering_by_position() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let feed_a = make_feed("https://a.com/rss", "Feed A", vec![]);
+    let feed_b = make_feed("https://b.com/rss", "Feed B", vec![]);
+    let feed_c = make_feed("https://c.com/rss", "Feed C", vec![]);
+
+    // Save in reverse position order
+    cache.save_feed(&feed_c, 2).unwrap();
+    cache.save_feed(&feed_a, 0).unwrap();
+    cache.save_feed(&feed_b, 1).unwrap();
+
+    let feeds = cache.load_all_feeds().unwrap();
+    assert_eq!(feeds[0].title, "Feed A");
+    assert_eq!(feeds[1].title, "Feed B");
+    assert_eq!(feeds[2].title, "Feed C");
+  }
+
+  #[test]
+  fn test_entry_media_roundtrip() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let mut entry = make_entry("Post with media", Some("2024-01-01T00:00:00Z"));
+    entry.media = Some("https://example.com/podcast.mp3".to_string());
+
+    let feed = make_feed("https://example.com/rss", "Feed", vec![entry]);
+    cache.save_feed(&feed, 0).unwrap();
+
+    let feeds = cache.load_all_feeds().unwrap();
+    assert_eq!(
+      feeds[0].entries[0].media.as_deref(),
+      Some("https://example.com/podcast.mp3")
+    );
+  }
+
+  #[test]
+  fn test_entry_links_roundtrip() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let mut entry = make_entry("Post with links", None);
+    entry.links = vec![
+      "https://example.com/1".to_string(),
+      "https://example.com/2".to_string(),
+    ];
+
+    let feed = make_feed("https://example.com/rss", "Feed", vec![entry]);
+    cache.save_feed(&feed, 0).unwrap();
+
+    let feeds = cache.load_all_feeds().unwrap();
+    assert_eq!(feeds[0].entries[0].links.len(), 2);
+    assert_eq!(feeds[0].entries[0].links[0], "https://example.com/1");
+    assert_eq!(feeds[0].entries[0].links[1], "https://example.com/2");
+  }
+
+  #[test]
+  fn test_incremental_save_adds_new_entries() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let feed1 = make_feed(
+      "https://example.com/rss",
+      "Feed",
+      vec![make_entry("Post 1", Some("2024-01-01T00:00:00Z"))],
+    );
+    cache.save_feed(&feed1, 0).unwrap();
+
+    // Second save adds a new entry, keeps the old one
+    let feed2 = make_feed(
+      "https://example.com/rss",
+      "Feed",
+      vec![
+        make_entry("Post 1", Some("2024-01-01T00:00:00Z")),
+        make_entry("Post 2", Some("2024-02-01T00:00:00Z")),
+      ],
+    );
+    cache.save_feed(&feed2, 0).unwrap();
+
+    let feeds = cache.load_all_feeds().unwrap();
+    assert_eq!(feeds[0].entries.len(), 2);
+  }
+
+  #[test]
+  fn test_old_entries_preserved_when_gone_from_remote() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let feed1 = make_feed(
+      "https://example.com/rss",
+      "Feed",
+      vec![
+        make_entry("Post 1", Some("2024-01-01T00:00:00Z")),
+        make_entry("Post 2", Some("2024-02-01T00:00:00Z")),
+      ],
+    );
+    cache.save_feed(&feed1, 0).unwrap();
+
+    // Second save only has Post 2 (Post 1 aged out of remote feed)
+    let feed2 = make_feed(
+      "https://example.com/rss",
+      "Feed",
+      vec![make_entry("Post 2", Some("2024-02-01T00:00:00Z"))],
+    );
+    cache.save_feed(&feed2, 0).unwrap();
+
+    // Post 1 should still be in the cache
+    let feeds = cache.load_all_feeds().unwrap();
+    assert_eq!(feeds[0].entries.len(), 2);
+  }
 }

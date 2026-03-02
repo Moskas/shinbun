@@ -9,45 +9,43 @@ use ratatui::{
   },
   Frame,
 };
-use tui_markdown::{self, StyleSheet, Options};
+use tui_markdown::{self, Options, StyleSheet};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ShinbunStyleSheet;
 
 impl StyleSheet for ShinbunStyleSheet {
-    fn heading(&self, level: u8) -> Style {
-        match level {
-            1 => Style::new().cyan().bold().underlined(),
-            2 => Style::new().magenta().bold(),
-            3 => Style::new().blue().bold(),
-            4 => Style::new().red(),
-            5 => Style::new().light_cyan(),
-            _ => Style::new(),
-        }
+  fn heading(&self, level: u8) -> Style {
+    match level {
+      1 => Style::new().cyan().bold().underlined(),
+      2 => Style::new().magenta().bold(),
+      3 => Style::new().blue().bold(),
+      4 => Style::new().red(),
+      5 => Style::new().light_cyan(),
+      _ => Style::new(),
     }
+  }
 
-    fn code(&self) -> Style {
-        Style::new().on_black().white()
-    }
+  fn code(&self) -> Style {
+    Style::new().on_black().white()
+  }
 
-    fn link(&self) -> Style {
-        Style::new().blue().underlined()
-    }
+  fn link(&self) -> Style {
+    Style::new().blue().underlined()
+  }
 
-    fn blockquote(&self) -> Style {
-        Style::new().green()
-    }
+  fn blockquote(&self) -> Style {
+    Style::new().green()
+  }
 
-    fn heading_meta(&self) -> Style {
-        Style::new().dim()
-    }
+  fn heading_meta(&self) -> Style {
+    Style::new().dim()
+  }
 
-    fn metadata_block(&self) -> Style {
-        Style::new().light_yellow()
-    }
-
+  fn metadata_block(&self) -> Style {
+    Style::new().light_yellow()
+  }
 }
-
 
 /// Calculate the wrapped height of text lines given a content width
 fn calculate_wrapped_height(lines: &[Line], content_width: u16) -> usize {
@@ -59,7 +57,7 @@ fn calculate_wrapped_height(lines: &[Line], content_width: u16) -> usize {
       if raw_width == 0 {
         1
       } else {
-        (raw_width + width - 1) / width // ceil division
+        raw_width.div_ceil(width)
       }
     })
     .sum::<usize>()
@@ -91,7 +89,7 @@ fn build_entry_content<'a>(feed_title: &'a str, entry: &'a FeedEntry) -> Vec<Lin
 
   lines.push(Line::from("")); // separator
 
-  let md = tui_markdown::from_str_with_options(&entry.text, &Options::new(ShinbunStyleSheet) );
+  let md = tui_markdown::from_str_with_options(&entry.text, &Options::new(ShinbunStyleSheet));
   lines.extend(md.lines);
 
   if entry.links.len() > 1 {
@@ -121,22 +119,12 @@ pub fn render(
 ) {
   // Create the outer container
   let title = " Shinbun ".bold().yellow();
-  let mut instructions = Line::from(vec![
-    " Back ".into(),
-    "<h> ".bold(),
-    " Open entry ".into(),
-    "<o>".bold(),
-  ]);
-
-  if entry.media.is_some() {
-    instructions.extend(vec![" Play media ".into(), "<p> ".bold()])
-  }
+  let instructions = Line::from(vec![" Help ".into(), "<?>".bold()]);
 
   let outer_block = if show_borders {
     Block::default()
       .title(title)
       .title_bottom(instructions.alignment(Alignment::Left))
-      .title_bottom(Line::from(vec![" Quit ".into(), "<q> ".bold()]).right_aligned())
       .borders(Borders::ALL)
       .border_style(Style::new().blue())
       .border_set(border::PLAIN)
@@ -144,7 +132,6 @@ pub fn render(
     Block::default()
       .title(title)
       .title_bottom(instructions.alignment(Alignment::Left))
-      .title_bottom(Line::from(vec![" Quit ".into(), " <q> ".bold()]).right_aligned())
   };
 
   let inner_area = outer_block.inner(area);
@@ -219,5 +206,144 @@ pub fn render(
 
     let mut scrollbar_state = ScrollbarState::new(max_scroll + 1).position(*scroll);
     scrollbar.render(scrollbar_area, frame.buffer_mut(), &mut scrollbar_state);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_calculate_wrapped_height_single_line() {
+    let lines = vec![Line::from("Hello world")];
+    // "Hello world" is 11 chars, width 80 → 1 line + 2 padding = 3
+    let height = calculate_wrapped_height(&lines, 80);
+    assert_eq!(height, 3);
+  }
+
+  #[test]
+  fn test_calculate_wrapped_height_wrapping() {
+    // 20 char line in 10-wide viewport → ceil(20/10) = 2 lines
+    let lines = vec![Line::from("12345678901234567890")];
+    let height = calculate_wrapped_height(&lines, 10);
+    assert_eq!(height, 2 + 2); // 2 wrapped lines + 2 padding
+  }
+
+  #[test]
+  fn test_calculate_wrapped_height_empty_line() {
+    let lines = vec![Line::from("")];
+    let height = calculate_wrapped_height(&lines, 80);
+    assert_eq!(height, 1 + 2); // empty line counts as 1 + 2 padding
+  }
+
+  #[test]
+  fn test_calculate_wrapped_height_zero_width() {
+    // Width 0 should be clamped to 1
+    let lines = vec![Line::from("Hello")];
+    let height = calculate_wrapped_height(&lines, 0);
+    // "Hello" is 5 chars, width clamped to 1 → ceil(5/1) = 5
+    assert_eq!(height, 5 + 2);
+  }
+
+  #[test]
+  fn test_calculate_wrapped_height_multiple_lines() {
+    let lines = vec![
+      Line::from("Short"),           // 5 chars, width 10 → 1 line
+      Line::from(""),                // empty → 1 line
+      Line::from("1234567890abcde"), // 15 chars, width 10 → 2 lines
+    ];
+    let height = calculate_wrapped_height(&lines, 10);
+    assert_eq!(height, 1 + 1 + 2 + 2); // 4 lines + 2 padding
+  }
+
+  #[test]
+  fn test_calculate_wrapped_height_exact_fit() {
+    // Exactly 10 chars in 10-wide viewport → 1 line
+    let lines = vec![Line::from("1234567890")];
+    let height = calculate_wrapped_height(&lines, 10);
+    assert_eq!(height, 1 + 2);
+  }
+
+  #[test]
+  fn test_build_entry_content_basic() {
+    let entry = FeedEntry {
+      title: "Test Entry".to_string(),
+      published: Some("2024-01-15".to_string()),
+      text: "Entry body text".to_string(),
+      links: vec!["https://example.com/post".to_string()],
+      media: None,
+      feed_title: None,
+      read: false,
+    };
+
+    let lines = build_entry_content("My Feed", &entry);
+    // Should contain metadata lines
+    let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    assert!(text.iter().any(|l| l.contains("Test Entry")));
+    assert!(text.iter().any(|l| l.contains("My Feed")));
+    assert!(text.iter().any(|l| l.contains("2024-01-15")));
+    assert!(text.iter().any(|l| l.contains("https://example.com/post")));
+  }
+
+  #[test]
+  fn test_build_entry_content_unknown_published() {
+    let entry = FeedEntry {
+      title: "No Date".to_string(),
+      published: None,
+      text: "Content".to_string(),
+      links: vec![],
+      media: None,
+      feed_title: None,
+      read: false,
+    };
+
+    let lines = build_entry_content("Feed", &entry);
+    let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    assert!(text.iter().any(|l| l.contains("Unknown")));
+  }
+
+  #[test]
+  fn test_build_entry_content_with_media() {
+    let entry = FeedEntry {
+      title: "Podcast".to_string(),
+      published: None,
+      text: "Episode notes".to_string(),
+      links: vec![],
+      media: Some("https://example.com/episode.mp3".to_string()),
+      feed_title: None,
+      read: false,
+    };
+
+    let lines = build_entry_content("Podcast Feed", &entry);
+    let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    assert!(text.iter().any(|l| l.contains("episode.mp3")));
+  }
+
+  #[test]
+  fn test_build_entry_content_multiple_links() {
+    let entry = FeedEntry {
+      title: "Multi Link".to_string(),
+      published: None,
+      text: "Content".to_string(),
+      links: vec![
+        "https://example.com/main".to_string(),
+        "https://example.com/ref1".to_string(),
+        "https://example.com/ref2".to_string(),
+      ],
+      media: None,
+      feed_title: None,
+      read: false,
+    };
+
+    let lines = build_entry_content("Feed", &entry);
+    let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    // First link shown in header
+    assert!(text.iter().any(|l| l.contains("https://example.com/main")));
+    // Additional links in footer section
+    assert!(text.iter().any(|l| l.contains("Links:")));
+    assert!(text.iter().any(|l| l.contains("[1]")));
+    assert!(text.iter().any(|l| l.contains("ref1")));
+    assert!(text.iter().any(|l| l.contains("[2]")));
+    assert!(text.iter().any(|l| l.contains("ref2")));
   }
 }

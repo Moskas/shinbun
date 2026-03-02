@@ -4,7 +4,8 @@ use ratatui::{
   prelude::*,
   symbols::border,
   widgets::{
-    Block, Borders, Cell, Clear, Padding, Paragraph, Row, StatefulWidget, Table, TableState, Wrap,
+    Block, Borders, Cell, Clear, Padding, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+    ScrollbarState, StatefulWidget, Table, TableState, Wrap,
   },
 };
 
@@ -113,40 +114,33 @@ fn entry_row(entry: &FeedEntry, is_query: bool) -> Row<'static> {
 
 // ─── Public render entry-point ────────────────────────────────────────────────
 
-pub fn render(
-  frame: &mut Frame,
-  area: Rect,
-  raw_feeds: &[Feed],
-  display_feeds: &[DisplayFeed],
-  feed_state: &mut TableState,
-  entry_state: &mut TableState,
-  app_state: AppState,
-  show_borders: bool,
-  loading_state: &LoadingState,
-  current_feed: Option<&str>,
-  feed_errors: &[FeedError],
-  show_error_popup: bool,
-  hide_read: bool,
-) {
+/// Bundled parameters for the feeds list view (everything except `Frame`).
+pub struct FeedsViewState<'a> {
+  pub raw_feeds: &'a [Feed],
+  pub display_feeds: &'a [DisplayFeed],
+  pub feed_state: &'a mut TableState,
+  pub entry_state: &'a mut TableState,
+  pub app_state: AppState,
+  pub show_borders: bool,
+  pub loading_state: &'a LoadingState,
+  pub current_feed: Option<&'a str>,
+  pub feed_errors: &'a [FeedError],
+  pub show_error_popup: bool,
+  pub error_scroll: &'a mut usize,
+  pub hide_read: bool,
+}
+
+pub fn render(frame: &mut Frame, area: Rect, s: &mut FeedsViewState) {
   let title = " Shinbun ".bold().yellow();
 
-  let mut instruction_spans = vec![
-    " Quit ".into(),
-    "<q> ".bold(),
-    " Refresh ".into(),
-    "<r> ".bold(),
-    " Mark read/unread ".into(),
-    "<m> ".bold(),
-    " Hide read ".into(),
-    "<u> ".bold(),
-  ];
-  if !feed_errors.is_empty() {
+  let mut instruction_spans = vec![" Help ".into(), "<?>".bold()];
+  if !s.feed_errors.is_empty() {
     instruction_spans.push(" Errors ".into());
     instruction_spans.push("<e> ".bold().red());
   }
   let instructions = instruction_spans;
 
-  let outer_block = if show_borders {
+  let outer_block = if s.show_borders {
     Block::default()
       .title(title)
       .title_bottom(instructions)
@@ -163,24 +157,25 @@ pub fn render(
   render_main_pane(
     frame,
     inner_area,
-    raw_feeds,
-    display_feeds,
-    feed_state,
-    entry_state,
-    app_state,
-    show_borders,
-    loading_state,
-    hide_read,
+    s.raw_feeds,
+    s.display_feeds,
+    s.feed_state,
+    s.entry_state,
+    s.app_state,
+    s.show_borders,
+    s.loading_state,
+    s.hide_read,
   );
 
-  if show_error_popup {
-    render_error_popup(frame, area, feed_errors);
+  if s.show_error_popup {
+    render_error_popup(frame, area, s.feed_errors, s.error_scroll);
   }
-  if loading_state.should_show_popup() {
-    render_loading_popup(frame, area, loading_state, current_feed);
+  if s.loading_state.should_show_popup() {
+    render_loading_popup(frame, area, s.loading_state, s.current_feed);
   }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_main_pane(
   frame: &mut Frame,
   area: Rect,
@@ -353,7 +348,12 @@ fn create_entry_block(count: usize, show_borders: bool) -> Block<'static> {
 
 // ─── Popups ───────────────────────────────────────────────────────────────────
 
-fn render_error_popup(frame: &mut Frame, area: Rect, feed_errors: &[FeedError]) {
+fn render_error_popup(
+  frame: &mut Frame,
+  area: Rect,
+  feed_errors: &[FeedError],
+  scroll: &mut usize,
+) {
   let popup_width = area.width.saturating_sub(10).min(80);
   let popup_height = (feed_errors.len() as u16 + 4).min(area.height.saturating_sub(4));
 
@@ -371,18 +371,41 @@ fn render_error_popup(frame: &mut Frame, area: Rect, feed_errors: &[FeedError]) 
     .map(|e| Line::from(format!(" {} : {}", e.name, e.error)).red())
     .collect();
 
+  let content_len = error_text.len();
+
+  let block = Block::default()
+    .title(" Feed Errors ".red().bold())
+    .title_bottom(" <e> or <Esc> to close ".gray())
+    .borders(Borders::ALL)
+    .border_style(Style::new().red())
+    .border_set(border::PLAIN);
+
+  let inner_height = block.inner(popup_area).height as usize;
+  let max_scroll = content_len.saturating_sub(inner_height);
+  *scroll = (*scroll).min(max_scroll);
+
   let popup = Paragraph::new(error_text)
-    .block(
-      Block::default()
-        .title(" Feed Errors ".red().bold())
-        .title_bottom(" <e> or <Esc> to close ".gray())
-        .borders(Borders::ALL)
-        .border_style(Style::new().red())
-        .border_set(border::PLAIN),
-    )
+    .block(block)
+    .scroll((*scroll as u16, 0))
     .wrap(Wrap { trim: false });
 
   popup.render(popup_area, frame.buffer_mut());
+
+  if content_len > inner_height {
+    let scrollbar_area = Rect {
+      x: popup_area.x + popup_area.width.saturating_sub(1),
+      y: popup_area.y + 1,
+      width: 1,
+      height: popup_area.height.saturating_sub(2),
+    };
+
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+      .begin_symbol(Some("▲"))
+      .end_symbol(Some("▼"));
+
+    let mut scrollbar_state = ScrollbarState::new(max_scroll + 1).position(*scroll);
+    scrollbar.render(scrollbar_area, frame.buffer_mut(), &mut scrollbar_state);
+  }
 }
 
 fn render_loading_popup(
@@ -446,4 +469,198 @@ fn render_loading_popup(
   );
 
   popup.render(popup_area, frame.buffer_mut());
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn make_entry(title: &str, published: Option<&str>, read: bool) -> FeedEntry {
+    FeedEntry {
+      title: title.to_string(),
+      published: published.map(|s| s.to_string()),
+      text: String::new(),
+      links: vec![],
+      media: None,
+      feed_title: None,
+      read,
+    }
+  }
+
+  fn make_feed(url: &str, title: &str, entries: Vec<FeedEntry>) -> Feed {
+    Feed {
+      url: url.to_string(),
+      title: title.to_string(),
+      entries,
+      tags: None,
+    }
+  }
+
+  // ─── format_entry_date tests ─────────────────────────────────────────────
+
+  #[test]
+  fn test_format_entry_date_rfc3339() {
+    let result = format_entry_date(Some("2024-01-15T10:30:00+00:00"));
+    assert_eq!(result, "15 Jan");
+  }
+
+  #[test]
+  fn test_format_entry_date_rfc2822() {
+    let result = format_entry_date(Some("Mon, 15 Jan 2024 10:30:00 +0000"));
+    assert_eq!(result, "15 Jan");
+  }
+
+  #[test]
+  fn test_format_entry_date_iso_date() {
+    let result = format_entry_date(Some("2024-01-15"));
+    assert_eq!(result, "15 Jan");
+  }
+
+  #[test]
+  fn test_format_entry_date_dd_mm_yyyy() {
+    let result = format_entry_date(Some("15/01/2024"));
+    assert_eq!(result, "15 Jan");
+  }
+
+  #[test]
+  fn test_format_entry_date_mm_dd_yyyy() {
+    let result = format_entry_date(Some("01/15/2024"));
+    assert_eq!(result, "15 Jan");
+  }
+
+  #[test]
+  fn test_format_entry_date_none() {
+    let result = format_entry_date(None);
+    assert_eq!(result, "     ");
+  }
+
+  #[test]
+  fn test_format_entry_date_empty() {
+    let result = format_entry_date(Some(""));
+    assert_eq!(result, "     ");
+  }
+
+  #[test]
+  fn test_format_entry_date_invalid() {
+    let result = format_entry_date(Some("not a date"));
+    assert_eq!(result, "     ");
+  }
+
+  // ─── entry_column_widths tests ───────────────────────────────────────────
+
+  #[test]
+  fn test_entry_column_widths_no_query() {
+    let widths = entry_column_widths(false, 0);
+    assert_eq!(widths.len(), 2);
+    assert_eq!(widths[0], Constraint::Length(DATE_COL_WIDTH));
+  }
+
+  #[test]
+  fn test_entry_column_widths_query() {
+    let widths = entry_column_widths(true, 15);
+    assert_eq!(widths.len(), 3);
+    assert_eq!(widths[0], Constraint::Length(DATE_COL_WIDTH));
+    assert_eq!(widths[1], Constraint::Length(15));
+  }
+
+  #[test]
+  fn test_entry_column_widths_query_zero_source() {
+    // Query with zero source width falls back to non-query layout
+    let widths = entry_column_widths(true, 0);
+    assert_eq!(widths.len(), 2);
+  }
+
+  // ─── build_entry_rows tests ──────────────────────────────────────────────
+
+  #[test]
+  fn test_build_entry_rows_regular_feed() {
+    let feeds = vec![make_feed(
+      "https://example.com/rss",
+      "Feed",
+      vec![
+        make_entry("Post 1", Some("2024-01-01T00:00:00Z"), false),
+        make_entry("Post 2", Some("2024-02-01T00:00:00Z"), true),
+      ],
+    )];
+    let display = vec![DisplayFeed::Regular(0)];
+
+    let (rows, is_query, source_width) = build_entry_rows(&display, &feeds, 0, false);
+    assert_eq!(rows.len(), 2);
+    assert!(!is_query);
+    assert_eq!(source_width, 0);
+  }
+
+  #[test]
+  fn test_build_entry_rows_hide_read() {
+    let feeds = vec![make_feed(
+      "https://example.com/rss",
+      "Feed",
+      vec![
+        make_entry("Unread Post", None, false),
+        make_entry("Read Post", None, true),
+      ],
+    )];
+    let display = vec![DisplayFeed::Regular(0)];
+
+    let (rows, _, _) = build_entry_rows(&display, &feeds, 0, true);
+    assert_eq!(rows.len(), 1); // Only unread entry
+  }
+
+  #[test]
+  fn test_build_entry_rows_empty_feed() {
+    let feeds = vec![make_feed("https://example.com/rss", "Feed", vec![])];
+    let display = vec![DisplayFeed::Regular(0)];
+
+    let (rows, is_query, _) = build_entry_rows(&display, &feeds, 0, false);
+    assert_eq!(rows.len(), 1); // "No entries" placeholder
+    assert!(!is_query);
+  }
+
+  #[test]
+  fn test_build_entry_rows_query_feed() {
+    let feeds = vec![make_feed(
+      "https://example.com/rss",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+
+    let mut query_entry = make_entry("Post 1", None, false);
+    query_entry.feed_title = Some("Feed A".to_string());
+    let display = vec![DisplayFeed::Query {
+      name: "All Blogs".to_string(),
+      entries: vec![query_entry],
+    }];
+
+    let (rows, is_query, source_width) = build_entry_rows(&display, &feeds, 0, false);
+    assert_eq!(rows.len(), 1);
+    assert!(is_query);
+    assert!(source_width > 0);
+  }
+
+  #[test]
+  fn test_build_entry_rows_out_of_bounds() {
+    let feeds: Vec<Feed> = vec![];
+    let display: Vec<DisplayFeed> = vec![];
+
+    let (rows, is_query, _) = build_entry_rows(&display, &feeds, 5, false);
+    assert!(rows.is_empty());
+    assert!(!is_query);
+  }
+
+  #[test]
+  fn test_build_entry_rows_all_read_hidden() {
+    let feeds = vec![make_feed(
+      "https://example.com/rss",
+      "Feed",
+      vec![
+        make_entry("Read 1", None, true),
+        make_entry("Read 2", None, true),
+      ],
+    )];
+    let display = vec![DisplayFeed::Regular(0)];
+
+    let (rows, _, _) = build_entry_rows(&display, &feeds, 0, true);
+    // When all entries are read and hide_read is on, should show "No entries"
+    assert_eq!(rows.len(), 1);
+  }
 }

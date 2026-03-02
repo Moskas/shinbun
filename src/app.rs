@@ -2,7 +2,7 @@ use crate::cache::FeedCache;
 use crate::config::{Feed as FeedConfig, GeneralConfig, QueryFeed, UiConfig};
 use crate::feeds::{self, Feed, FeedEntry};
 use crate::query;
-use crate::views::{entry_view, feeds_list_view};
+use crate::views::{entry_view, feeds_list_view, help_view};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
 use ratatui::widgets::TableState;
@@ -181,6 +181,9 @@ pub struct App {
   current_feed: Option<String>,
   feed_errors: Vec<FeedError>,
   show_error_popup: bool,
+  error_scroll: usize,
+  show_help_popup: bool,
+  help_scroll: usize,
   input: InputState,
   cache: FeedCache,
   /// Cached visible (unfiltered) entry indices for the currently selected feed.
@@ -224,6 +227,9 @@ impl App {
       current_feed: None,
       feed_errors: Vec::new(),
       show_error_popup: false,
+      error_scroll: 0,
+      show_help_popup: false,
+      help_scroll: 0,
       input: InputState {
         hide_read,
         ..InputState::default()
@@ -415,7 +421,6 @@ impl App {
                 &mut self.entry_scroll,
                 self.ui_config.show_borders,
               );
-              return;
             }
           }
         }
@@ -424,27 +429,78 @@ impl App {
         feeds_list_view::render(
           frame,
           area,
-          &self.feeds,
-          &self.display_feeds,
-          &mut self.feed_list_state,
-          &mut self.entry_list_state,
-          self.state,
-          self.ui_config.show_borders,
-          &self.loading_state,
-          self.current_feed.as_deref(),
-          &self.feed_errors,
-          self.show_error_popup,
-          self.input.hide_read,
+          &mut feeds_list_view::FeedsViewState {
+            raw_feeds: &self.feeds,
+            display_feeds: &self.display_feeds,
+            feed_state: &mut self.feed_list_state,
+            entry_state: &mut self.entry_list_state,
+            app_state: self.state,
+            show_borders: self.ui_config.show_borders,
+            loading_state: &self.loading_state,
+            current_feed: self.current_feed.as_deref(),
+            feed_errors: &self.feed_errors,
+            show_error_popup: self.show_error_popup,
+            error_scroll: &mut self.error_scroll,
+            hide_read: self.input.hide_read,
+          },
         );
       }
+    }
+
+    if self.show_help_popup {
+      help_view::render_help_popup(frame, area, &mut self.help_scroll);
     }
   }
 
   pub fn handle_key(&mut self, key: KeyEvent) {
+    if self.show_help_popup {
+      match key.code {
+        KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter => {
+          self.show_help_popup = false;
+          self.help_scroll = 0;
+          return;
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+          self.help_scroll = self.help_scroll.saturating_add(1);
+          return;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+          self.help_scroll = self.help_scroll.saturating_sub(1);
+          return;
+        }
+        KeyCode::Home | KeyCode::Char('g') => {
+          self.help_scroll = 0;
+          return;
+        }
+        KeyCode::End | KeyCode::Char('G') => {
+          self.help_scroll = usize::MAX;
+          return;
+        }
+        _ => return,
+      }
+    }
+
     if self.show_error_popup {
       match key.code {
         KeyCode::Esc | KeyCode::Char('e') | KeyCode::Char('E') | KeyCode::Enter => {
           self.show_error_popup = false;
+          self.error_scroll = 0;
+          return;
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+          self.error_scroll = self.error_scroll.saturating_add(1);
+          return;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+          self.error_scroll = self.error_scroll.saturating_sub(1);
+          return;
+        }
+        KeyCode::Home | KeyCode::Char('g') => {
+          self.error_scroll = 0;
+          return;
+        }
+        KeyCode::End | KeyCode::Char('G') => {
+          self.error_scroll = usize::MAX;
           return;
         }
         _ => return,
@@ -453,6 +509,10 @@ impl App {
 
     match key.code {
       KeyCode::Char('q') | KeyCode::Char('Q') => self.exit = true,
+      KeyCode::Char('?') => {
+        self.show_help_popup = !self.show_help_popup;
+        self.help_scroll = 0;
+      }
       KeyCode::Char('r') => self.refresh_selected_feed(),
       KeyCode::Char('R') => self.refresh_feeds(),
       KeyCode::Char('e') | KeyCode::Char('E') => {
@@ -919,5 +979,520 @@ impl App {
 
     self.sync_read_state(feed_vec_idx, entry_vec_idx, true);
     self.invalidate_visible_indices();
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn make_entry(title: &str, published: Option<&str>, read: bool) -> FeedEntry {
+    FeedEntry {
+      title: title.to_string(),
+      published: published.map(|s| s.to_string()),
+      text: String::new(),
+      links: vec![],
+      media: None,
+      feed_title: None,
+      read,
+    }
+  }
+
+  fn make_feed(url: &str, title: &str, entries: Vec<FeedEntry>) -> Feed {
+    Feed {
+      url: url.to_string(),
+      title: title.to_string(),
+      entries,
+      tags: None,
+    }
+  }
+
+  // ─── DisplayFeed tests ─────────────────────────────────────────────────
+
+  #[test]
+  fn test_display_feed_regular_title() {
+    let feeds = vec![make_feed("http://a.com", "Feed A", vec![])];
+    let df = DisplayFeed::Regular(0);
+    assert_eq!(df.title(&feeds), "Feed A");
+  }
+
+  #[test]
+  fn test_display_feed_regular_out_of_bounds() {
+    let feeds: Vec<Feed> = vec![];
+    let df = DisplayFeed::Regular(5);
+    assert_eq!(df.title(&feeds), "");
+    assert!(df.entries(&feeds).is_empty());
+  }
+
+  #[test]
+  fn test_display_feed_query_title() {
+    let feeds: Vec<Feed> = vec![];
+    let df = DisplayFeed::Query {
+      name: "All Blogs".to_string(),
+      entries: vec![],
+    };
+    assert_eq!(df.title(&feeds), "All Blogs");
+  }
+
+  #[test]
+  fn test_display_feed_query_entries() {
+    let feeds: Vec<Feed> = vec![];
+    let entries = vec![make_entry("Post 1", None, false)];
+    let df = DisplayFeed::Query {
+      name: "Q".to_string(),
+      entries,
+    };
+    assert_eq!(df.entries(&feeds).len(), 1);
+    assert_eq!(df.entries(&feeds)[0].title, "Post 1");
+  }
+
+  #[test]
+  fn test_display_feed_is_query() {
+    assert!(!DisplayFeed::Regular(0).is_query());
+    assert!(DisplayFeed::Query {
+      name: "Q".to_string(),
+      entries: vec![]
+    }
+    .is_query());
+  }
+
+  #[test]
+  fn test_display_feed_regular_entries() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let df = DisplayFeed::Regular(0);
+    assert_eq!(df.entries(&feeds).len(), 1);
+    assert_eq!(df.entries(&feeds)[0].title, "Post 1");
+  }
+
+  // ─── LoadingState tests ────────────────────────────────────────────────
+
+  #[test]
+  fn test_loading_state_new() {
+    let state = LoadingState::new();
+    assert!(state.is_loading);
+    assert!(state.is_initial_load);
+    assert!(state.finish_time.is_none());
+    assert!(state.updated_feeds.is_empty());
+  }
+
+  #[test]
+  fn test_loading_state_idle() {
+    let state = LoadingState::idle();
+    assert!(!state.is_loading);
+    assert!(state.finish_time.is_some());
+  }
+
+  #[test]
+  fn test_loading_state_start_stop() {
+    let mut state = LoadingState::idle();
+    state.start();
+    assert!(state.is_loading);
+    assert!(!state.is_initial_load);
+    assert!(state.finish_time.is_none());
+    assert!(state.updated_feeds.is_empty());
+
+    state.stop();
+    assert!(!state.is_loading);
+    assert!(state.finish_time.is_some());
+  }
+
+  #[test]
+  fn test_loading_state_should_show_popup_while_loading() {
+    let state = LoadingState::new();
+    assert!(state.should_show_popup());
+  }
+
+  #[test]
+  fn test_loading_state_should_show_popup_after_stop() {
+    let mut state = LoadingState::new();
+    state.stop();
+    // Should still show for up to 3 seconds
+    assert!(state.should_show_popup());
+  }
+
+  #[test]
+  fn test_loading_state_spinner_frame_while_loading() {
+    let state = LoadingState::new();
+    let frame = state.spinner_frame();
+    assert!(!frame.is_empty());
+  }
+
+  #[test]
+  fn test_loading_state_spinner_frame_when_not_loading() {
+    let state = LoadingState::idle();
+    assert_eq!(state.spinner_frame(), "");
+  }
+
+  #[test]
+  fn test_loading_state_start_clears_updated_feeds() {
+    let mut state = LoadingState::new();
+    state.updated_feeds.push("Feed A".to_string());
+    state.start();
+    assert!(state.updated_feeds.is_empty());
+  }
+
+  // ─── InputState tests ─────────────────────────────────────────────────
+
+  #[test]
+  fn test_input_state_default() {
+    let input = InputState::default();
+    assert!(!input.vim_g);
+    assert!(!input.hide_read);
+    assert!(input.current_entry_relative_index.is_none());
+  }
+
+  #[test]
+  fn test_input_state_cancel_sequence() {
+    let mut input = InputState::default();
+    input.vim_g = true;
+    input.cancel_sequence();
+    assert!(!input.vim_g);
+  }
+
+  // ─── build_display_feeds tests ─────────────────────────────────────────
+
+  #[test]
+  fn test_build_display_feeds_no_queries() {
+    let feeds = vec![
+      make_feed("http://a.com", "Feed A", vec![]),
+      make_feed("http://b.com", "Feed B", vec![]),
+    ];
+    let queries: Vec<QueryFeed> = vec![];
+    let display = App::build_display_feeds(&feeds, &queries);
+    assert_eq!(display.len(), 2);
+    assert!(matches!(display[0], DisplayFeed::Regular(0)));
+    assert!(matches!(display[1], DisplayFeed::Regular(1)));
+  }
+
+  #[test]
+  fn test_build_display_feeds_with_queries() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let mut feed_with_tags = feeds[0].clone();
+    feed_with_tags.tags = Some(vec!["blog".to_string()]);
+    let feeds = vec![feed_with_tags];
+
+    let queries = vec![QueryFeed {
+      name: "All Blogs".to_string(),
+      query: "tags:blog".to_string(),
+    }];
+
+    let display = App::build_display_feeds(&feeds, &queries);
+    // Query feeds come first, then regular feeds
+    assert_eq!(display.len(), 2);
+    assert!(display[0].is_query());
+    assert_eq!(display[0].title(&feeds), "All Blogs");
+    assert!(!display[1].is_query());
+  }
+
+  #[test]
+  fn test_build_display_feeds_empty() {
+    let feeds: Vec<Feed> = vec![];
+    let queries: Vec<QueryFeed> = vec![];
+    let display = App::build_display_feeds(&feeds, &queries);
+    assert!(display.is_empty());
+  }
+
+  // ─── App integration tests (with in-memory cache) ─────────────────────
+
+  fn make_test_app() -> App {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let cache = crate::cache::FeedCache::new_in_memory().unwrap();
+    App::new(
+      vec![],
+      GeneralConfig::default(),
+      UiConfig {
+        show_borders: true,
+        show_read_entries: true,
+      },
+      vec![],
+      vec![],
+      tx,
+      cache,
+    )
+  }
+
+  fn make_app_with_feeds(feeds: Vec<Feed>) -> App {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let cache = crate::cache::FeedCache::new_in_memory().unwrap();
+    App::new(
+      feeds,
+      GeneralConfig::default(),
+      UiConfig {
+        show_borders: true,
+        show_read_entries: true,
+      },
+      vec![],
+      vec![],
+      tx,
+      cache,
+    )
+  }
+
+  #[test]
+  fn test_app_initial_state() {
+    let app = make_test_app();
+    assert_eq!(app.state, AppState::BrowsingFeeds);
+    assert!(!app.exit);
+    assert!(!app.show_help_popup);
+    assert!(!app.show_error_popup);
+  }
+
+  #[test]
+  fn test_app_quit() {
+    let mut app = make_test_app();
+    assert!(!app.should_exit());
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert!(app.should_exit());
+  }
+
+  #[test]
+  fn test_app_toggle_help() {
+    let mut app = make_test_app();
+    assert!(!app.show_help_popup);
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert!(app.show_help_popup);
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert!(!app.show_help_popup);
+  }
+
+  #[test]
+  fn test_app_help_popup_scroll() {
+    let mut app = make_test_app();
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    assert!(app.show_help_popup);
+
+    // Scroll down
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.help_scroll, 1);
+
+    // Scroll up
+    app.handle_key(KeyEvent::from(KeyCode::Char('k')));
+    assert_eq!(app.help_scroll, 0);
+
+    // Can't scroll past 0
+    app.handle_key(KeyEvent::from(KeyCode::Char('k')));
+    assert_eq!(app.help_scroll, 0);
+
+    // Close with Esc resets scroll
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(!app.show_help_popup);
+    assert_eq!(app.help_scroll, 0);
+  }
+
+  #[test]
+  fn test_app_help_popup_blocks_other_keys() {
+    let mut app = make_test_app();
+    app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+    // 'q' should NOT quit while help is open
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    assert!(!app.should_exit());
+    assert!(app.show_help_popup);
+  }
+
+  #[test]
+  fn test_app_navigation_feeds() {
+    let feeds = vec![
+      make_feed("http://a.com", "A", vec![]),
+      make_feed("http://b.com", "B", vec![]),
+      make_feed("http://c.com", "C", vec![]),
+    ];
+    let mut app = make_app_with_feeds(feeds);
+    assert_eq!(app.feed_index, 0);
+
+    // Move down
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.feed_index, 1);
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.feed_index, 2);
+
+    // Can't go past last
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.feed_index, 2);
+
+    // Move up
+    app.handle_key(KeyEvent::from(KeyCode::Char('k')));
+    assert_eq!(app.feed_index, 1);
+
+    // Go to bottom with G
+    app.handle_key(KeyEvent::from(KeyCode::Char('G')));
+    assert_eq!(app.feed_index, 2);
+
+    // Go to top with gg
+    app.handle_key(KeyEvent::from(KeyCode::Char('g')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('g')));
+    assert_eq!(app.feed_index, 0);
+  }
+
+  #[test]
+  fn test_app_enter_entries_and_back() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let mut app = make_app_with_feeds(feeds);
+
+    // Enter entries
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.state, AppState::BrowsingEntries);
+
+    // Go back to feeds
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.state, AppState::BrowsingFeeds);
+  }
+
+  #[test]
+  fn test_app_enter_entry_view() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let mut app = make_app_with_feeds(feeds);
+
+    // Navigate to entries
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.state, AppState::BrowsingEntries);
+
+    // Open entry
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.state, AppState::ViewingEntry);
+    assert_eq!(app.input.current_entry_relative_index, Some(0));
+
+    // Go back
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.state, AppState::BrowsingEntries);
+    assert!(app.input.current_entry_relative_index.is_none());
+  }
+
+  #[test]
+  fn test_app_toggle_hide_read() {
+    let mut app = make_test_app();
+    assert!(!app.input.hide_read);
+    app.handle_key(KeyEvent::from(KeyCode::Char('u')));
+    assert!(app.input.hide_read);
+    app.handle_key(KeyEvent::from(KeyCode::Char('u')));
+    assert!(!app.input.hide_read);
+  }
+
+  #[test]
+  fn test_app_error_popup_toggle() {
+    let mut app = make_test_app();
+    // No errors → 'e' does nothing
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+    assert!(!app.show_error_popup);
+
+    // Add an error and try again
+    app.feed_errors.push(FeedError {
+      name: "Test".to_string(),
+      error: "error".to_string(),
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+    assert!(app.show_error_popup);
+
+    // Close with 'e'
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+    assert!(!app.show_error_popup);
+  }
+
+  #[test]
+  fn test_app_error_popup_scroll() {
+    let mut app = make_test_app();
+    app.feed_errors.push(FeedError {
+      name: "Test".to_string(),
+      error: "error".to_string(),
+    });
+    app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+    assert!(app.show_error_popup);
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.error_scroll, 1);
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('k')));
+    assert_eq!(app.error_scroll, 0);
+
+    // Close resets scroll
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(!app.show_error_popup);
+    assert_eq!(app.error_scroll, 0);
+  }
+
+  #[test]
+  fn test_app_vim_g_cancelled_by_other_keys() {
+    let mut app = make_test_app();
+    app.handle_key(KeyEvent::from(KeyCode::Char('g')));
+    assert!(app.input.vim_g);
+
+    // Any key other than 'g' should cancel the sequence
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert!(!app.input.vim_g);
+  }
+
+  #[test]
+  fn test_app_handle_feed_update_fetching() {
+    let mut app = make_test_app();
+    app.handle_feed_update(FeedUpdate::FetchingFeed("Feed A".to_string()));
+    assert_eq!(app.current_feed.as_deref(), Some("Feed A"));
+  }
+
+  #[test]
+  fn test_app_handle_feed_update_error() {
+    let mut app = make_test_app();
+    app.handle_feed_update(FeedUpdate::FeedError {
+      name: "Bad Feed".to_string(),
+      error: "timeout".to_string(),
+    });
+    assert_eq!(app.feed_errors.len(), 1);
+    assert_eq!(app.feed_errors[0].name, "Bad Feed");
+    assert_eq!(app.feed_errors[0].error, "timeout");
+  }
+
+  #[test]
+  fn test_app_handle_feed_update_fetch_complete() {
+    let mut app = make_test_app();
+    app.loading_state.is_loading = true;
+    app.handle_feed_update(FeedUpdate::FetchComplete);
+    assert!(!app.loading_state.is_loading);
+    assert!(app.current_feed.is_none());
+  }
+
+  #[test]
+  fn test_app_scroll_in_entry_view() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let mut app = make_app_with_feeds(feeds);
+
+    // Navigate to entry view
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // → BrowsingEntries
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // → ViewingEntry
+
+    assert_eq!(app.entry_scroll, 0);
+    app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+    assert_eq!(app.entry_scroll, 1);
+    app.handle_key(KeyEvent::from(KeyCode::Char('k')));
+    assert_eq!(app.entry_scroll, 0);
+  }
+
+  #[test]
+  fn test_app_push_error() {
+    let mut app = make_test_app();
+    app.push_error("Test", "something failed");
+    assert_eq!(app.feed_errors.len(), 1);
+    assert_eq!(app.feed_errors[0].name, "Test");
+    assert_eq!(app.feed_errors[0].error, "something failed");
   }
 }

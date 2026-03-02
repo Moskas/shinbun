@@ -21,3 +21,6 @@ tl = "0.7.8"
 tokio = { version = "1.40.0", features = ["rt", "rt-multi-thread", "process", "macros"] }
 toml = "0.9.8"
 tui-markdown = "0.3.7"
+
+[dev-dependencies]
+tempfile = "3"

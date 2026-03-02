@@ -1,18 +1,21 @@
 use dirs::config_dir;
 use serde::Deserialize;
-use std::{fmt, fs, path::PathBuf};
+use std::{
+  fmt, fs,
+  path::{Path, PathBuf},
+};
 
 #[derive(Debug)]
 pub enum ConfigError {
-  FeedsFileNotFound(PathBuf),
-  FeedsFileRead(PathBuf, std::io::Error),
-  FeedsFileParse(PathBuf, toml::de::Error),
+  NotFound(PathBuf),
+  Read(PathBuf, std::io::Error),
+  Parse(PathBuf, toml::de::Error),
 }
 
 impl fmt::Display for ConfigError {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      ConfigError::FeedsFileNotFound(path) => {
+      ConfigError::NotFound(path) => {
         write!(
           f,
           "Feeds file not found: {}\n\
@@ -21,10 +24,10 @@ impl fmt::Display for ConfigError {
           path.display()
         )
       }
-      ConfigError::FeedsFileRead(path, err) => {
+      ConfigError::Read(path, err) => {
         write!(f, "Failed to read {}: {}", path.display(), err)
       }
-      ConfigError::FeedsFileParse(path, err) => {
+      ConfigError::Parse(path, err) => {
         write!(f, "Failed to parse {}: {}", path.display(), err)
       }
     }
@@ -114,7 +117,7 @@ pub fn parse_config() -> Result<Config, ConfigError> {
 }
 
 /// Parse configuration file (config.toml)
-fn parse_config_file(config_dir: &PathBuf) -> (GeneralConfig, UiConfig, Vec<QueryFeed>) {
+fn parse_config_file(config_dir: &Path) -> (GeneralConfig, UiConfig, Vec<QueryFeed>) {
   let config_path = config_dir.join("config.toml");
 
   if !config_path.exists() {
@@ -137,18 +140,18 @@ fn parse_config_file(config_dir: &PathBuf) -> (GeneralConfig, UiConfig, Vec<Quer
 }
 
 /// Parse feeds from feeds.toml
-fn parse_feeds(config_dir: &PathBuf) -> Result<Vec<Feed>, ConfigError> {
+fn parse_feeds(config_dir: &Path) -> Result<Vec<Feed>, ConfigError> {
   let feeds_path = config_dir.join("feeds.toml");
 
   if !feeds_path.exists() {
-    return Err(ConfigError::FeedsFileNotFound(feeds_path));
+    return Err(ConfigError::NotFound(feeds_path));
   }
 
-  let content = fs::read_to_string(&feeds_path)
-    .map_err(|e| ConfigError::FeedsFileRead(feeds_path.clone(), e))?;
+  let content =
+    fs::read_to_string(&feeds_path).map_err(|e| ConfigError::Read(feeds_path.clone(), e))?;
 
-  let feeds_file: FeedsFile = toml::from_str(&content)
-    .map_err(|e| ConfigError::FeedsFileParse(feeds_path.clone(), e))?;
+  let feeds_file: FeedsFile =
+    toml::from_str(&content).map_err(|e| ConfigError::Parse(feeds_path.clone(), e))?;
 
   if feeds_file.feeds.is_empty() {
     eprintln!("Warning: No feeds configured in feeds.toml");
@@ -166,4 +169,173 @@ fn get_config_dir() -> PathBuf {
 /// Get the cache database path
 pub fn get_cache_path() -> PathBuf {
   get_config_dir().join("cache.db")
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::io;
+
+  #[test]
+  fn test_config_error_not_found_display() {
+    let err = ConfigError::NotFound(PathBuf::from("/tmp/missing.toml"));
+    let msg = format!("{}", err);
+    assert!(msg.contains("Feeds file not found"));
+    assert!(msg.contains("/tmp/missing.toml"));
+    assert!(msg.contains("feeds.toml"));
+  }
+
+  #[test]
+  fn test_config_error_read_display() {
+    let io_err = io::Error::new(io::ErrorKind::PermissionDenied, "permission denied");
+    let err = ConfigError::Read(PathBuf::from("/tmp/feeds.toml"), io_err);
+    let msg = format!("{}", err);
+    assert!(msg.contains("Failed to read"));
+    assert!(msg.contains("permission denied"));
+  }
+
+  #[test]
+  fn test_config_error_parse_display() {
+    // Create a real toml parse error
+    let toml_err = toml::from_str::<FeedsFile>("invalid toml {{{{").unwrap_err();
+    let err = ConfigError::Parse(PathBuf::from("/tmp/feeds.toml"), toml_err);
+    let msg = format!("{}", err);
+    assert!(msg.contains("Failed to parse"));
+  }
+
+  #[test]
+  fn test_parse_feeds_file_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let result = parse_feeds(dir.path());
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), ConfigError::NotFound(_)));
+  }
+
+  #[test]
+  fn test_parse_feeds_valid() {
+    let dir = tempfile::tempdir().unwrap();
+    let feeds_path = dir.path().join("feeds.toml");
+    fs::write(
+      &feeds_path,
+      r#"
+[[feeds]]
+link = "https://example.com/feed.xml"
+name = "Example"
+tags = ["blog", "tech"]
+
+[[feeds]]
+link = "https://other.com/rss"
+"#,
+    )
+    .unwrap();
+
+    let feeds = parse_feeds(dir.path()).unwrap();
+    assert_eq!(feeds.len(), 2);
+    assert_eq!(feeds[0].link, "https://example.com/feed.xml");
+    assert_eq!(feeds[0].name.as_deref(), Some("Example"));
+    assert_eq!(
+      feeds[0].tags.as_ref().unwrap(),
+      &vec!["blog".to_string(), "tech".to_string()]
+    );
+    assert_eq!(feeds[1].link, "https://other.com/rss");
+    assert!(feeds[1].name.is_none());
+    assert!(feeds[1].tags.is_none());
+  }
+
+  #[test]
+  fn test_parse_feeds_invalid_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let feeds_path = dir.path().join("feeds.toml");
+    fs::write(&feeds_path, "this is not valid toml {{{{").unwrap();
+
+    let result = parse_feeds(dir.path());
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), ConfigError::Parse(_, _)));
+  }
+
+  #[test]
+  fn test_parse_feeds_empty_feeds_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let feeds_path = dir.path().join("feeds.toml");
+    fs::write(&feeds_path, "feeds = []\n").unwrap();
+
+    let feeds = parse_feeds(dir.path()).unwrap();
+    assert!(feeds.is_empty());
+  }
+
+  #[test]
+  fn test_parse_config_file_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (general, ui, queries) = parse_config_file(dir.path());
+    // Should return defaults when file is missing
+    assert!(general.browser.is_none());
+    assert!(general.media_player.is_none());
+    // UiConfig::default() gives false for both fields (Rust Default, not serde defaults)
+    assert!(!ui.show_borders);
+    assert!(!ui.show_read_entries);
+    assert!(queries.is_empty());
+  }
+
+  #[test]
+  fn test_parse_config_file_valid() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.toml");
+    fs::write(
+      &config_path,
+      r#"
+[general]
+browser = "firefox"
+media_player = "mpv"
+
+[ui]
+show_borders = false
+show_read_entries = false
+
+[[queries]]
+name = "All Blogs"
+query = "tags:blog"
+"#,
+    )
+    .unwrap();
+
+    let (general, ui, queries) = parse_config_file(dir.path());
+    assert_eq!(general.browser.as_deref(), Some("firefox"));
+    assert_eq!(general.media_player.as_deref(), Some("mpv"));
+    assert!(!ui.show_borders);
+    assert!(!ui.show_read_entries);
+    assert_eq!(queries.len(), 1);
+    assert_eq!(queries[0].name, "All Blogs");
+    assert_eq!(queries[0].query, "tags:blog");
+  }
+
+  #[test]
+  fn test_parse_config_file_invalid_falls_back_to_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.toml");
+    fs::write(&config_path, "not valid toml {{{{").unwrap();
+
+    let (general, ui, queries) = parse_config_file(dir.path());
+    assert!(general.browser.is_none());
+    assert!(!ui.show_borders); // Default derive gives false, not the serde default of true
+    assert!(queries.is_empty());
+  }
+
+  #[test]
+  fn test_default_ui_config() {
+    let ui = UiConfig::default();
+    // Default from serde is false because bool::default() is false.
+    // But the serde defaults use custom fns that return true.
+    // The Default derive won't call the serde default fns, so Default::default()
+    // gives false. This test documents that behavior.
+    assert!(!ui.show_borders);
+    assert!(!ui.show_read_entries);
+  }
+
+  #[test]
+  fn test_feed_struct_defaults() {
+    let feed = Feed::default();
+    assert!(feed.link.is_empty());
+    assert!(feed.name.is_none());
+    assert!(feed.tags.is_none());
+  }
 }
