@@ -136,7 +136,7 @@ pub fn render(frame: &mut Frame, area: Rect, s: &mut FeedsViewState) {
   let mut instruction_spans = vec![" Help ".into(), "<?>".bold()];
   if !s.feed_errors.is_empty() {
     instruction_spans.push(" Errors ".into());
-    instruction_spans.push("<e> ".bold().red());
+    instruction_spans.push("<e> ".bold());
   }
   let instructions = instruction_spans;
 
@@ -368,14 +368,14 @@ fn render_error_popup(
 
   let error_text: Vec<Line> = feed_errors
     .iter()
-    .map(|e| Line::from(format!(" {} : {}", e.name, e.error)).red())
+    .map(|e| Line::from(format!(" {} : {}", e.name, e.error)))
     .collect();
 
   let content_len = error_text.len();
 
   let block = Block::default()
-    .title(" Feed Errors ".red().bold())
-    .title_bottom(" <e> or <Esc> to close ".gray())
+    .title(" Feed Errors ".yellow().bold())
+    .title_bottom(" <e> or <Esc> to close ".dim())
     .borders(Borders::ALL)
     .border_style(Style::new().red())
     .border_set(border::PLAIN);

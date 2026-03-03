@@ -27,7 +27,7 @@ impl StyleSheet for ShinbunStyleSheet {
   }
 
   fn code(&self) -> Style {
-    Style::new().on_black().white()
+    Style::new().bold()
   }
 
   fn link(&self) -> Style {
@@ -35,7 +35,7 @@ impl StyleSheet for ShinbunStyleSheet {
   }
 
   fn blockquote(&self) -> Style {
-    Style::new().green()
+    Style::new().dim()
   }
 
   fn heading_meta(&self) -> Style {
