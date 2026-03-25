@@ -2,7 +2,7 @@ use crate::cache::FeedCache;
 use crate::config::{Feed as FeedConfig, GeneralConfig, QueryFeed, UiConfig};
 use crate::feeds::{self, Feed, FeedEntry};
 use crate::query;
-use crate::views::{entry_view, feeds_list_view, help_view};
+use crate::views::{entry_view, feeds_list_view, help_view, links_view};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
 use ratatui::widgets::TableState;
@@ -184,6 +184,9 @@ pub struct App {
   error_scroll: usize,
   show_help_popup: bool,
   help_scroll: usize,
+  show_links_popup: bool,
+  links_scroll: usize,
+  links_selected: usize,
   show_confirm_popup: bool,
   confirm_feed_name: String,
   input: InputState,
@@ -232,6 +235,9 @@ impl App {
       error_scroll: 0,
       show_help_popup: false,
       help_scroll: 0,
+      show_links_popup: false,
+      links_scroll: 0,
+      links_selected: 0,
       show_confirm_popup: false,
       confirm_feed_name: String::new(),
       input: InputState {
@@ -455,6 +461,22 @@ impl App {
       help_view::render_help_popup(frame, area, &mut self.help_scroll);
     }
 
+    if self.show_links_popup {
+      if let Some(real_idx) = self.input.current_entry_relative_index {
+        if let Some(display_feed) = self.display_feeds.get(self.feed_index) {
+          if let Some(entry) = display_feed.entries(&self.feeds).get(real_idx) {
+            links_view::render_links_popup(
+              frame,
+              area,
+              &entry.links,
+              &mut self.links_selected,
+              &mut self.links_scroll,
+            );
+          }
+        }
+      }
+    }
+
     if self.show_confirm_popup {
       feeds_list_view::render_confirm_popup(frame, area, &self.confirm_feed_name);
     }
@@ -509,6 +531,40 @@ impl App {
         }
         KeyCode::End | KeyCode::Char('G') => {
           self.error_scroll = usize::MAX;
+          return;
+        }
+        _ => return,
+      }
+    }
+
+    if self.show_links_popup {
+      match key.code {
+        KeyCode::Esc | KeyCode::Char('L') => {
+          self.show_links_popup = false;
+          self.links_scroll = 0;
+          self.links_selected = 0;
+          return;
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+          self.links_selected = self.links_selected.saturating_add(1);
+          // Clamping happens in the render function
+          return;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+          self.links_selected = self.links_selected.saturating_sub(1);
+          return;
+        }
+        KeyCode::Home | KeyCode::Char('g') => {
+          self.links_selected = 0;
+          self.links_scroll = 0;
+          return;
+        }
+        KeyCode::End | KeyCode::Char('G') => {
+          self.links_selected = usize::MAX;
+          return;
+        }
+        KeyCode::Enter | KeyCode::Char('o') | KeyCode::Char('O') => {
+          self.open_selected_link();
           return;
         }
         _ => return,
@@ -582,6 +638,14 @@ impl App {
       KeyCode::Char('p') | KeyCode::Char('P') => match self.state {
         AppState::BrowsingEntries | AppState::ViewingEntry => {
           self.open_media_in_player();
+        }
+        _ => {}
+      },
+      KeyCode::Char('L') => match self.state {
+        AppState::ViewingEntry => {
+          self.show_links_popup = !self.show_links_popup;
+          self.links_scroll = 0;
+          self.links_selected = 0;
         }
         _ => {}
       },
@@ -777,6 +841,9 @@ impl App {
     match self.state {
       AppState::ViewingEntry => {
         self.input.current_entry_relative_index = None;
+        self.show_links_popup = false;
+        self.links_scroll = 0;
+        self.links_selected = 0;
         self.state = AppState::BrowsingEntries;
       }
       AppState::BrowsingEntries => self.state = AppState::BrowsingFeeds,
@@ -813,6 +880,32 @@ impl App {
       return;
     };
     let Some(url) = entry.links.first() else {
+      return;
+    };
+
+    let result = if let Some(ref cmd) = self.general_config.browser {
+      Self::spawn_cmd(cmd, url)
+    } else {
+      open::that(url).map_err(|e| format!("Failed to open URL in default browser: {}", e))
+    };
+    if let Err(e) = result {
+      self.push_error("Browser", e);
+    }
+  }
+
+  /// Open the currently selected link from the links popup in a browser.
+  fn open_selected_link(&mut self) {
+    let Some(real_idx) = self.resolve_current_entry_idx() else {
+      return;
+    };
+    let Some(df) = self.display_feeds.get(self.feed_index) else {
+      return;
+    };
+    let Some(entry) = df.entries(&self.feeds).get(real_idx) else {
+      return;
+    };
+    let selected = self.links_selected.min(entry.links.len().saturating_sub(1));
+    let Some(url) = entry.links.get(selected) else {
       return;
     };
 

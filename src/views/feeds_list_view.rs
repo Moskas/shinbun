@@ -221,7 +221,7 @@ fn render_main_pane(
       let feeds_table = Table::new(feed_rows, feed_widths)
         .block(create_feed_block(display_feeds.len(), show_borders))
         .column_spacing(2)
-        .row_highlight_style(Style::default().bg(Color::Yellow).fg(Color::Black));
+        .row_highlight_style(Style::default().bg(Color::DarkGray).fg(Color::Yellow));
 
       StatefulWidget::render(feeds_table, area, frame.buffer_mut(), feed_state);
     }
@@ -236,7 +236,12 @@ fn render_main_pane(
       let entries_table = Table::new(entry_rows, entry_widths)
         .block(create_entry_block(entry_count, show_borders))
         .column_spacing(2)
-        .row_highlight_style(Style::default().bg(Color::Yellow).fg(Color::Black).bold());
+        .row_highlight_style(
+          Style::default()
+            .bg(Color::DarkGray)
+            .fg(Color::Yellow)
+            .bold(),
+        );
 
       StatefulWidget::render(entries_table, area, frame.buffer_mut(), entry_state);
     }

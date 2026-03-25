@@ -82,6 +82,10 @@ fn build_help_content() -> Vec<Line<'static>> {
       description: "Open entry in browser",
     },
     Keybind {
+      key: "L",
+      description: "Show article links",
+    },
+    Keybind {
       key: "p",
       description: "Play media attachment",
     },
