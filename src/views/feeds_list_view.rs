@@ -128,6 +128,10 @@ pub struct FeedsViewState<'a> {
   pub show_error_popup: bool,
   pub error_scroll: &'a mut usize,
   pub hide_read: bool,
+  pub search_active: bool,
+  pub search_query: &'a str,
+  pub search_matches: &'a [usize],
+  pub search_match_cursor: usize,
 }
 
 pub fn render(frame: &mut Frame, area: Rect, s: &mut FeedsViewState) {
@@ -154,9 +158,17 @@ pub fn render(frame: &mut Frame, area: Rect, s: &mut FeedsViewState) {
   let inner_area = outer_block.inner(area);
   outer_block.render(area, frame.buffer_mut());
 
+  // If search is active, reserve a line at the bottom for the search bar
+  let (main_area, search_area) = if s.search_active {
+    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner_area);
+    (chunks[0], Some(chunks[1]))
+  } else {
+    (inner_area, None)
+  };
+
   render_main_pane(
     frame,
-    inner_area,
+    main_area,
     s.raw_feeds,
     s.display_feeds,
     s.feed_state,
@@ -165,7 +177,20 @@ pub fn render(frame: &mut Frame, area: Rect, s: &mut FeedsViewState) {
     s.show_borders,
     s.loading_state,
     s.hide_read,
+    s.search_active,
+    s.search_query,
+    s.search_matches,
   );
+
+  if let Some(search_rect) = search_area {
+    render_search_bar(
+      frame,
+      search_rect,
+      s.search_query,
+      s.search_matches,
+      s.search_match_cursor,
+    );
+  }
 
   if s.show_error_popup {
     render_error_popup(frame, area, s.feed_errors, s.error_scroll);
@@ -187,6 +212,9 @@ fn render_main_pane(
   show_borders: bool,
   loading_state: &LoadingState,
   hide_read: bool,
+  search_active: bool,
+  search_query: &str,
+  search_matches: &[usize],
 ) {
   match app_state {
     AppState::BrowsingFeeds => {
@@ -197,6 +225,20 @@ fn render_main_pane(
           " No feeds configured. Press 'r' to load.".to_string()
         };
         vec![Row::new(vec![Cell::from(""), Cell::from(msg)])]
+      } else if search_active && !search_query.is_empty() {
+        // When searching, dim non-matching rows
+        display_feeds
+          .iter()
+          .enumerate()
+          .map(|(i, f)| {
+            let row = feed_row(f, raw_feeds);
+            if search_matches.contains(&i) {
+              row
+            } else {
+              row.style(Style::default().fg(Color::DarkGray))
+            }
+          })
+          .collect()
       } else {
         display_feeds
           .iter()
@@ -230,6 +272,25 @@ fn render_main_pane(
       let selected_feed_idx = feed_state.selected().unwrap_or(0);
       let (entry_rows, is_query, source_width) =
         build_entry_rows(display_feeds, raw_feeds, selected_feed_idx, hide_read);
+
+      // Apply search dimming to entry rows
+      let entry_rows: Vec<Row> =
+        if search_active && !search_query.is_empty() && app_state == AppState::BrowsingEntries {
+          entry_rows
+            .into_iter()
+            .enumerate()
+            .map(|(i, row)| {
+              if search_matches.contains(&i) {
+                row
+              } else {
+                row.style(Style::default().fg(Color::DarkGray))
+              }
+            })
+            .collect()
+        } else {
+          entry_rows
+        };
+
       let entry_widths = entry_column_widths(is_query, source_width);
       let entry_count = entry_rows.len();
 
@@ -349,6 +410,40 @@ fn create_entry_block(count: usize, show_borders: bool) -> Block<'static> {
       .title(count_title)
       .padding(Padding::horizontal(1))
   }
+}
+
+// ─── Search bar ───────────────────────────────────────────────────────────────
+
+fn render_search_bar(
+  frame: &mut Frame,
+  area: Rect,
+  query: &str,
+  matches: &[usize],
+  match_cursor: usize,
+) {
+  let match_info = if query.is_empty() {
+    String::new()
+  } else if matches.is_empty() {
+    " [no matches]".to_string()
+  } else {
+    format!(" [{}/{}]", match_cursor + 1, matches.len())
+  };
+
+  let match_style = if !query.is_empty() && matches.is_empty() {
+    Style::default().fg(Color::Red)
+  } else {
+    Style::default().fg(Color::DarkGray)
+  };
+
+  let search_line = Line::from(vec![
+    Span::styled(" / ", Style::default().bold().yellow()),
+    Span::raw(query),
+    Span::styled("_", Style::default().fg(Color::Gray)), // cursor
+    Span::styled(match_info, match_style),
+  ]);
+
+  let search_bar = Paragraph::new(search_line);
+  search_bar.render(area, frame.buffer_mut());
 }
 
 // ─── Popups ───────────────────────────────────────────────────────────────────

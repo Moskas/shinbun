@@ -46,6 +46,18 @@ fn build_help_content() -> Vec<Line<'static>> {
       key: "G / End",
       description: "Go to bottom",
     },
+    Keybind {
+      key: "/",
+      description: "Fuzzy search",
+    },
+    Keybind {
+      key: "Tab / Ctrl+n",
+      description: "Next search match",
+    },
+    Keybind {
+      key: "Shift+Tab / Ctrl+p",
+      description: "Previous search match",
+    },
   ];
   for bind in &nav_binds {
     lines.push(keybind_line(bind));
