@@ -57,6 +57,10 @@ pub struct UiConfig {
   /// Default true, display can be toggled with a keybind
   #[serde(default = "default_show_read_entries")]
   pub show_read_entries: bool,
+
+  /// Display scrollbars
+  #[serde(default = "default_show_scrollbar")]
+  pub show_scrollbar: bool,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -77,6 +81,10 @@ fn default_show_borders() -> bool {
 }
 
 fn default_show_read_entries() -> bool {
+  true
+}
+
+fn default_show_scrollbar() -> bool {
   true
 }
 

@@ -92,21 +92,13 @@ fn entry_row(entry: &FeedEntry, is_query: bool) -> Row<'static> {
   if is_query {
     let source = entry.feed_title.clone().unwrap_or_default();
     Row::new(vec![
-      Cell::from(
-        Text::from(date)
-          .alignment(Alignment::Right)
-          .style(date_style),
-      ),
+      Cell::from(date.clone()).style(date_style),
       Cell::from(Text::from(source).alignment(Alignment::Left)).style(source_style),
       Cell::from(entry.title.clone()).style(title_style),
     ])
   } else {
     Row::new(vec![
-      Cell::from(
-        Text::from(date)
-          .alignment(Alignment::Right)
-          .style(date_style),
-      ),
+      Cell::from(date.clone()).style(date_style),
       Cell::from(entry.title.clone()).style(title_style),
     ])
   }
@@ -122,6 +114,7 @@ pub struct FeedsViewState<'a> {
   pub entry_state: &'a mut TableState,
   pub app_state: AppState,
   pub show_borders: bool,
+  pub show_scrollbar: bool,
   pub loading_state: &'a LoadingState,
   pub current_feed: Option<&'a str>,
   pub feed_errors: &'a [FeedError],
@@ -135,9 +128,47 @@ pub struct FeedsViewState<'a> {
 }
 
 pub fn render(frame: &mut Frame, area: Rect, s: &mut FeedsViewState) {
-  let title = " Shinbun ".bold().yellow();
+  let title = match s.app_state {
+    AppState::BrowsingFeeds => {
+      let total_entries: usize = s
+        .display_feeds
+        .iter()
+        .map(|f| f.entries(s.raw_feeds).len())
+        .sum();
+      let total_unread: usize = s
+        .display_feeds
+        .iter()
+        .map(|f| f.entries(s.raw_feeds).iter().filter(|e| !e.read).count())
+        .sum();
+      format!(
+        " Shinbun - Your feeds ({} unread, {} total) ",
+        total_unread, total_entries
+      )
+    }
+    AppState::BrowsingEntries => {
+      if let Some(feed_idx) = s.feed_state.selected() {
+        if let Some(feed) = s.display_feeds.get(feed_idx) {
+          let feed_title = feed.title(s.raw_feeds);
+          let entries = feed.entries(s.raw_feeds);
+          let total = entries.len();
+          let unread = entries.iter().filter(|e| !e.read).count();
+          format!(
+            " Shinbun - Articles in feed '{}' ({} unread, {} total) ",
+            feed_title, unread, total
+          )
+        } else {
+          " Shinbun - Your feeds ".to_string()
+        }
+      } else {
+        "Shinbun - Your feeds".to_string()
+      }
+    }
+    AppState::ViewingEntry => "Shinbun".to_string(),
+  }
+  .bold()
+  .yellow();
 
-  let mut instruction_spans = vec![" Help ".into(), "<?>".bold()];
+  let mut instruction_spans = vec![" Help ".into(), "<?> ".bold()];
   if !s.feed_errors.is_empty() {
     instruction_spans.push(" Errors ".into());
     instruction_spans.push("<e> ".bold());
@@ -193,7 +224,7 @@ pub fn render(frame: &mut Frame, area: Rect, s: &mut FeedsViewState) {
   }
 
   if s.show_error_popup {
-    render_error_popup(frame, area, s.feed_errors, s.error_scroll);
+    render_error_popup(frame, area, s.feed_errors, s.error_scroll, s.show_scrollbar);
   }
   if s.loading_state.should_show_popup() {
     render_loading_popup(frame, area, s.loading_state, s.current_feed);
@@ -261,7 +292,12 @@ fn render_main_pane(
       let feed_widths = [Constraint::Length(count_width), Constraint::Fill(1)];
 
       let feeds_table = Table::new(feed_rows, feed_widths)
-        .block(create_feed_block(display_feeds.len(), show_borders))
+        .block(create_feed_block(show_borders))
+        .header(
+          Row::new(vec!["Count".bold(), "Feeds".bold()])
+            .style(Style::new().cyan())
+            .top_margin(0),
+        )
         .column_spacing(2)
         .row_highlight_style(Style::default().bg(Color::DarkGray).fg(Color::Yellow));
 
@@ -292,10 +328,21 @@ fn render_main_pane(
         };
 
       let entry_widths = entry_column_widths(is_query, source_width);
-      let entry_count = entry_rows.len();
+
+      let header_style = Style::new().bold();
+      let entry_header = if is_query && source_width > 0 {
+        Row::new(vec!["Date", "Feed", "Title"])
+          .style(header_style)
+          .top_margin(0)
+      } else {
+        Row::new(vec!["Date", "Title"])
+          .style(header_style)
+          .top_margin(0)
+      };
 
       let entries_table = Table::new(entry_rows, entry_widths)
-        .block(create_entry_block(entry_count, show_borders))
+        .block(create_entry_block(show_borders))
+        .header(entry_header)
         .column_spacing(2)
         .row_highlight_style(
           Style::default()
@@ -374,42 +421,12 @@ fn entry_column_widths(is_query: bool, source_width: u16) -> Vec<Constraint> {
 
 // ─── Blocks ───────────────────────────────────────────────────────────────────
 
-fn create_feed_block(count: usize, show_borders: bool) -> Block<'static> {
-  let title = " Feeds ".green();
-  let count_title = format!(" {} ", count).yellow();
-  if show_borders {
-    Block::default()
-      .title(title)
-      .title(count_title)
-      .borders(Borders::ALL)
-      .border_style(Style::new().blue())
-      .border_set(border::PLAIN)
-      .padding(Padding::horizontal(1))
-  } else {
-    Block::default()
-      .title(title)
-      .title(count_title)
-      .padding(Padding::horizontal(1))
-  }
+fn create_feed_block(_show_borders: bool) -> Block<'static> {
+  Block::default().padding(Padding::horizontal(1))
 }
 
-fn create_entry_block(count: usize, show_borders: bool) -> Block<'static> {
-  let title = " Entries ".green();
-  let count_title = format!(" {} ", count).yellow();
-  if show_borders {
-    Block::default()
-      .title(title)
-      .title(count_title)
-      .borders(Borders::ALL)
-      .border_style(Style::new().blue())
-      .border_set(border::PLAIN)
-      .padding(Padding::horizontal(1))
-  } else {
-    Block::default()
-      .title(title)
-      .title(count_title)
-      .padding(Padding::horizontal(1))
-  }
+fn create_entry_block(_show_borders: bool) -> Block<'static> {
+  Block::default().padding(Padding::horizontal(1))
 }
 
 // ─── Search bar ───────────────────────────────────────────────────────────────
@@ -453,6 +470,7 @@ fn render_error_popup(
   area: Rect,
   feed_errors: &[FeedError],
   scroll: &mut usize,
+  show_scrollbar: bool,
 ) {
   let popup_width = area.width.saturating_sub(10).min(80);
   let popup_height = (feed_errors.len() as u16 + 4).min(area.height.saturating_sub(4));
@@ -491,7 +509,7 @@ fn render_error_popup(
 
   popup.render(popup_area, frame.buffer_mut());
 
-  if content_len > inner_height {
+  if content_len > inner_height && show_scrollbar {
     let scrollbar_area = Rect {
       x: popup_area.x + popup_area.width.saturating_sub(1),
       y: popup_area.y + 1,

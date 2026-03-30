@@ -542,6 +542,7 @@ impl App {
                 entry,
                 &mut self.entry_scroll,
                 self.ui_config.show_borders,
+                self.ui_config.show_scrollbar,
               );
             }
           }
@@ -558,6 +559,7 @@ impl App {
             entry_state: &mut self.entry_list_state,
             app_state: self.state,
             show_borders: self.ui_config.show_borders,
+            show_scrollbar: self.ui_config.show_scrollbar,
             loading_state: &self.loading_state,
             current_feed: self.current_feed.as_deref(),
             feed_errors: &self.feed_errors,
@@ -574,7 +576,12 @@ impl App {
     }
 
     if self.show_help_popup {
-      help_view::render_help_popup(frame, area, &mut self.help_scroll);
+      help_view::render_help_popup(
+        frame,
+        area,
+        &mut self.help_scroll,
+        self.ui_config.show_scrollbar,
+      );
     }
 
     if self.show_links_popup {
@@ -587,6 +594,7 @@ impl App {
               &entry.links,
               &mut self.links_selected,
               &mut self.links_scroll,
+              self.ui_config.show_scrollbar,
             );
           }
         }
@@ -1960,6 +1968,7 @@ mod tests {
       UiConfig {
         show_borders: true,
         show_read_entries: true,
+        show_scrollbar: true,
       },
       vec![],
       vec![],
@@ -1977,6 +1986,7 @@ mod tests {
       UiConfig {
         show_borders: true,
         show_read_entries: true,
+        show_scrollbar: true,
       },
       vec![],
       vec![],
@@ -2296,6 +2306,7 @@ mod tests {
       UiConfig {
         show_borders: true,
         show_read_entries: true,
+        show_scrollbar: true,
       },
       vec![],
       vec![],
@@ -2391,6 +2402,7 @@ mod tests {
       UiConfig {
         show_borders: true,
         show_read_entries: true,
+        show_scrollbar: true,
       },
       vec![],
       vec![],
@@ -2433,6 +2445,7 @@ mod tests {
       UiConfig {
         show_borders: true,
         show_read_entries: true,
+        show_scrollbar: true,
       },
       vec![],
       vec![],

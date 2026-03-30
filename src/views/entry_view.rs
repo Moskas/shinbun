@@ -116,10 +116,13 @@ pub fn render(
   entry: &FeedEntry,
   scroll: &mut usize,
   show_borders: bool,
+  show_scrollbar: bool,
 ) {
   // Create the outer container
-  let title = " Shinbun ".bold().yellow();
-  let instructions = Line::from(vec![" Help ".into(), "<?>".bold()]);
+  let title = format!(" Shinbun - Articles in feed '{}' ", feed_title)
+    .bold()
+    .yellow();
+  let instructions = Line::from(vec![" Help ".into(), "<?> ".bold()]);
 
   let outer_block = if show_borders {
     Block::default()
@@ -142,7 +145,7 @@ pub fn render(
   // Create the entry block with padding
   let entry_block = if show_borders {
     Block::default()
-      .title(format!(" Entry  - {}", entry.title).yellow())
+      .title(format!(" Entry  - {} ", entry.title).yellow())
       .borders(Borders::ALL)
       .border_style(Style::new().blue())
       .padding(Padding::symmetric(4, 1))
@@ -191,7 +194,7 @@ pub fn render(
   paragraph.render(inner_area, frame.buffer_mut());
 
   // Render scrollbar on the border if content overflows
-  if content_length > visible_height {
+  if content_length > visible_height && show_scrollbar {
     // Position scrollbar on the right border edge, inset to avoid corner collision
     let scrollbar_area = Rect {
       x: inner_area.x + inner_area.width.saturating_sub(1),

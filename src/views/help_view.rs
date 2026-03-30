@@ -144,7 +144,7 @@ fn keybind_line(bind: &Keybind) -> Line<'static> {
 }
 
 /// Render a centered, scrollable help popup.
-pub fn render_help_popup(frame: &mut Frame, area: Rect, scroll: &mut usize) {
+pub fn render_help_popup(frame: &mut Frame, area: Rect, scroll: &mut usize, show_scrollbar: bool) {
   let popup_width = area.width.saturating_sub(8).min(60);
   let popup_height = area.height.saturating_sub(6).min(30);
 
@@ -179,7 +179,7 @@ pub fn render_help_popup(frame: &mut Frame, area: Rect, scroll: &mut usize) {
   paragraph.render(popup_area, frame.buffer_mut());
 
   // Scrollbar when content overflows
-  if content_len > inner_height {
+  if content_len > inner_height && show_scrollbar {
     let scrollbar_area = Rect {
       x: popup_area.x + popup_area.width.saturating_sub(1),
       y: popup_area.y + 1,

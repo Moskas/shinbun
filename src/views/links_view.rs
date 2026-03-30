@@ -11,7 +11,6 @@ use ratatui::{
 fn build_links_rows(links: &[String]) -> Vec<Row<'_>> {
   links
     .iter()
-    .skip(1)
     .enumerate()
     .map(|(i, link)| {
       Row::new(vec![
@@ -29,6 +28,7 @@ pub fn render_links_popup(
   links: &[String],
   selected: &mut usize,
   scroll: &mut usize,
+  show_scrollbar: bool,
 ) {
   let popup_width = area.width.saturating_sub(8).min(80);
   let popup_height = area.height.saturating_sub(6).min(30);
@@ -99,7 +99,7 @@ pub fn render_links_popup(
     .inner(popup_area)
     .height as usize;
 
-  if row_count > inner_height {
+  if row_count > inner_height && show_scrollbar {
     let max_scroll = row_count.saturating_sub(inner_height);
     *scroll = (*scroll).min(max_scroll);
 
