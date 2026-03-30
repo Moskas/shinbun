@@ -17,6 +17,12 @@ pub enum AppState {
   ViewingEntry,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListPane {
+  Feeds,
+  Tags,
+}
+
 /// Represents a feed or query feed in the display list.
 ///
 /// `Regular` stores an *index* into `App::feeds` rather than a clone of the
@@ -284,6 +290,11 @@ pub struct App {
   feed_list_state: TableState,
   entry_list_state: TableState,
   state: AppState,
+  list_pane: ListPane,
+  previous_list_pane: ListPane,
+  tag_list: Vec<(String, usize)>,
+  tag_index: usize,
+  tag_list_state: TableState,
   entry_scroll: usize,
   general_config: GeneralConfig,
   ui_config: UiConfig,
@@ -322,6 +333,8 @@ impl App {
     let display_feeds = Self::build_display_feeds(&feeds, &query_config);
     let hide_read = !ui_config.show_read_entries;
 
+    let tag_list = Self::build_tag_list(&feeds);
+
     Self {
       feeds,
       display_feeds,
@@ -331,6 +344,11 @@ impl App {
       feed_list_state: TableState::default().with_selected(Some(0)),
       entry_list_state: TableState::default(),
       state: AppState::BrowsingFeeds,
+      list_pane: ListPane::Feeds,
+      previous_list_pane: ListPane::Feeds,
+      tag_list,
+      tag_index: 0,
+      tag_list_state: TableState::default().with_selected(Some(0)),
       entry_scroll: 0,
       general_config,
       ui_config,
@@ -361,6 +379,24 @@ impl App {
     }
   }
 
+  /// Build a sorted list of unique tags with their feed counts.
+  fn build_tag_list(feeds: &[Feed]) -> Vec<(String, usize)> {
+    use std::collections::HashMap;
+    let mut tag_counts: HashMap<String, usize> = HashMap::new();
+
+    for feed in feeds {
+      if let Some(tags) = &feed.tags {
+        for tag in tags {
+          *tag_counts.entry(tag.clone()).or_insert(0) += 1;
+        }
+      }
+    }
+
+    let mut tags: Vec<(String, usize)> = tag_counts.into_iter().collect();
+    tags.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    tags
+  }
+
   /// Build display feeds from the canonical feed list.
   ///
   /// Regular feeds are stored as plain indices — no Feed data is cloned.
@@ -373,6 +409,75 @@ impl App {
         entries: query::apply_query(feeds, &qf.query),
       })
       .collect();
+
+    for i in 0..feeds.len() {
+      display_feeds.push(DisplayFeed::Regular(i));
+    }
+
+    display_feeds
+  }
+
+  /// Build display feeds filtered by a tag query.
+  fn build_display_feeds_with_tag(
+    feeds: &[Feed],
+    _query_config: &[QueryFeed],
+    tag_query: &str,
+  ) -> Vec<DisplayFeed> {
+    let filter = query::parse_query(tag_query);
+    let matching_feeds: Vec<usize> = feeds
+      .iter()
+      .enumerate()
+      .filter(|(_, f)| {
+        if let Some(tags) = &f.tags {
+          tags.iter().any(|t| {
+            if let query::QueryFilter::Tags(query_tags) = &filter {
+              query_tags.iter().any(|qt| qt == t)
+            } else {
+              false
+            }
+          })
+        } else {
+          false
+        }
+      })
+      .map(|(i, _)| i)
+      .collect();
+
+    let mut entries: Vec<FeedEntry> = matching_feeds
+      .iter()
+      .flat_map(|i| {
+        feeds
+          .get(*i)
+          .map(|f| {
+            f.entries
+              .iter()
+              .map(|e| {
+                let mut e = e.clone();
+                e.feed_title = Some(f.title.clone());
+                e
+              })
+              .collect::<Vec<_>>()
+          })
+          .unwrap_or_default()
+      })
+      .collect();
+
+    entries.sort_by(|a, b| match (&b.published, &a.published) {
+      (Some(b_date), Some(a_date)) => b_date.cmp(a_date),
+      (Some(_), None) => std::cmp::Ordering::Less,
+      (None, Some(_)) => std::cmp::Ordering::Greater,
+      (None, None) => std::cmp::Ordering::Equal,
+    });
+
+    let tag_name = tag_query
+      .strip_prefix("tags:")
+      .map(|s| s.to_string())
+      .unwrap_or_else(|| tag_query.to_string());
+
+    let mut display_feeds: Vec<DisplayFeed> = vec![DisplayFeed::Query {
+      name: tag_name,
+      entries,
+    }];
 
     for i in 0..feeds.len() {
       display_feeds.push(DisplayFeed::Regular(i));
@@ -558,6 +663,9 @@ impl App {
             feed_state: &mut self.feed_list_state,
             entry_state: &mut self.entry_list_state,
             app_state: self.state,
+            list_pane: self.list_pane,
+            tag_list: &self.tag_list,
+            tag_state: &mut self.tag_list_state,
             show_borders: self.ui_config.show_borders,
             show_scrollbar: self.ui_config.show_scrollbar,
             loading_state: &self.loading_state,
@@ -812,12 +920,24 @@ impl App {
           self.links_selected = 0;
         }
       }
+      KeyCode::Char('t') | KeyCode::Char('T') => {
+        if self.state == AppState::BrowsingFeeds {
+          self.input.cancel_sequence();
+          self.list_pane = match self.list_pane {
+            ListPane::Feeds => ListPane::Tags,
+            ListPane::Tags => ListPane::Feeds,
+          };
+          self.tag_list_state.select(Some(0));
+          self.tag_index = 0;
+        }
+      }
       KeyCode::Char('/') => match self.state {
         AppState::BrowsingFeeds | AppState::BrowsingEntries => {
           self.input.cancel_sequence();
           self.input.search_active = true;
           self.input.search_query.clear();
           self.input.search_matches.clear();
+          self.input.search_match_cursor = 0;
         }
         _ => {}
       },
@@ -905,10 +1025,16 @@ impl App {
     if self.input.search_query.is_empty() {
       // Empty query — reset selection to 0 (show all, nothing filtered)
       match self.state {
-        AppState::BrowsingFeeds => {
-          self.feed_index = 0;
-          self.feed_list_state.select(Some(0));
-        }
+        AppState::BrowsingFeeds => match self.list_pane {
+          ListPane::Feeds => {
+            self.feed_index = 0;
+            self.feed_list_state.select(Some(0));
+          }
+          ListPane::Tags => {
+            self.tag_index = 0;
+            self.tag_list_state.select(Some(0));
+          }
+        },
         AppState::BrowsingEntries => {
           self.entry_list_state.select(Some(0));
         }
@@ -922,14 +1048,23 @@ impl App {
     let mut scored: Vec<(usize, u32)> = Vec::new();
 
     match self.state {
-      AppState::BrowsingFeeds => {
-        for (i, df) in self.display_feeds.iter().enumerate() {
-          let title = df.title(&self.feeds);
-          if let Some(score) = fuzzy_score(title, &self.input.search_query) {
-            scored.push((i, score));
+      AppState::BrowsingFeeds => match self.list_pane {
+        ListPane::Feeds => {
+          for (i, df) in self.display_feeds.iter().enumerate() {
+            let title = df.title(&self.feeds);
+            if let Some(score) = fuzzy_score(title, &self.input.search_query) {
+              scored.push((i, score));
+            }
           }
         }
-      }
+        ListPane::Tags => {
+          for (i, (tag_name, _)) in self.tag_list.iter().enumerate() {
+            if let Some(score) = fuzzy_score(tag_name, &self.input.search_query) {
+              scored.push((i, score));
+            }
+          }
+        }
+      },
       AppState::BrowsingEntries => {
         let visible = self.visible_entry_indices().to_vec();
         for (visible_idx, &real_idx) in visible.iter().enumerate() {
@@ -962,10 +1097,16 @@ impl App {
       return;
     };
     match self.state {
-      AppState::BrowsingFeeds => {
-        self.feed_index = idx;
-        self.feed_list_state.select(Some(idx));
-      }
+      AppState::BrowsingFeeds => match self.list_pane {
+        ListPane::Feeds => {
+          self.feed_index = idx;
+          self.feed_list_state.select(Some(idx));
+        }
+        ListPane::Tags => {
+          self.tag_index = idx;
+          self.tag_list_state.select(Some(idx));
+        }
+      },
       AppState::BrowsingEntries => {
         self.entry_list_state.select(Some(idx));
       }
@@ -1016,12 +1157,20 @@ impl App {
 
   fn handle_up(&mut self) {
     match self.state {
-      AppState::BrowsingFeeds => {
-        if self.feed_index > 0 {
-          self.feed_index -= 1;
-          self.feed_list_state.select(Some(self.feed_index));
+      AppState::BrowsingFeeds => match self.list_pane {
+        ListPane::Feeds => {
+          if self.feed_index > 0 {
+            self.feed_index -= 1;
+            self.feed_list_state.select(Some(self.feed_index));
+          }
         }
-      }
+        ListPane::Tags => {
+          if self.tag_index > 0 {
+            self.tag_index -= 1;
+            self.tag_list_state.select(Some(self.tag_index));
+          }
+        }
+      },
       AppState::BrowsingEntries => {
         if let Some(selected) = self.entry_list_state.selected() {
           if selected > 0 {
@@ -1037,12 +1186,20 @@ impl App {
 
   fn handle_down(&mut self) {
     match self.state {
-      AppState::BrowsingFeeds => {
-        if self.feed_index + 1 < self.display_feeds.len() {
-          self.feed_index += 1;
-          self.feed_list_state.select(Some(self.feed_index));
+      AppState::BrowsingFeeds => match self.list_pane {
+        ListPane::Feeds => {
+          if self.feed_index + 1 < self.display_feeds.len() {
+            self.feed_index += 1;
+            self.feed_list_state.select(Some(self.feed_index));
+          }
         }
-      }
+        ListPane::Tags => {
+          if self.tag_index + 1 < self.tag_list.len() {
+            self.tag_index += 1;
+            self.tag_list_state.select(Some(self.tag_index));
+          }
+        }
+      },
       AppState::BrowsingEntries => {
         if let Some(selected) = self.entry_list_state.selected() {
           let len = self.visible_entry_indices().len();
@@ -1059,10 +1216,16 @@ impl App {
 
   fn handle_go_top(&mut self) {
     match self.state {
-      AppState::BrowsingFeeds => {
-        self.feed_index = 0;
-        self.feed_list_state.select(Some(0));
-      }
+      AppState::BrowsingFeeds => match self.list_pane {
+        ListPane::Feeds => {
+          self.feed_index = 0;
+          self.feed_list_state.select(Some(0));
+        }
+        ListPane::Tags => {
+          self.tag_index = 0;
+          self.tag_list_state.select(Some(0));
+        }
+      },
       AppState::BrowsingEntries => {
         self.entry_list_state.select(Some(0));
       }
@@ -1074,11 +1237,18 @@ impl App {
 
   fn handle_go_bottom(&mut self) {
     match self.state {
-      AppState::BrowsingFeeds => {
-        let last = self.display_feeds.len().saturating_sub(1);
-        self.feed_index = last;
-        self.feed_list_state.select(Some(last));
-      }
+      AppState::BrowsingFeeds => match self.list_pane {
+        ListPane::Feeds => {
+          let last = self.display_feeds.len().saturating_sub(1);
+          self.feed_index = last;
+          self.feed_list_state.select(Some(last));
+        }
+        ListPane::Tags => {
+          let last = self.tag_list.len().saturating_sub(1);
+          self.tag_index = last;
+          self.tag_list_state.select(Some(last));
+        }
+      },
       AppState::BrowsingEntries => {
         let last = self.visible_entry_indices().len().saturating_sub(1);
         self.entry_list_state.select(Some(last));
@@ -1092,14 +1262,35 @@ impl App {
 
   fn handle_enter(&mut self) {
     match self.state {
-      AppState::BrowsingFeeds => {
-        self.input.clear_search();
-        self.state = AppState::BrowsingEntries;
-        self.invalidate_visible_indices();
-        if !self.visible_entry_indices().is_empty() {
-          self.entry_list_state.select(Some(0));
+      AppState::BrowsingFeeds => match self.list_pane {
+        ListPane::Feeds => {
+          self.input.clear_search();
+          self.previous_list_pane = ListPane::Feeds;
+          self.state = AppState::BrowsingEntries;
+          self.invalidate_visible_indices();
+          if !self.visible_entry_indices().is_empty() {
+            self.entry_list_state.select(Some(0));
+          }
         }
-      }
+        ListPane::Tags => {
+          if let Some((tag_name, _)) = self.tag_list.get(self.tag_index) {
+            let tag_query = format!("tags:{}", tag_name);
+            self.input.clear_search();
+            self.previous_list_pane = ListPane::Tags;
+            self.display_feeds =
+              Self::build_display_feeds_with_tag(&self.feeds, &self.query_config, &tag_query);
+            self.tag_list_state.select(Some(self.tag_index));
+            self.feed_index = 0;
+            self.feed_list_state.select(Some(0));
+            self.state = AppState::BrowsingEntries;
+            self.list_pane = ListPane::Feeds;
+            self.invalidate_visible_indices();
+            if !self.visible_entry_indices().is_empty() {
+              self.entry_list_state.select(Some(0));
+            }
+          }
+        }
+      },
       AppState::BrowsingEntries => {
         self.input.clear_search();
         if self.visible_entry_indices().is_empty() {
@@ -1132,6 +1323,8 @@ impl App {
       }
       AppState::BrowsingEntries => {
         self.input.clear_search();
+        self.rebuild_display_feeds();
+        self.list_pane = self.previous_list_pane;
         self.state = AppState::BrowsingFeeds;
       }
       AppState::BrowsingFeeds => {}

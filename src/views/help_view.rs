@@ -58,6 +58,10 @@ fn build_help_content() -> Vec<Line<'static>> {
       key: "Shift+Tab / Ctrl+p",
       description: "Previous search match",
     },
+    Keybind {
+      key: "t",
+      description: "Toggle feeds/tags view",
+    },
   ];
   for bind in &nav_binds {
     lines.push(keybind_line(bind));

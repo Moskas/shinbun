@@ -1,4 +1,4 @@
-use crate::app::{AppState, DisplayFeed, FeedError, LoadingState};
+use crate::app::{AppState, DisplayFeed, FeedError, ListPane, LoadingState};
 use crate::feeds::{Feed, FeedEntry};
 use ratatui::{
   prelude::*,
@@ -104,6 +104,53 @@ fn entry_row(entry: &FeedEntry, is_query: bool) -> Row<'static> {
   }
 }
 
+/// Build a Table Row for an entry with a custom foreground color for search highlighting.
+fn entry_row_with_style(
+  entry: &FeedEntry,
+  is_query: bool,
+  fg_color: Option<Color>,
+) -> Row<'static> {
+  let date = format_entry_date(entry.published.as_deref());
+
+  let date_style = if entry.read {
+    Style::default().fg(fg_color.unwrap_or(Color::DarkGray))
+  } else if fg_color.is_some() {
+    Style::default().fg(fg_color.unwrap())
+  } else {
+    Style::default().fg(Color::Cyan)
+  };
+
+  let source_style = if entry.read {
+    Style::default().fg(fg_color.unwrap_or(Color::DarkGray))
+  } else if fg_color.is_some() {
+    Style::default().fg(fg_color.unwrap())
+  } else {
+    Style::default().fg(Color::Yellow)
+  };
+
+  let title_style = if entry.read {
+    Style::default().fg(fg_color.unwrap_or(Color::DarkGray))
+  } else if fg_color.is_some() {
+    Style::default().fg(fg_color.unwrap()).bold()
+  } else {
+    Style::default().bold()
+  };
+
+  if is_query {
+    let source = entry.feed_title.clone().unwrap_or_default();
+    Row::new(vec![
+      Cell::from(date.clone()).style(date_style),
+      Cell::from(Text::from(source).alignment(Alignment::Left)).style(source_style),
+      Cell::from(entry.title.clone()).style(title_style),
+    ])
+  } else {
+    Row::new(vec![
+      Cell::from(date.clone()).style(date_style),
+      Cell::from(entry.title.clone()).style(title_style),
+    ])
+  }
+}
+
 // ─── Public render entry-point ────────────────────────────────────────────────
 
 /// Bundled parameters for the feeds list view (everything except `Frame`).
@@ -113,6 +160,9 @@ pub struct FeedsViewState<'a> {
   pub feed_state: &'a mut TableState,
   pub entry_state: &'a mut TableState,
   pub app_state: AppState,
+  pub list_pane: ListPane,
+  pub tag_list: &'a [(String, usize)],
+  pub tag_state: &'a mut TableState,
   pub show_borders: bool,
   pub show_scrollbar: bool,
   pub loading_state: &'a LoadingState,
@@ -129,22 +179,32 @@ pub struct FeedsViewState<'a> {
 
 pub fn render(frame: &mut Frame, area: Rect, s: &mut FeedsViewState) {
   let title = match s.app_state {
-    AppState::BrowsingFeeds => {
-      let total_entries: usize = s
-        .display_feeds
-        .iter()
-        .map(|f| f.entries(s.raw_feeds).len())
-        .sum();
-      let total_unread: usize = s
-        .display_feeds
-        .iter()
-        .map(|f| f.entries(s.raw_feeds).iter().filter(|e| !e.read).count())
-        .sum();
-      format!(
-        " Shinbun - Your feeds ({} unread, {} total) ",
-        total_unread, total_entries
-      )
-    }
+    AppState::BrowsingFeeds => match s.list_pane {
+      ListPane::Feeds => {
+        let total_entries: usize = s
+          .display_feeds
+          .iter()
+          .map(|f| f.entries(s.raw_feeds).len())
+          .sum();
+        let total_unread: usize = s
+          .display_feeds
+          .iter()
+          .map(|f| f.entries(s.raw_feeds).iter().filter(|e| !e.read).count())
+          .sum();
+        format!(
+          " Shinbun - Your feeds ({} unread, {} total) ",
+          total_unread, total_entries
+        )
+      }
+      ListPane::Tags => {
+        let tag_count = s.tag_list.len();
+        format!(
+          " Shinbun - Tags ({}{}) ",
+          tag_count,
+          if tag_count == 1 { " tag)" } else { " tags)" }
+        )
+      }
+    },
     AppState::BrowsingEntries => {
       if let Some(feed_idx) = s.feed_state.selected() {
         if let Some(feed) = s.display_feeds.get(feed_idx) {
@@ -197,21 +257,37 @@ pub fn render(frame: &mut Frame, area: Rect, s: &mut FeedsViewState) {
     (inner_area, None)
   };
 
-  render_main_pane(
-    frame,
-    main_area,
-    s.raw_feeds,
-    s.display_feeds,
-    s.feed_state,
-    s.entry_state,
-    s.app_state,
-    s.show_borders,
-    s.loading_state,
-    s.hide_read,
-    s.search_active,
-    s.search_query,
-    s.search_matches,
-  );
+  match s.list_pane {
+    ListPane::Feeds => {
+      render_main_pane(
+        frame,
+        main_area,
+        s.raw_feeds,
+        s.display_feeds,
+        s.feed_state,
+        s.entry_state,
+        s.app_state,
+        s.show_borders,
+        s.loading_state,
+        s.hide_read,
+        s.search_active,
+        s.search_query,
+        s.search_matches,
+      );
+    }
+    ListPane::Tags => {
+      render_tags_pane(
+        frame,
+        main_area,
+        s.tag_list,
+        s.tag_state,
+        s.loading_state,
+        s.search_active,
+        s.search_query,
+        s.search_matches,
+      );
+    }
+  }
 
   if let Some(search_rect) = search_area {
     render_search_bar(
@@ -294,8 +370,8 @@ fn render_main_pane(
       let feeds_table = Table::new(feed_rows, feed_widths)
         .block(create_feed_block(show_borders))
         .header(
-          Row::new(vec!["Count".bold(), "Feeds".bold()])
-            .style(Style::new().cyan())
+          Row::new(vec!["Count", "Feeds"])
+            .style(Style::new().bold())
             .top_margin(0),
         )
         .column_spacing(2)
@@ -306,26 +382,15 @@ fn render_main_pane(
 
     AppState::BrowsingEntries | AppState::ViewingEntry => {
       let selected_feed_idx = feed_state.selected().unwrap_or(0);
-      let (entry_rows, is_query, source_width) =
-        build_entry_rows(display_feeds, raw_feeds, selected_feed_idx, hide_read);
-
-      // Apply search dimming to entry rows
-      let entry_rows: Vec<Row> =
-        if search_active && !search_query.is_empty() && app_state == AppState::BrowsingEntries {
-          entry_rows
-            .into_iter()
-            .enumerate()
-            .map(|(i, row)| {
-              if search_matches.contains(&i) {
-                row
-              } else {
-                row.style(Style::default().fg(Color::DarkGray))
-              }
-            })
-            .collect()
-        } else {
-          entry_rows
-        };
+      let (entry_rows, is_query, source_width) = build_entry_rows(
+        display_feeds,
+        raw_feeds,
+        selected_feed_idx,
+        hide_read,
+        search_active,
+        search_query,
+        search_matches,
+      );
 
       let entry_widths = entry_column_widths(is_query, source_width);
 
@@ -356,6 +421,83 @@ fn render_main_pane(
   }
 }
 
+fn render_tags_pane(
+  frame: &mut Frame,
+  area: Rect,
+  tag_list: &[(String, usize)],
+  tag_state: &mut TableState,
+  loading_state: &LoadingState,
+  search_active: bool,
+  search_query: &str,
+  search_matches: &[usize],
+) {
+  let tag_rows: Vec<Row> = if tag_list.is_empty() {
+    let msg = if loading_state.is_loading {
+      format!(" {} Loading feeds...", loading_state.spinner_frame())
+    } else {
+      " No tags configured.".to_string()
+    };
+    vec![Row::new(vec![Cell::from(""), Cell::from(msg)])]
+  } else if search_active && !search_query.is_empty() {
+    tag_list
+      .iter()
+      .enumerate()
+      .map(|(i, (name, count))| {
+        let count_str = count.to_string();
+        let row = Row::new(vec![
+          Cell::from(
+            Text::from(count_str)
+              .alignment(Alignment::Right)
+              .fg(Color::Blue),
+          ),
+          Cell::from(name.clone()),
+        ]);
+        if search_matches.contains(&i) {
+          row
+        } else {
+          row.style(Style::default().fg(Color::DarkGray))
+        }
+      })
+      .collect()
+  } else {
+    tag_list
+      .iter()
+      .map(|(name, count)| {
+        let count_str = count.to_string();
+        Row::new(vec![
+          Cell::from(
+            Text::from(count_str)
+              .alignment(Alignment::Right)
+              .fg(Color::Blue),
+          ),
+          Cell::from(name.clone()),
+        ])
+      })
+      .collect()
+  };
+
+  let count_width = tag_list
+    .iter()
+    .map(|(_, c)| c.to_string().len() as u16)
+    .max()
+    .unwrap_or(5)
+    .max(5);
+
+  let tag_widths = [Constraint::Length(count_width), Constraint::Fill(1)];
+
+  let tags_table = Table::new(tag_rows, tag_widths)
+    .block(create_feed_block(false))
+    .header(
+      Row::new(vec!["Count", "Tags"])
+        .style(Style::new().bold())
+        .top_margin(0),
+    )
+    .column_spacing(2)
+    .row_highlight_style(Style::default().bg(Color::DarkGray).fg(Color::Yellow));
+
+  StatefulWidget::render(tags_table, area, frame.buffer_mut(), tag_state);
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Width of the date column in the entries table.
@@ -368,6 +510,9 @@ fn build_entry_rows(
   raw_feeds: &[Feed],
   selected_feed_idx: usize,
   hide_read: bool,
+  search_active: bool,
+  search_query: &str,
+  search_matches: &[usize],
 ) -> (Vec<Row<'static>>, bool, u16) {
   if let Some(feed) = display_feeds.get(selected_feed_idx) {
     let all_entries = feed.entries(raw_feeds);
@@ -401,7 +546,23 @@ fn build_entry_rows(
       0
     };
 
-    let rows = entries.iter().map(|e| entry_row(e, is_query)).collect();
+    let rows: Vec<Row> = entries
+      .iter()
+      .enumerate()
+      .map(|(i, e)| {
+        if search_active && !search_query.is_empty() && search_matches.contains(&i) {
+          if e.read {
+            entry_row_with_style(e, is_query, Some(Color::Gray))
+          } else {
+            entry_row(e, is_query)
+          }
+        } else if search_active && !search_query.is_empty() {
+          entry_row_with_style(e, is_query, Some(Color::DarkGray))
+        } else {
+          entry_row(e, is_query)
+        }
+      })
+      .collect();
 
     (rows, is_query, source_width)
   } else {
@@ -740,7 +901,8 @@ mod tests {
     )];
     let display = vec![DisplayFeed::Regular(0)];
 
-    let (rows, is_query, source_width) = build_entry_rows(&display, &feeds, 0, false);
+    let (rows, is_query, source_width) =
+      build_entry_rows(&display, &feeds, 0, false, false, "", &[]);
     assert_eq!(rows.len(), 2);
     assert!(!is_query);
     assert_eq!(source_width, 0);
@@ -758,7 +920,7 @@ mod tests {
     )];
     let display = vec![DisplayFeed::Regular(0)];
 
-    let (rows, _, _) = build_entry_rows(&display, &feeds, 0, true);
+    let (rows, _, _) = build_entry_rows(&display, &feeds, 0, true, false, "", &[]);
     assert_eq!(rows.len(), 1); // Only unread entry
   }
 
@@ -767,7 +929,7 @@ mod tests {
     let feeds = vec![make_feed("https://example.com/rss", "Feed", vec![])];
     let display = vec![DisplayFeed::Regular(0)];
 
-    let (rows, is_query, _) = build_entry_rows(&display, &feeds, 0, false);
+    let (rows, is_query, _) = build_entry_rows(&display, &feeds, 0, false, false, "", &[]);
     assert_eq!(rows.len(), 1); // "No entries" placeholder
     assert!(!is_query);
   }
@@ -787,7 +949,8 @@ mod tests {
       entries: vec![query_entry],
     }];
 
-    let (rows, is_query, source_width) = build_entry_rows(&display, &feeds, 0, false);
+    let (rows, is_query, source_width) =
+      build_entry_rows(&display, &feeds, 0, false, false, "", &[]);
     assert_eq!(rows.len(), 1);
     assert!(is_query);
     assert!(source_width > 0);
@@ -798,7 +961,7 @@ mod tests {
     let feeds: Vec<Feed> = vec![];
     let display: Vec<DisplayFeed> = vec![];
 
-    let (rows, is_query, _) = build_entry_rows(&display, &feeds, 5, false);
+    let (rows, is_query, _) = build_entry_rows(&display, &feeds, 5, false, false, "", &[]);
     assert!(rows.is_empty());
     assert!(!is_query);
   }
@@ -815,7 +978,7 @@ mod tests {
     )];
     let display = vec![DisplayFeed::Regular(0)];
 
-    let (rows, _, _) = build_entry_rows(&display, &feeds, 0, true);
+    let (rows, _, _) = build_entry_rows(&display, &feeds, 0, true, false, "", &[]);
     // When all entries are read and hide_read is on, should show "No entries"
     assert_eq!(rows.len(), 1);
   }
