@@ -1,4 +1,4 @@
-use crossterm::event::{self, poll, Event, KeyEventKind};
+use crossterm::event::{self, Event, KeyEventKind, poll};
 use std::io;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -8,6 +8,7 @@ mod cache;
 mod config;
 mod feeds;
 mod query;
+mod theme;
 mod ui;
 mod views;
 

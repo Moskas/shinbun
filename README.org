@@ -10,10 +10,13 @@ shinbun (新聞) is a terminal-based RSS/Atom feed reader written in Rust, using
 
 - RSS and Atom feed support
 - Local SQLite cache for offline reading and persistent read state
-- Tag-based feed organization
+- Tag-based feed organization with a dedicated tags pane
 - Query feeds that aggregate entries across multiple feeds by tag
 - Read/unread tracking with per-entry and per-feed bulk marking
 - Hide/show read entries
+- Fuzzy search across feeds and entries
+- Configurable color theme via =config.toml=
+- Article link extraction popup
 - Open entries in a configurable browser or media player
 - Vim-style keybindings
 
@@ -43,7 +46,7 @@ Configuration files are stored in the platform config directory under =shinbun/=
 
 Two files are used:
 - =feeds.toml= (required) -- defines the feeds to subscribe to
-- =config.toml= (optional) -- UI settings, general options, and query feeds
+- =config.toml= (optional) -- UI settings, general options, query feeds, and theme
 
 ** feeds.toml
 
@@ -71,6 +74,7 @@ media_player = "mpv"          # optional, defaults to system default
 [ui]
 show_borders = true           # default: true
 show_read_entries = true      # default: true
+show_scrollbar = true         # default: true
 
 [[queries]]
 name = "Tech"
@@ -83,26 +87,106 @@ query = "*"
 
 Query feeds aggregate entries from all feeds whose tags match the query. Use =tags:tag1,tag2= to match specific tags, or =*= to match everything.
 
+** Theme
+
+All colors in the UI can be customized under the =[ui.theme]= key. Every field is optional; omitted values fall back to built-in defaults so the app looks identical without any theme configuration.
+
+Color values support:
+- Named colors: =red=, =blue=, =dark_gray=, =light_cyan=, etc.
+- Hex RGB: =#rrggbb= (e.g. =#cb4b16=)
+- RGB tuple: =rgb(r,g,b)= (e.g. =rgb(203,75,22)=)
+- ANSI 256 index: =0= -- =255=
+
+#+begin_src toml
+[ui.theme]
+# Chrome
+border = "blue"
+title = "yellow"
+
+# Feed / entry list
+count = "blue"
+read = "dark_gray"
+header = "white"              # optional, bold-only when unset
+highlight_bg = "dark_gray"
+highlight_fg = "yellow"
+
+# Entry list columns
+date = "cyan"
+source = "yellow"
+
+# Search bar
+search_prompt = "yellow"
+search_cursor = "gray"
+search_info = "dark_gray"
+search_no_match = "red"
+search_match_read = "gray"
+search_dim = "dark_gray"
+
+# Entry view metadata
+meta_title = "magenta"
+meta_feed = "cyan"
+meta_published = "yellow"
+meta_link = "blue"
+line_info = "yellow"
+entry_title_bordered = "yellow"
+entry_title_plain = "green"
+
+# Markdown rendering
+h1 = "cyan"
+h2 = "magenta"
+h3 = "blue"
+h4 = "red"
+h5 = "light_cyan"
+code = "yellow"               # optional, bold-only when unset
+link = "blue"
+metadata_block = "light_yellow"
+
+# Popups
+error_border = "red"
+error_title = "yellow"
+loading_border = "cyan"
+loading_done_border = "green"
+confirm = "yellow"
+confirm_message = "white"
+
+# Help popup
+help_section = "cyan"
+help_key = "yellow"
+help_border = "blue"
+
+# Links popup
+link_index = "yellow"
+link_url = "blue"
+links_border = "blue"
+#+end_src
+
+A complete example Solarized Dark theme is available in [[./examples/solarized_dark.toml]].
+
 * Keybindings
 
-| Key                        | Action                   |
-|----------------------------+--------------------------|
-| =j= / =Down=               | Move down                |
-| =k= / =Up=                 | Move up                  |
-| =l= / =Enter= / =Right=    | Open / Enter             |
-| =h= / =Backspace= / =Left= | Go back                  |
-| =g g= / =Home=             | Go to top                |
-| =G= / =End=                | Go to bottom             |
-| =r=                        | Refresh selected feed    |
-| =R=                        | Refresh all feeds        |
-| =m=                        | Toggle read / unread     |
-| =A=                        | Mark feed as read        |
-| =u=                        | Toggle hide read entries |
-| =o=                        | Open entry in browser    |
-| =p=                        | Play media attachment    |
-| =e=                        | Show feed errors         |
-| =?=                        | Toggle help              |
-| =q=                        | Quit                     |
+| Key                           | Action                     |
+|-------------------------------+----------------------------|
+| =j= / =Down=                  | Move down                  |
+| =k= / =Up=                    | Move up                    |
+| =l= / =Enter= / =Right=       | Open / Enter               |
+| =h= / =Backspace= / =Left=    | Go back                    |
+| =g g= / =Home=                | Go to top                  |
+| =G= / =End=                   | Go to bottom               |
+| =/=                           | Fuzzy search               |
+| =Tab= / =Ctrl+n=              | Next search match          |
+| =Shift+Tab= / =Ctrl+p=        | Previous search match      |
+| =t=                           | Toggle feeds / tags pane   |
+| =r=                           | Refresh selected feed      |
+| =R=                           | Refresh all feeds          |
+| =m=                           | Toggle read / unread       |
+| =A=                           | Mark feed as read          |
+| =u=                           | Toggle hide read entries   |
+| =o=                           | Open entry in browser      |
+| =L=                           | Show article links         |
+| =p=                           | Play media attachment      |
+| =e=                           | Show feed errors           |
+| =?=                           | Toggle help                |
+| =q=                           | Quit                       |
 
 Press =?= inside the application to see the full keybinding reference.
 

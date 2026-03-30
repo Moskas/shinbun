@@ -1,5 +1,6 @@
 use crate::app::{AppState, DisplayFeed, FeedError, ListPane, LoadingState};
 use crate::feeds::{Feed, FeedEntry};
+use crate::theme::Theme;
 use ratatui::{
   prelude::*,
   symbols::border,
@@ -42,7 +43,7 @@ fn format_entry_date(date_str: Option<&str>) -> String {
 
 /// Build a Table Row for a feed.
 /// `raw_feeds` is the canonical feed list used to resolve Regular indices.
-fn feed_row(feed: &DisplayFeed, raw_feeds: &[Feed]) -> Row<'static> {
+fn feed_row(feed: &DisplayFeed, raw_feeds: &[Feed], theme: &Theme) -> Row<'static> {
   let entries = feed.entries(raw_feeds);
   let total = entries.len();
   let unread = entries.iter().filter(|e| !e.read).count();
@@ -51,7 +52,7 @@ fn feed_row(feed: &DisplayFeed, raw_feeds: &[Feed]) -> Row<'static> {
   let title = feed.title(raw_feeds).to_string();
 
   let style = if unread == 0 {
-    Style::default().fg(Color::DarkGray)
+    theme.read_style()
   } else {
     Style::default()
   };
@@ -60,7 +61,7 @@ fn feed_row(feed: &DisplayFeed, raw_feeds: &[Feed]) -> Row<'static> {
     Cell::from(
       Text::from(count_str)
         .alignment(Alignment::Right)
-        .fg(Color::Blue),
+        .fg(theme.count),
     ),
     Cell::from(title),
   ])
@@ -68,23 +69,23 @@ fn feed_row(feed: &DisplayFeed, raw_feeds: &[Feed]) -> Row<'static> {
 }
 
 /// Build a Table Row for an entry.
-fn entry_row(entry: &FeedEntry, is_query: bool) -> Row<'static> {
+fn entry_row(entry: &FeedEntry, is_query: bool, theme: &Theme) -> Row<'static> {
   let date = format_entry_date(entry.published.as_deref());
 
   let date_style = if entry.read {
-    Style::default().fg(Color::DarkGray)
+    theme.read_style()
   } else {
-    Style::default().fg(Color::Cyan)
+    Style::default().fg(theme.date)
   };
 
   let source_style = if entry.read {
-    Style::default().fg(Color::DarkGray)
+    theme.read_style()
   } else {
-    Style::default().fg(Color::Yellow)
+    Style::default().fg(theme.source)
   };
 
   let title_style = if entry.read {
-    Style::default().fg(Color::DarkGray)
+    theme.read_style()
   } else {
     Style::default().bold()
   };
@@ -109,27 +110,28 @@ fn entry_row_with_style(
   entry: &FeedEntry,
   is_query: bool,
   fg_color: Option<Color>,
+  theme: &Theme,
 ) -> Row<'static> {
   let date = format_entry_date(entry.published.as_deref());
 
   let date_style = if entry.read {
-    Style::default().fg(fg_color.unwrap_or(Color::DarkGray))
+    Style::default().fg(fg_color.unwrap_or(theme.read))
   } else if fg_color.is_some() {
     Style::default().fg(fg_color.unwrap())
   } else {
-    Style::default().fg(Color::Cyan)
+    Style::default().fg(theme.date)
   };
 
   let source_style = if entry.read {
-    Style::default().fg(fg_color.unwrap_or(Color::DarkGray))
+    Style::default().fg(fg_color.unwrap_or(theme.read))
   } else if fg_color.is_some() {
     Style::default().fg(fg_color.unwrap())
   } else {
-    Style::default().fg(Color::Yellow)
+    Style::default().fg(theme.source)
   };
 
   let title_style = if entry.read {
-    Style::default().fg(fg_color.unwrap_or(Color::DarkGray))
+    Style::default().fg(fg_color.unwrap_or(theme.read))
   } else if fg_color.is_some() {
     Style::default().fg(fg_color.unwrap()).bold()
   } else {
@@ -175,9 +177,11 @@ pub struct FeedsViewState<'a> {
   pub search_query: &'a str,
   pub search_matches: &'a [usize],
   pub search_match_cursor: usize,
+  pub theme: &'a Theme,
 }
 
 pub fn render(frame: &mut Frame, area: Rect, s: &mut FeedsViewState) {
+  let theme = s.theme;
   let title = match s.app_state {
     AppState::BrowsingFeeds => match s.list_pane {
       ListPane::Feeds => {
@@ -224,9 +228,9 @@ pub fn render(frame: &mut Frame, area: Rect, s: &mut FeedsViewState) {
       }
     }
     AppState::ViewingEntry => "Shinbun".to_string(),
-  }
-  .bold()
-  .yellow();
+  };
+
+  let title = Span::styled(title, theme.title_style());
 
   let mut instruction_spans = vec![" Help ".into(), "<?> ".bold()];
   if !s.feed_errors.is_empty() {
@@ -240,7 +244,7 @@ pub fn render(frame: &mut Frame, area: Rect, s: &mut FeedsViewState) {
       .title(title)
       .title_bottom(instructions)
       .borders(Borders::ALL)
-      .border_style(Style::new().blue())
+      .border_style(theme.border_style())
       .border_set(border::PLAIN)
   } else {
     Block::default().title(title).title_bottom(instructions)
@@ -273,6 +277,7 @@ pub fn render(frame: &mut Frame, area: Rect, s: &mut FeedsViewState) {
         s.search_active,
         s.search_query,
         s.search_matches,
+        theme,
       );
     }
     ListPane::Tags => {
@@ -282,9 +287,12 @@ pub fn render(frame: &mut Frame, area: Rect, s: &mut FeedsViewState) {
         s.tag_list,
         s.tag_state,
         s.loading_state,
-        s.search_active,
-        s.search_query,
-        s.search_matches,
+        SearchParams {
+          active: s.search_active,
+          query: s.search_query,
+          matches: s.search_matches,
+        },
+        theme,
       );
     }
   }
@@ -296,14 +304,22 @@ pub fn render(frame: &mut Frame, area: Rect, s: &mut FeedsViewState) {
       s.search_query,
       s.search_matches,
       s.search_match_cursor,
+      theme,
     );
   }
 
   if s.show_error_popup {
-    render_error_popup(frame, area, s.feed_errors, s.error_scroll, s.show_scrollbar);
+    render_error_popup(
+      frame,
+      area,
+      s.feed_errors,
+      s.error_scroll,
+      s.show_scrollbar,
+      theme,
+    );
   }
   if s.loading_state.should_show_popup() {
-    render_loading_popup(frame, area, s.loading_state, s.current_feed);
+    render_loading_popup(frame, area, s.loading_state, s.current_feed, theme);
   }
 }
 
@@ -322,6 +338,7 @@ fn render_main_pane(
   search_active: bool,
   search_query: &str,
   search_matches: &[usize],
+  theme: &Theme,
 ) {
   match app_state {
     AppState::BrowsingFeeds => {
@@ -338,18 +355,18 @@ fn render_main_pane(
           .iter()
           .enumerate()
           .map(|(i, f)| {
-            let row = feed_row(f, raw_feeds);
+            let row = feed_row(f, raw_feeds, theme);
             if search_matches.contains(&i) {
               row
             } else {
-              row.style(Style::default().fg(Color::DarkGray))
+              row.style(theme.read_style())
             }
           })
           .collect()
       } else {
         display_feeds
           .iter()
-          .map(|f| feed_row(f, raw_feeds))
+          .map(|f| feed_row(f, raw_feeds, theme))
           .collect()
       };
 
@@ -371,11 +388,11 @@ fn render_main_pane(
         .block(create_feed_block(show_borders))
         .header(
           Row::new(vec!["Count", "Feeds"])
-            .style(Style::new().bold())
+            .style(theme.header_style())
             .top_margin(0),
         )
         .column_spacing(2)
-        .row_highlight_style(Style::default().bg(Color::DarkGray).fg(Color::Yellow));
+        .row_highlight_style(theme.row_highlight_style());
 
       StatefulWidget::render(feeds_table, area, frame.buffer_mut(), feed_state);
     }
@@ -390,18 +407,18 @@ fn render_main_pane(
         search_active,
         search_query,
         search_matches,
+        theme,
       );
 
       let entry_widths = entry_column_widths(is_query, source_width);
 
-      let header_style = Style::new().bold();
       let entry_header = if is_query && source_width > 0 {
         Row::new(vec!["Date", "Feed", "Title"])
-          .style(header_style)
+          .style(theme.header_style())
           .top_margin(0)
       } else {
         Row::new(vec!["Date", "Title"])
-          .style(header_style)
+          .style(theme.header_style())
           .top_margin(0)
       };
 
@@ -409,16 +426,18 @@ fn render_main_pane(
         .block(create_entry_block(show_borders))
         .header(entry_header)
         .column_spacing(2)
-        .row_highlight_style(
-          Style::default()
-            .bg(Color::DarkGray)
-            .fg(Color::Yellow)
-            .bold(),
-        );
+        .row_highlight_style(theme.row_highlight_bold_style());
 
       StatefulWidget::render(entries_table, area, frame.buffer_mut(), entry_state);
     }
   }
+}
+
+#[derive(Clone, Copy)]
+struct SearchParams<'a> {
+  active: bool,
+  query: &'a str,
+  matches: &'a [usize],
 }
 
 fn render_tags_pane(
@@ -427,9 +446,8 @@ fn render_tags_pane(
   tag_list: &[(String, usize)],
   tag_state: &mut TableState,
   loading_state: &LoadingState,
-  search_active: bool,
-  search_query: &str,
-  search_matches: &[usize],
+  search: SearchParams,
+  theme: &Theme,
 ) {
   let tag_rows: Vec<Row> = if tag_list.is_empty() {
     let msg = if loading_state.is_loading {
@@ -438,7 +456,7 @@ fn render_tags_pane(
       " No tags configured.".to_string()
     };
     vec![Row::new(vec![Cell::from(""), Cell::from(msg)])]
-  } else if search_active && !search_query.is_empty() {
+  } else if search.active && !search.query.is_empty() {
     tag_list
       .iter()
       .enumerate()
@@ -448,14 +466,14 @@ fn render_tags_pane(
           Cell::from(
             Text::from(count_str)
               .alignment(Alignment::Right)
-              .fg(Color::Blue),
+              .fg(theme.count),
           ),
           Cell::from(name.clone()),
         ]);
-        if search_matches.contains(&i) {
+        if search.matches.contains(&i) {
           row
         } else {
-          row.style(Style::default().fg(Color::DarkGray))
+          row.style(theme.read_style())
         }
       })
       .collect()
@@ -468,7 +486,7 @@ fn render_tags_pane(
           Cell::from(
             Text::from(count_str)
               .alignment(Alignment::Right)
-              .fg(Color::Blue),
+              .fg(theme.count),
           ),
           Cell::from(name.clone()),
         ])
@@ -489,11 +507,11 @@ fn render_tags_pane(
     .block(create_feed_block(false))
     .header(
       Row::new(vec!["Count", "Tags"])
-        .style(Style::new().bold())
+        .style(theme.header_style())
         .top_margin(0),
     )
     .column_spacing(2)
-    .row_highlight_style(Style::default().bg(Color::DarkGray).fg(Color::Yellow));
+    .row_highlight_style(theme.row_highlight_style());
 
   StatefulWidget::render(tags_table, area, frame.buffer_mut(), tag_state);
 }
@@ -505,6 +523,7 @@ const DATE_COL_WIDTH: u16 = 8;
 
 /// Build entry rows for the selected feed, returning (rows, is_query, max_source_col_width).
 /// When `hide_read` is true, entries marked as read are excluded from the result.
+#[allow(clippy::too_many_arguments)]
 fn build_entry_rows(
   display_feeds: &[DisplayFeed],
   raw_feeds: &[Feed],
@@ -513,6 +532,7 @@ fn build_entry_rows(
   search_active: bool,
   search_query: &str,
   search_matches: &[usize],
+  theme: &Theme,
 ) -> (Vec<Row<'static>>, bool, u16) {
   if let Some(feed) = display_feeds.get(selected_feed_idx) {
     let all_entries = feed.entries(raw_feeds);
@@ -552,14 +572,14 @@ fn build_entry_rows(
       .map(|(i, e)| {
         if search_active && !search_query.is_empty() && search_matches.contains(&i) {
           if e.read {
-            entry_row_with_style(e, is_query, Some(Color::Gray))
+            entry_row_with_style(e, is_query, Some(theme.search_match_read), theme)
           } else {
-            entry_row(e, is_query)
+            entry_row(e, is_query, theme)
           }
         } else if search_active && !search_query.is_empty() {
-          entry_row_with_style(e, is_query, Some(Color::DarkGray))
+          entry_row_with_style(e, is_query, Some(theme.search_dim), theme)
         } else {
-          entry_row(e, is_query)
+          entry_row(e, is_query, theme)
         }
       })
       .collect();
@@ -601,6 +621,7 @@ fn render_search_bar(
   query: &str,
   matches: &[usize],
   match_cursor: usize,
+  theme: &Theme,
 ) {
   let match_info = if query.is_empty() {
     String::new()
@@ -611,15 +632,15 @@ fn render_search_bar(
   };
 
   let match_style = if !query.is_empty() && matches.is_empty() {
-    Style::default().fg(Color::Red)
+    Style::default().fg(theme.search_no_match)
   } else {
-    Style::default().fg(Color::DarkGray)
+    Style::default().fg(theme.search_info)
   };
 
   let search_line = Line::from(vec![
-    Span::styled(" / ", Style::default().bold().yellow()),
+    Span::styled(" / ", Style::default().bold().fg(theme.search_prompt)),
     Span::raw(query),
-    Span::styled("_", Style::default().fg(Color::Gray)), // cursor
+    Span::styled("_", Style::default().fg(theme.search_cursor)), // cursor
     Span::styled(match_info, match_style),
   ]);
 
@@ -635,6 +656,7 @@ fn render_error_popup(
   feed_errors: &[FeedError],
   scroll: &mut usize,
   show_scrollbar: bool,
+  theme: &Theme,
 ) {
   let popup_width = area.width.saturating_sub(10).min(80);
   let popup_height = (feed_errors.len() as u16 + 4).min(area.height.saturating_sub(4));
@@ -656,10 +678,13 @@ fn render_error_popup(
   let content_len = error_text.len();
 
   let block = Block::default()
-    .title(" Feed Errors ".yellow().bold())
+    .title(Span::styled(
+      " Feed Errors ",
+      Style::default().bold().fg(theme.error_title),
+    ))
     .title_bottom(" <e> or <Esc> to close ".dim())
     .borders(Borders::ALL)
-    .border_style(Style::new().red())
+    .border_style(Style::new().fg(theme.error_border))
     .border_set(border::PLAIN);
 
   let inner_height = block.inner(popup_area).height as usize;
@@ -695,6 +720,7 @@ fn render_loading_popup(
   area: Rect,
   loading_state: &LoadingState,
   current_feed: Option<&str>,
+  theme: &Theme,
 ) {
   let status_line = if loading_state.is_loading {
     let spinner = loading_state.spinner_frame();
@@ -738,9 +764,15 @@ fn render_loading_popup(
   Clear.render(popup_area, frame.buffer_mut());
 
   let (border_style, text_style) = if loading_state.is_loading {
-    (Style::new().cyan(), Style::new().cyan())
+    (
+      Style::new().fg(theme.loading_border),
+      Style::new().fg(theme.loading_border),
+    )
   } else {
-    (Style::new().green(), Style::new().green())
+    (
+      Style::new().fg(theme.loading_done_border),
+      Style::new().fg(theme.loading_done_border),
+    )
   };
 
   let popup = Paragraph::new(Line::from(status_line).style(text_style)).block(
@@ -753,7 +785,7 @@ fn render_loading_popup(
   popup.render(popup_area, frame.buffer_mut());
 }
 
-pub fn render_confirm_popup(frame: &mut Frame, area: Rect, feed_name: &str) {
+pub fn render_confirm_popup(frame: &mut Frame, area: Rect, feed_name: &str, theme: &Theme) {
   let message = format!("Mark all entries in \"{}\" as read?", feed_name);
   let prompt = " (y)es / (n)o ";
   let content_width = (message.len().max(prompt.len()) + 4) as u16;
@@ -770,15 +802,15 @@ pub fn render_confirm_popup(frame: &mut Frame, area: Rect, feed_name: &str) {
   Clear.render(popup_area, frame.buffer_mut());
 
   let text = vec![
-    Line::from(message).fg(Color::White),
+    Line::from(message).fg(theme.confirm_message),
     Line::from(""),
-    Line::from(prompt).bold().yellow(),
+    Line::from(prompt).style(theme.title_style()),
   ];
 
   let block = Block::default()
-    .title(" Confirm ".bold().yellow())
+    .title(Span::styled(" Confirm ", theme.title_style()))
     .borders(Borders::ALL)
-    .border_style(Style::new().yellow())
+    .border_style(Style::new().fg(theme.confirm))
     .border_set(border::PLAIN);
 
   let popup = Paragraph::new(text)
@@ -791,6 +823,10 @@ pub fn render_confirm_popup(frame: &mut Frame, area: Rect, feed_name: &str) {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  fn test_theme() -> Theme {
+    Theme::default()
+  }
 
   fn make_entry(title: &str, published: Option<&str>, read: bool) -> FeedEntry {
     FeedEntry {
@@ -902,7 +938,7 @@ mod tests {
     let display = vec![DisplayFeed::Regular(0)];
 
     let (rows, is_query, source_width) =
-      build_entry_rows(&display, &feeds, 0, false, false, "", &[]);
+      build_entry_rows(&display, &feeds, 0, false, false, "", &[], &test_theme());
     assert_eq!(rows.len(), 2);
     assert!(!is_query);
     assert_eq!(source_width, 0);
@@ -920,7 +956,7 @@ mod tests {
     )];
     let display = vec![DisplayFeed::Regular(0)];
 
-    let (rows, _, _) = build_entry_rows(&display, &feeds, 0, true, false, "", &[]);
+    let (rows, _, _) = build_entry_rows(&display, &feeds, 0, true, false, "", &[], &test_theme());
     assert_eq!(rows.len(), 1); // Only unread entry
   }
 
@@ -929,7 +965,8 @@ mod tests {
     let feeds = vec![make_feed("https://example.com/rss", "Feed", vec![])];
     let display = vec![DisplayFeed::Regular(0)];
 
-    let (rows, is_query, _) = build_entry_rows(&display, &feeds, 0, false, false, "", &[]);
+    let (rows, is_query, _) =
+      build_entry_rows(&display, &feeds, 0, false, false, "", &[], &test_theme());
     assert_eq!(rows.len(), 1); // "No entries" placeholder
     assert!(!is_query);
   }
@@ -950,7 +987,7 @@ mod tests {
     }];
 
     let (rows, is_query, source_width) =
-      build_entry_rows(&display, &feeds, 0, false, false, "", &[]);
+      build_entry_rows(&display, &feeds, 0, false, false, "", &[], &test_theme());
     assert_eq!(rows.len(), 1);
     assert!(is_query);
     assert!(source_width > 0);
@@ -961,7 +998,8 @@ mod tests {
     let feeds: Vec<Feed> = vec![];
     let display: Vec<DisplayFeed> = vec![];
 
-    let (rows, is_query, _) = build_entry_rows(&display, &feeds, 5, false, false, "", &[]);
+    let (rows, is_query, _) =
+      build_entry_rows(&display, &feeds, 5, false, false, "", &[], &test_theme());
     assert!(rows.is_empty());
     assert!(!is_query);
   }
@@ -978,7 +1016,7 @@ mod tests {
     )];
     let display = vec![DisplayFeed::Regular(0)];
 
-    let (rows, _, _) = build_entry_rows(&display, &feeds, 0, true, false, "", &[]);
+    let (rows, _, _) = build_entry_rows(&display, &feeds, 0, true, false, "", &[], &test_theme());
     // When all entries are read and hide_read is on, should show "No entries"
     assert_eq!(rows.len(), 1);
   }

@@ -2,6 +2,7 @@ use crate::cache::FeedCache;
 use crate::config::{Feed as FeedConfig, GeneralConfig, QueryFeed, UiConfig};
 use crate::feeds::{self, Feed, FeedEntry};
 use crate::query;
+use crate::theme::Theme;
 use crate::views::{entry_view, feeds_list_view, help_view, links_view};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
@@ -314,6 +315,7 @@ pub struct App {
   confirm_feed_name: String,
   input: InputState,
   cache: FeedCache,
+  theme: Theme,
   /// Cached visible (unfiltered) entry indices for the currently selected feed.
   /// Invalidated whenever `hide_read`, `feed_index`, or entry data changes.
   visible_indices_cache: Vec<usize>,
@@ -332,6 +334,7 @@ impl App {
     let is_loading = feeds.is_empty();
     let display_feeds = Self::build_display_feeds(&feeds, &query_config);
     let hide_read = !ui_config.show_read_entries;
+    let theme = Theme::from_config(&ui_config.theme);
 
     let tag_list = Self::build_tag_list(&feeds);
 
@@ -375,6 +378,7 @@ impl App {
         ..InputState::default()
       },
       cache,
+      theme,
       visible_indices_cache: Vec::new(),
     }
   }
@@ -646,8 +650,11 @@ impl App {
                 display_feed.title(&self.feeds),
                 entry,
                 &mut self.entry_scroll,
-                self.ui_config.show_borders,
-                self.ui_config.show_scrollbar,
+                &entry_view::EntryViewConfig {
+                  show_borders: self.ui_config.show_borders,
+                  show_scrollbar: self.ui_config.show_scrollbar,
+                  theme: &self.theme,
+                },
               );
             }
           }
@@ -678,6 +685,7 @@ impl App {
             search_query: &self.input.search_query,
             search_matches: &self.input.search_matches,
             search_match_cursor: self.input.search_match_cursor,
+            theme: &self.theme,
           },
         );
       }
@@ -689,6 +697,7 @@ impl App {
         area,
         &mut self.help_scroll,
         self.ui_config.show_scrollbar,
+        &self.theme,
       );
     }
 
@@ -703,6 +712,7 @@ impl App {
               &mut self.links_selected,
               &mut self.links_scroll,
               self.ui_config.show_scrollbar,
+              &self.theme,
             );
           }
         }
@@ -710,7 +720,7 @@ impl App {
     }
 
     if self.show_confirm_popup {
-      feeds_list_view::render_confirm_popup(frame, area, &self.confirm_feed_name);
+      feeds_list_view::render_confirm_popup(frame, area, &self.confirm_feed_name, &self.theme);
     }
   }
 
@@ -2011,11 +2021,13 @@ mod tests {
   #[test]
   fn test_display_feed_is_query() {
     assert!(!DisplayFeed::Regular(0).is_query());
-    assert!(DisplayFeed::Query {
-      name: "Q".to_string(),
-      entries: vec![]
-    }
-    .is_query());
+    assert!(
+      DisplayFeed::Query {
+        name: "Q".to_string(),
+        entries: vec![]
+      }
+      .is_query()
+    );
   }
 
   #[test]
@@ -2174,6 +2186,7 @@ mod tests {
         show_borders: true,
         show_read_entries: true,
         show_scrollbar: true,
+        ..Default::default()
       },
       vec![],
       vec![],
@@ -2192,6 +2205,7 @@ mod tests {
         show_borders: true,
         show_read_entries: true,
         show_scrollbar: true,
+        ..Default::default()
       },
       vec![],
       vec![],
@@ -2512,6 +2526,7 @@ mod tests {
         show_borders: true,
         show_read_entries: true,
         show_scrollbar: true,
+        ..Default::default()
       },
       vec![],
       vec![],
@@ -2608,6 +2623,7 @@ mod tests {
         show_borders: true,
         show_read_entries: true,
         show_scrollbar: true,
+        ..Default::default()
       },
       vec![],
       vec![],
@@ -2651,6 +2667,7 @@ mod tests {
         show_borders: true,
         show_read_entries: true,
         show_scrollbar: true,
+        ..Default::default()
       },
       vec![],
       vec![],

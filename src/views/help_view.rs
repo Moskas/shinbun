@@ -1,3 +1,4 @@
+use crate::theme::Theme;
 use ratatui::{
   prelude::*,
   symbols::border,
@@ -14,11 +15,13 @@ struct Keybind {
 }
 
 /// Build the full list of keybind lines grouped by section.
-fn build_help_content() -> Vec<Line<'static>> {
+fn build_help_content(theme: &Theme) -> Vec<Line<'static>> {
   let mut lines: Vec<Line<'static>> = Vec::new();
 
+  let section_style = Style::default().bold().fg(theme.help_section);
+
   // ── Navigation ──
-  lines.push(Line::from(" Navigation").bold().cyan());
+  lines.push(Line::from(Span::styled(" Navigation", section_style)));
   lines.push(Line::from(""));
 
   let nav_binds = [
@@ -64,12 +67,12 @@ fn build_help_content() -> Vec<Line<'static>> {
     },
   ];
   for bind in &nav_binds {
-    lines.push(keybind_line(bind));
+    lines.push(keybind_line(bind, theme));
   }
 
   // ── Actions ──
   lines.push(Line::from(""));
-  lines.push(Line::from(" Actions").bold().cyan());
+  lines.push(Line::from(Span::styled(" Actions", section_style)));
   lines.push(Line::from(""));
 
   let action_binds = [
@@ -111,12 +114,12 @@ fn build_help_content() -> Vec<Line<'static>> {
     },
   ];
   for bind in &action_binds {
-    lines.push(keybind_line(bind));
+    lines.push(keybind_line(bind, theme));
   }
 
   // ── General ──
   lines.push(Line::from(""));
-  lines.push(Line::from(" General").bold().cyan());
+  lines.push(Line::from(Span::styled(" General", section_style)));
   lines.push(Line::from(""));
 
   let general_binds = [
@@ -130,25 +133,31 @@ fn build_help_content() -> Vec<Line<'static>> {
     },
   ];
   for bind in &general_binds {
-    lines.push(keybind_line(bind));
+    lines.push(keybind_line(bind, theme));
   }
 
   lines
 }
 
 /// Format a single keybind as a styled Line.
-fn keybind_line(bind: &Keybind) -> Line<'static> {
+fn keybind_line(bind: &Keybind, theme: &Theme) -> Line<'static> {
   Line::from(vec![
     Span::styled(
       format!("  {:24}", bind.key),
-      Style::default().bold().yellow(),
+      Style::default().bold().fg(theme.help_key),
     ),
     Span::raw(bind.description.to_string()),
   ])
 }
 
 /// Render a centered, scrollable help popup.
-pub fn render_help_popup(frame: &mut Frame, area: Rect, scroll: &mut usize, show_scrollbar: bool) {
+pub fn render_help_popup(
+  frame: &mut Frame,
+  area: Rect,
+  scroll: &mut usize,
+  show_scrollbar: bool,
+  theme: &Theme,
+) {
   let popup_width = area.width.saturating_sub(8).min(60);
   let popup_height = area.height.saturating_sub(6).min(30);
 
@@ -161,14 +170,14 @@ pub fn render_help_popup(frame: &mut Frame, area: Rect, scroll: &mut usize, show
 
   Clear.render(popup_area, frame.buffer_mut());
 
-  let content = build_help_content();
+  let content = build_help_content(theme);
   let content_len = content.len();
 
   let block = Block::default()
-    .title(" Keyboard Shortcuts ".bold().yellow())
+    .title(Span::styled(" Keyboard Shortcuts ", theme.title_style()))
     .title_bottom(" <?> or <Esc> to close ".gray())
     .borders(Borders::ALL)
-    .border_style(Style::new().blue())
+    .border_style(Style::new().fg(theme.help_border))
     .border_set(border::PLAIN);
 
   let inner_height = block.inner(popup_area).height as usize;
@@ -204,15 +213,19 @@ pub fn render_help_popup(frame: &mut Frame, area: Rect, scroll: &mut usize, show
 mod tests {
   use super::*;
 
+  fn test_theme() -> Theme {
+    Theme::default()
+  }
+
   #[test]
   fn test_build_help_content_not_empty() {
-    let content = build_help_content();
+    let content = build_help_content(&test_theme());
     assert!(!content.is_empty());
   }
 
   #[test]
   fn test_build_help_content_has_sections() {
-    let content = build_help_content();
+    let content = build_help_content(&test_theme());
     let text: Vec<String> = content.iter().map(|l| l.to_string()).collect();
     assert!(text.iter().any(|l| l.contains("Navigation")));
     assert!(text.iter().any(|l| l.contains("Actions")));
@@ -221,7 +234,7 @@ mod tests {
 
   #[test]
   fn test_build_help_content_has_keybinds() {
-    let content = build_help_content();
+    let content = build_help_content(&test_theme());
     let text: Vec<String> = content.iter().map(|l| l.to_string()).collect();
     // Check some essential keybinds are present
     assert!(text.iter().any(|l| l.contains("Move down")));
@@ -239,7 +252,7 @@ mod tests {
       key: "j / Down",
       description: "Move down",
     };
-    let line = keybind_line(&bind);
+    let line = keybind_line(&bind, &test_theme());
     let text = line.to_string();
     assert!(text.contains("j / Down"));
     assert!(text.contains("Move down"));
@@ -251,7 +264,7 @@ mod tests {
       key: "q",
       description: "Quit",
     };
-    let line = keybind_line(&bind);
+    let line = keybind_line(&bind, &test_theme());
     // The key should be padded to 24 chars
     let spans: Vec<String> = line.spans.iter().map(|s| s.content.to_string()).collect();
     assert_eq!(spans[0].len(), 26); // "  " prefix + 24 padded key

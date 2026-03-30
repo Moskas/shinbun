@@ -1,5 +1,5 @@
 use crate::feeds::{Feed, FeedEntry};
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Connection, Result, params};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -373,16 +373,20 @@ mod tests {
     cache.save_feed(&feed, 0).unwrap();
     let feeds = cache.load_all_feeds().unwrap();
     assert_eq!(feeds[0].tags.as_ref().unwrap().len(), 2);
-    assert!(feeds[0]
-      .tags
-      .as_ref()
-      .unwrap()
-      .contains(&"blog".to_string()));
-    assert!(feeds[0]
-      .tags
-      .as_ref()
-      .unwrap()
-      .contains(&"tech".to_string()));
+    assert!(
+      feeds[0]
+        .tags
+        .as_ref()
+        .unwrap()
+        .contains(&"blog".to_string())
+    );
+    assert!(
+      feeds[0]
+        .tags
+        .as_ref()
+        .unwrap()
+        .contains(&"tech".to_string())
+    );
   }
 
   #[test]

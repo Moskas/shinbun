@@ -1,7 +1,7 @@
 use crate::app::FeedUpdate;
 use crate::config::Feed as FeedConfig;
 use feed_rs::parser;
-use reqwest::{get, Error as ReqError};
+use reqwest::{Error as ReqError, get};
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]

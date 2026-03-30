@@ -1,3 +1,4 @@
+use crate::theme::Theme;
 use ratatui::{
   prelude::*,
   symbols::border,
@@ -8,14 +9,14 @@ use ratatui::{
 };
 
 /// Build table rows for the links popup.
-fn build_links_rows(links: &[String]) -> Vec<Row<'_>> {
+fn build_links_rows<'a>(links: &'a [String], theme: &Theme) -> Vec<Row<'a>> {
   links
     .iter()
     .enumerate()
     .map(|(i, link)| {
       Row::new(vec![
-        Cell::from(format!(" {}:", i + 1)).yellow(),
-        Cell::from(link.as_str()).blue(),
+        Cell::from(format!(" {}:", i + 1)).style(Style::default().fg(theme.link_index)),
+        Cell::from(link.as_str()).style(Style::default().fg(theme.link_url)),
       ])
     })
     .collect()
@@ -29,6 +30,7 @@ pub fn render_links_popup(
   selected: &mut usize,
   scroll: &mut usize,
   show_scrollbar: bool,
+  theme: &Theme,
 ) {
   let popup_width = area.width.saturating_sub(8).min(80);
   let popup_height = area.height.saturating_sub(6).min(30);
@@ -51,10 +53,13 @@ pub fn render_links_popup(
   }
 
   let block = Block::default()
-    .title(" Links ".bold().yellow())
-    .title_bottom(" <Esc/L> close  <o> open ".gray())
+    .title(Span::styled(" Links ", theme.title_style()))
+    .title_bottom(Span::styled(
+      " <Esc/L> close  <o> open ",
+      Style::default().fg(Color::Gray),
+    ))
     .borders(Borders::ALL)
-    .border_style(Style::new().blue())
+    .border_style(Style::new().fg(theme.links_border))
     .border_set(border::PLAIN);
 
   if links.is_empty() {
@@ -76,7 +81,7 @@ pub fn render_links_popup(
     return;
   }
 
-  let rows = build_links_rows(links);
+  let rows = build_links_rows(links, theme);
   let row_count = rows.len();
 
   // Determine index column width based on the largest index label " N:"
@@ -87,7 +92,7 @@ pub fn render_links_popup(
   let table = Table::new(rows, widths)
     .block(block)
     .column_spacing(1)
-    .row_highlight_style(Style::new().bold().yellow().on_dark_gray());
+    .row_highlight_style(theme.row_highlight_bold_style());
 
   let mut table_state = TableState::default().with_selected(Some(*selected));
 
@@ -126,7 +131,8 @@ mod tests {
   #[test]
   fn test_build_links_rows_empty() {
     let links: Vec<String> = vec![];
-    let rows = build_links_rows(&links);
+    let theme = Theme::default();
+    let rows = build_links_rows(&links, &theme);
     assert!(rows.is_empty());
   }
 
@@ -137,14 +143,16 @@ mod tests {
       "https://example.com/ref1".to_string(),
       "https://example.com/ref2".to_string(),
     ];
-    let rows = build_links_rows(&links);
+    let theme = Theme::default();
+    let rows = build_links_rows(&links, &theme);
     assert_eq!(rows.len(), 3);
   }
 
   #[test]
   fn test_build_links_rows_single_link() {
     let links = vec!["https://example.com".to_string()];
-    let rows = build_links_rows(&links);
+    let theme = Theme::default();
+    let rows = build_links_rows(&links, &theme);
     assert_eq!(rows.len(), 1);
   }
 }

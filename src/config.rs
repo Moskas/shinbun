@@ -1,3 +1,4 @@
+use crate::theme::ThemeConfig;
 use dirs::config_dir;
 use serde::Deserialize;
 use std::{
@@ -61,6 +62,10 @@ pub struct UiConfig {
   /// Display scrollbars
   #[serde(default = "default_show_scrollbar")]
   pub show_scrollbar: bool,
+
+  /// Theme configuration for colors and styles
+  #[serde(default)]
+  pub theme: ThemeConfig,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]

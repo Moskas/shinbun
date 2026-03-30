@@ -1,37 +1,84 @@
 use crate::feeds::FeedEntry;
+use crate::theme::Theme;
 use ratatui::{
+  Frame,
   layout::Rect,
-  prelude::{Alignment, Line, Style, Stylize},
+  prelude::{Alignment, Color, Line, Modifier, Span, Style, Stylize},
   symbols::border,
   widgets::{
     Block, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
     StatefulWidget, Widget, Wrap,
   },
-  Frame,
 };
 use tui_markdown::{self, Options, StyleSheet};
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ShinbunStyleSheet;
+/// Configuration passed to [`render`] to avoid too many individual parameters.
+pub struct EntryViewConfig<'a> {
+  pub show_borders: bool,
+  pub show_scrollbar: bool,
+  pub theme: &'a Theme,
+}
+
+/// A theme-aware stylesheet for tui-markdown rendering.
+#[derive(Clone, Copy, Debug)]
+pub struct ShinbunStyleSheet {
+  h1: Color,
+  h2: Color,
+  h3: Color,
+  h4: Color,
+  h5: Color,
+  code: Option<Color>,
+  link: Color,
+  metadata_block: Color,
+}
+
+impl ShinbunStyleSheet {
+  pub fn from_theme(theme: &Theme) -> Self {
+    Self {
+      h1: theme.h1,
+      h2: theme.h2,
+      h3: theme.h3,
+      h4: theme.h4,
+      h5: theme.h5,
+      code: theme.code,
+      link: theme.link,
+      metadata_block: theme.metadata_block,
+    }
+  }
+}
+
+impl Default for ShinbunStyleSheet {
+  fn default() -> Self {
+    Self::from_theme(&Theme::default())
+  }
+}
 
 impl StyleSheet for ShinbunStyleSheet {
   fn heading(&self, level: u8) -> Style {
     match level {
-      1 => Style::new().cyan().bold().underlined(),
-      2 => Style::new().magenta().bold(),
-      3 => Style::new().blue().bold(),
-      4 => Style::new().red(),
-      5 => Style::new().light_cyan(),
+      1 => Style::new()
+        .fg(self.h1)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+      2 => Style::new().fg(self.h2).add_modifier(Modifier::BOLD),
+      3 => Style::new().fg(self.h3).add_modifier(Modifier::BOLD),
+      4 => Style::new().fg(self.h4),
+      5 => Style::new().fg(self.h5),
       _ => Style::new(),
     }
   }
 
   fn code(&self) -> Style {
-    Style::new().bold()
+    let s = Style::new().add_modifier(Modifier::BOLD);
+    match self.code {
+      Some(c) => s.fg(c),
+      None => s,
+    }
   }
 
   fn link(&self) -> Style {
-    Style::new().blue().underlined()
+    Style::new()
+      .fg(self.link)
+      .add_modifier(Modifier::UNDERLINED)
   }
 
   fn blockquote(&self) -> Style {
@@ -43,7 +90,7 @@ impl StyleSheet for ShinbunStyleSheet {
   }
 
   fn metadata_block(&self) -> Style {
-    Style::new().light_yellow()
+    Style::new().fg(self.metadata_block)
   }
 }
 
@@ -65,31 +112,36 @@ fn calculate_wrapped_height(lines: &[Line], content_width: u16) -> usize {
 }
 
 /// Build the content lines for an entry view
-fn build_entry_content<'a>(feed_title: &'a str, entry: &'a FeedEntry) -> Vec<Line<'a>> {
+fn build_entry_content<'a>(
+  feed_title: &'a str,
+  entry: &'a FeedEntry,
+  theme: &Theme,
+) -> Vec<Line<'a>> {
   let mut lines = Vec::new();
 
   // Metadata
-  lines.push(Line::from(format!("Title: {}", entry.title)).magenta());
-  lines.push(Line::from(format!("Feed: {}", feed_title)).cyan());
+  lines.push(Line::from(format!("Title: {}", entry.title)).fg(theme.meta_title));
+  lines.push(Line::from(format!("Feed: {}", feed_title)).fg(theme.meta_feed));
   lines.push(
     Line::from(format!(
       "Published: {}",
       entry.published.as_deref().unwrap_or("Unknown")
     ))
-    .yellow(),
+    .fg(theme.meta_published),
   );
 
   if !entry.links.is_empty() {
-    lines.push(Line::from(format!("Link: {}", entry.links[0])).blue());
+    lines.push(Line::from(format!("Link: {}", entry.links[0])).fg(theme.meta_link));
   }
 
   if let Some(ref url) = entry.media {
-    lines.push(Line::from(format!("Media: {}", url)).blue());
+    lines.push(Line::from(format!("Media: {}", url)).fg(theme.meta_link));
   }
 
   lines.push(Line::from("")); // separator
 
-  let md = tui_markdown::from_str_with_options(&entry.text, &Options::new(ShinbunStyleSheet));
+  let stylesheet = ShinbunStyleSheet::from_theme(theme);
+  let md = tui_markdown::from_str_with_options(&entry.text, &Options::new(stylesheet));
   lines.extend(md.lines);
 
   if entry.links.len() > 1 {
@@ -101,7 +153,7 @@ fn build_entry_content<'a>(feed_title: &'a str, entry: &'a FeedEntry) -> Vec<Lin
         .iter()
         .skip(1)
         .enumerate()
-        .map(|(i, link)| Line::from(format!("[{}]: {}", i + 1, link).blue())),
+        .map(|(i, link)| Line::from(format!("[{}]: {}", i + 1, link)).fg(theme.meta_link)),
     );
   }
 
@@ -115,13 +167,16 @@ pub fn render(
   feed_title: &str,
   entry: &FeedEntry,
   scroll: &mut usize,
-  show_borders: bool,
-  show_scrollbar: bool,
+  cfg: &EntryViewConfig,
 ) {
+  let theme = cfg.theme;
+  let show_borders = cfg.show_borders;
+  let show_scrollbar = cfg.show_scrollbar;
   // Create the outer container
-  let title = format!(" Shinbun - Articles in feed '{}' ", feed_title)
-    .bold()
-    .yellow();
+  let title = Span::styled(
+    format!(" Shinbun - Articles in feed '{}' ", feed_title),
+    theme.title_style(),
+  );
   let instructions = Line::from(vec![" Help ".into(), "<?> ".bold()]);
 
   let outer_block = if show_borders {
@@ -129,7 +184,7 @@ pub fn render(
       .title(title)
       .title_bottom(instructions.alignment(Alignment::Left))
       .borders(Borders::ALL)
-      .border_style(Style::new().blue())
+      .border_style(theme.border_style())
       .border_set(border::PLAIN)
   } else {
     Block::default()
@@ -140,18 +195,24 @@ pub fn render(
   let inner_area = outer_block.inner(area);
 
   // Build the entry content
-  let content = build_entry_content(feed_title, entry);
+  let content = build_entry_content(feed_title, entry, theme);
 
   // Create the entry block with padding
   let entry_block = if show_borders {
     Block::default()
-      .title(format!(" Entry  - {} ", entry.title).yellow())
+      .title(Span::styled(
+        format!(" Entry  - {} ", entry.title),
+        Style::default().fg(theme.entry_title_bordered),
+      ))
       .borders(Borders::ALL)
-      .border_style(Style::new().blue())
+      .border_style(theme.border_style())
       .padding(Padding::symmetric(4, 1))
   } else {
     Block::default()
-      .title(format!(" Entry - {}", entry.title).green())
+      .title(Span::styled(
+        format!(" Entry - {}", entry.title),
+        Style::default().fg(theme.entry_title_plain),
+      ))
       .padding(Padding::symmetric(4, 0))
   };
 
@@ -183,7 +244,10 @@ pub fn render(
 
   // Create paragraph with scrolling
   let paragraph = Paragraph::new(content)
-    .block(entry_block.clone().title_bottom(line_info.yellow()))
+    .block(entry_block.clone().title_bottom(Span::styled(
+      line_info,
+      Style::default().fg(theme.line_info),
+    )))
     .scroll((*scroll as u16, 0))
     .wrap(Wrap { trim: false });
 
@@ -215,6 +279,10 @@ pub fn render(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  fn test_theme() -> Theme {
+    Theme::default()
+  }
 
   #[test]
   fn test_calculate_wrapped_height_single_line() {
@@ -279,7 +347,7 @@ mod tests {
       read: false,
     };
 
-    let lines = build_entry_content("My Feed", &entry);
+    let lines = build_entry_content("My Feed", &entry, &test_theme());
     // Should contain metadata lines
     let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
     assert!(text.iter().any(|l| l.contains("Test Entry")));
@@ -300,7 +368,7 @@ mod tests {
       read: false,
     };
 
-    let lines = build_entry_content("Feed", &entry);
+    let lines = build_entry_content("Feed", &entry, &test_theme());
     let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
     assert!(text.iter().any(|l| l.contains("Unknown")));
   }
@@ -317,7 +385,7 @@ mod tests {
       read: false,
     };
 
-    let lines = build_entry_content("Podcast Feed", &entry);
+    let lines = build_entry_content("Podcast Feed", &entry, &test_theme());
     let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
     assert!(text.iter().any(|l| l.contains("episode.mp3")));
   }
@@ -338,7 +406,7 @@ mod tests {
       read: false,
     };
 
-    let lines = build_entry_content("Feed", &entry);
+    let lines = build_entry_content("Feed", &entry, &test_theme());
     let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
     // First link shown in header
     assert!(text.iter().any(|l| l.contains("https://example.com/main")));

@@ -1,0 +1,81 @@
+# Solarized Dark theme for shinbun
+#
+# Copy this section into your ~/.config/shinbun/config.toml
+# or use the entire file as your config.toml.
+#
+# Palette reference (Solarized Dark):
+#   base03  #002b36   (background)
+#   base02  #073642   (highlight bg)
+#   base01  #586e75   (comments / dimmed)
+#   base00  #657b83
+#   base0   #839496   (body text)
+#   base1   #93a1a1   (emphasis)
+#   yellow  #b58900
+#   orange  #cb4b16
+#   red     #dc322f
+#   magenta #d33682
+#   violet  #6c71c4
+#   blue    #268bd2
+#   cyan    #2aa198
+#   green   #859900
+
+[ui.theme]
+# ── Chrome ─────────────────────────────────────────────────────
+border           = "#268bd2"    # blue
+title            = "#b58900"    # yellow
+
+# ── Feed / entry list ─────────────────────────────────────────
+count            = "#268bd2"    # blue
+read             = "#586e75"    # base01 (dimmed)
+header           = "#93a1a1"    # base1
+highlight_bg     = "#073642"    # base02
+highlight_fg     = "#b58900"    # yellow
+
+# ── Entry list columns ────────────────────────────────────────
+date             = "#2aa198"    # cyan
+source           = "#b58900"    # yellow
+
+# ── Search bar ────────────────────────────────────────────────
+search_prompt    = "#b58900"    # yellow
+search_cursor    = "#839496"    # base0
+search_info      = "#586e75"    # base01
+search_no_match  = "#dc322f"    # red
+search_match_read = "#657b83"   # base00
+search_dim       = "#586e75"    # base01
+
+# ── Entry view metadata ──────────────────────────────────────
+meta_title       = "#d33682"    # magenta
+meta_feed        = "#2aa198"    # cyan
+meta_published   = "#b58900"    # yellow
+meta_link        = "#268bd2"    # blue
+line_info        = "#b58900"    # yellow
+entry_title_bordered = "#b58900"  # yellow
+entry_title_plain    = "#859900"  # green
+
+# ── Markdown rendering ───────────────────────────────────────
+h1               = "#2aa198"    # cyan
+h2               = "#d33682"    # magenta
+h3               = "#268bd2"    # blue
+h4               = "#cb4b16"    # orange
+h5               = "#6c71c4"    # violet
+code             = "#859900"    # green
+link             = "#268bd2"    # blue
+metadata_block   = "#b58900"    # yellow
+
+# ── Popups ────────────────────────────────────────────────────
+error_border     = "#dc322f"    # red
+error_title      = "#b58900"    # yellow
+loading_border   = "#2aa198"    # cyan
+loading_done_border = "#859900" # green
+confirm          = "#b58900"    # yellow
+confirm_message  = "#eee8d5"    # base2
+
+# ── Help popup ────────────────────────────────────────────────
+help_section     = "#2aa198"    # cyan
+help_key         = "#b58900"    # yellow
+help_border      = "#268bd2"    # blue
+
+# ── Links popup ──────────────────────────────────────────────
+link_index       = "#b58900"    # yellow
+link_url         = "#268bd2"    # blue
+links_border     = "#268bd2"    # blue
