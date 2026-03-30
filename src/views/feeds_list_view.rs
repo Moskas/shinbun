@@ -380,7 +380,7 @@ fn build_entry_rows(
 
     if entries.is_empty() {
       return (
-        vec![Row::new(vec![Cell::from(""), Cell::from(" No entries")])],
+        vec![Row::new(vec![Cell::from(""), Cell::from("No unread entries")])],
         false,
         0,
       );

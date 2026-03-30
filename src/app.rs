@@ -766,7 +766,9 @@ impl App {
         self.input.hide_read = !self.input.hide_read;
         self.invalidate_visible_indices();
         // Reset selection so it doesn't point out-of-bounds in the filtered list
-        self.entry_list_state.select(Some(0));
+        if !self.visible_entry_indices().is_empty() {
+          self.entry_list_state.select(Some(0));
+        }
       }
       KeyCode::Char('m') | KeyCode::Char('M') => match self.state {
         AppState::BrowsingEntries => {
@@ -878,6 +880,12 @@ impl App {
       .filter(|(_, e)| !self.input.hide_read || !e.read)
       .map(|(i, _)| i)
       .collect();
+
+    // Deselect the entry table when there are no visible entries so that
+    // the "No entries" placeholder row cannot be "opened" by pressing Enter.
+    if self.visible_indices_cache.is_empty() && self.state == AppState::BrowsingEntries {
+      self.entry_list_state.select(None);
+    }
   }
 
   /// Returns the cached visible (unfiltered) entry indices for the current feed.
@@ -1089,10 +1097,15 @@ impl App {
         self.input.clear_search();
         self.state = AppState::BrowsingEntries;
         self.invalidate_visible_indices();
-        self.entry_list_state.select(Some(0));
+        if !self.visible_entry_indices().is_empty() {
+          self.entry_list_state.select(Some(0));
+        }
       }
       AppState::BrowsingEntries => {
         self.input.clear_search();
+        if self.visible_entry_indices().is_empty() {
+          return;
+        }
         if let Some(visible_idx) = self.entry_list_state.selected() {
           let real_idx = self
             .visible_to_real_entry_idx(visible_idx)
@@ -1806,11 +1819,13 @@ mod tests {
   #[test]
   fn test_display_feed_is_query() {
     assert!(!DisplayFeed::Regular(0).is_query());
-    assert!(DisplayFeed::Query {
-      name: "Q".to_string(),
-      entries: vec![]
-    }
-    .is_query());
+    assert!(
+      DisplayFeed::Query {
+        name: "Q".to_string(),
+        entries: vec![]
+      }
+      .is_query()
+    );
   }
 
   #[test]
