@@ -805,14 +805,13 @@ impl App {
         }
         _ => {}
       },
-      KeyCode::Char('L') => match self.state {
-        AppState::ViewingEntry => {
+      KeyCode::Char('L') => {
+        if self.state == AppState::ViewingEntry {
           self.show_links_popup = !self.show_links_popup;
           self.links_scroll = 0;
           self.links_selected = 0;
         }
-        _ => {}
-      },
+      }
       KeyCode::Char('/') => match self.state {
         AppState::BrowsingFeeds | AppState::BrowsingEntries => {
           self.input.cancel_sequence();
@@ -1819,13 +1818,11 @@ mod tests {
   #[test]
   fn test_display_feed_is_query() {
     assert!(!DisplayFeed::Regular(0).is_query());
-    assert!(
-      DisplayFeed::Query {
-        name: "Q".to_string(),
-        entries: vec![]
-      }
-      .is_query()
-    );
+    assert!(DisplayFeed::Query {
+      name: "Q".to_string(),
+      entries: vec![]
+    }
+    .is_query());
   }
 
   #[test]
