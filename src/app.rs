@@ -824,6 +824,10 @@ impl App {
           self.open_selected_link();
           return;
         }
+        KeyCode::Char('y') => {
+          self.yank_selected_link();
+          return;
+        }
         _ => return,
       }
     }
@@ -945,6 +949,12 @@ impl App {
           self.links_selected = 0;
         }
       }
+      KeyCode::Char('y') => match self.state {
+        AppState::BrowsingEntries | AppState::ViewingEntry => {
+          self.yank_entry_link();
+        }
+        _ => {}
+      },
       KeyCode::Char('t') | KeyCode::Char('T') => {
         if self.state == AppState::BrowsingFeeds {
           self.input.cancel_sequence();
@@ -1423,6 +1433,56 @@ impl App {
     };
     if let Err(e) = result {
       self.push_error("Browser", e);
+    }
+  }
+
+  /// Write text to the system clipboard, suppressing arboard's Drop warning.
+  fn copy_to_clipboard(text: &str) -> Result<(), arboard::Error> {
+    let mut cb = arboard::Clipboard::new()?;
+    cb.set_text(text)?;
+    // Forget the clipboard to prevent its Drop impl from printing to stderr
+    // on X11 when dropped within 100ms of writing (arboard warns about
+    // clipboard managers potentially missing the content).
+    std::mem::forget(cb);
+    Ok(())
+  }
+
+  /// Yank the current entry's first link to the clipboard.
+  fn yank_entry_link(&mut self) {
+    let Some(real_idx) = self.resolve_current_entry_idx() else {
+      return;
+    };
+    let Some(df) = self.display_feeds.get(self.feed_index) else {
+      return;
+    };
+    let Some(entry) = df.entries(&self.feeds).get(real_idx) else {
+      return;
+    };
+    let Some(url) = entry.links.first() else {
+      return;
+    };
+    if let Err(e) = Self::copy_to_clipboard(url) {
+      self.push_error("Clipboard", format!("Failed to copy link: {}", e));
+    }
+  }
+
+  /// Yank the selected link from the links popup to the clipboard.
+  fn yank_selected_link(&mut self) {
+    let Some(real_idx) = self.resolve_current_entry_idx() else {
+      return;
+    };
+    let Some(df) = self.display_feeds.get(self.feed_index) else {
+      return;
+    };
+    let Some(entry) = df.entries(&self.feeds).get(real_idx) else {
+      return;
+    };
+    let selected = self.links_selected.min(entry.links.len().saturating_sub(1));
+    let Some(url) = entry.links.get(selected) else {
+      return;
+    };
+    if let Err(e) = Self::copy_to_clipboard(url) {
+      self.push_error("Clipboard", format!("Failed to copy link: {}", e));
     }
   }
 

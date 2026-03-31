@@ -392,7 +392,7 @@ fn render_main_pane(
             .top_margin(0),
         )
         .column_spacing(2)
-        .row_highlight_style(theme.row_highlight_style());
+        .row_highlight_style(theme.row_highlight_bold_style());
 
       StatefulWidget::render(feeds_table, area, frame.buffer_mut(), feed_state);
     }

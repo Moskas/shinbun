@@ -105,6 +105,10 @@ fn build_help_content(theme: &Theme) -> Vec<Line<'static>> {
       description: "Show article links",
     },
     Keybind {
+      key: "y",
+      description: "Yank link to clipboard",
+    },
+    Keybind {
       key: "p",
       description: "Play media attachment",
     },

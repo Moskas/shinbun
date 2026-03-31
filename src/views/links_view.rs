@@ -55,7 +55,7 @@ pub fn render_links_popup(
   let block = Block::default()
     .title(Span::styled(" Links ", theme.title_style()))
     .title_bottom(Span::styled(
-      " <Esc/L> close  <o> open ",
+      " <Esc/L> close  <o> open  <y> yank ",
       Style::default().fg(Color::Gray),
     ))
     .borders(Borders::ALL)
