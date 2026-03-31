@@ -2038,13 +2038,11 @@ mod tests {
   #[test]
   fn test_display_feed_is_query() {
     assert!(!DisplayFeed::Regular(0).is_query());
-    assert!(
-      DisplayFeed::Query {
-        name: "Q".to_string(),
-        entries: vec![]
-      }
-      .is_query()
-    );
+    assert!(DisplayFeed::Query {
+      name: "Q".to_string(),
+      entries: vec![]
+    }
+    .is_query());
   }
 
   #[test]

@@ -1,7 +1,6 @@
 use crate::feeds::FeedEntry;
 use crate::theme::Theme;
 use ratatui::{
-  Frame,
   layout::Rect,
   prelude::{Alignment, Color, Line, Modifier, Span, Style, Stylize},
   symbols::border,
@@ -9,6 +8,7 @@ use ratatui::{
     Block, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
     StatefulWidget, Widget, Wrap,
   },
+  Frame,
 };
 use tui_markdown::{self, Options, StyleSheet};
 
