@@ -519,7 +519,7 @@ fn render_tags_pane(
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Width of the date column in the entries table.
-const DATE_COL_WIDTH: u16 = 8;
+const DATE_COL_WIDTH: u16 = 6;
 
 /// Build entry rows for the selected feed, returning (rows, is_query, max_source_col_width).
 /// When `hide_read` is true, entries marked as read are excluded from the result.

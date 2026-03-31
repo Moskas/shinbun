@@ -316,6 +316,10 @@ pub struct App {
   input: InputState,
   cache: FeedCache,
   theme: Theme,
+  /// When the user is viewing a tag-filtered feed, this stores the tag query
+  /// string (e.g. "tags:tech") so that `rebuild_display_feeds` can preserve
+  /// the tag view across background feed refreshes.
+  active_tag_query: Option<String>,
   /// Cached visible (unfiltered) entry indices for the currently selected feed.
   /// Invalidated whenever `hide_read`, `feed_index`, or entry data changes.
   visible_indices_cache: Vec<usize>,
@@ -379,6 +383,7 @@ impl App {
       },
       cache,
       theme,
+      active_tag_query: None,
       visible_indices_cache: Vec::new(),
     }
   }
@@ -491,9 +496,19 @@ impl App {
   }
 
   /// Rebuild display feeds, freeing the old allocation before building the new one.
+  ///
+  /// If a tag filter is currently active, the tag-filtered view is rebuilt
+  /// instead of the standard view so that background feed refreshes do not
+  /// destroy the user's current tag feed.
   fn rebuild_display_feeds(&mut self) {
     self.display_feeds.clear();
-    self.display_feeds = Self::build_display_feeds(&self.feeds, &self.query_config);
+    self.tag_list = Self::build_tag_list(&self.feeds);
+    if let Some(ref tag_query) = self.active_tag_query {
+      self.display_feeds =
+        Self::build_display_feeds_with_tag(&self.feeds, &self.query_config, tag_query);
+    } else {
+      self.display_feeds = Self::build_display_feeds(&self.feeds, &self.query_config);
+    }
     self.invalidate_visible_indices();
   }
 
@@ -1287,6 +1302,7 @@ impl App {
             let tag_query = format!("tags:{}", tag_name);
             self.input.clear_search();
             self.previous_list_pane = ListPane::Tags;
+            self.active_tag_query = Some(tag_query.clone());
             self.display_feeds =
               Self::build_display_feeds_with_tag(&self.feeds, &self.query_config, &tag_query);
             self.tag_list_state.select(Some(self.tag_index));
@@ -1333,6 +1349,7 @@ impl App {
       }
       AppState::BrowsingEntries => {
         self.input.clear_search();
+        self.active_tag_query = None;
         self.rebuild_display_feeds();
         self.list_pane = self.previous_list_pane;
         self.state = AppState::BrowsingFeeds;
