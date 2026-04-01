@@ -162,12 +162,15 @@ pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {
         .or_else(|| e.summary.as_ref().map(|s| s.content.clone()))
         .unwrap_or_default();
 
-      let text = html2text::from_read(html_content.as_bytes(), usize::MAX)
-        .unwrap_or_else(|_| String::from("Failed to parse content"));
-
       let mut links: Vec<_> = e.links.into_iter().map(|l| l.href).collect();
 
-      links.extend(extract_html_links(&html_content));
+      let text = if looks_like_html(&html_content) {
+        links.extend(extract_html_links(&html_content));
+        html2text::from_read(html_content.as_bytes(), usize::MAX)
+          .unwrap_or_else(|_| String::from("Failed to parse content"))
+      } else {
+        html_content
+      };
 
       let media = e
         .media
@@ -194,6 +197,12 @@ pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {
     entries,
     tags: feed_config.tags,
   })
+}
+
+/// Check if content looks like HTML rather than plain text.
+/// Returns true if the content contains HTML tags.
+fn looks_like_html(s: &str) -> bool {
+  s.contains('<') && s.contains('>')
 }
 
 fn extract_html_links(html: &str) -> Vec<String> {
@@ -384,5 +393,51 @@ mod tests {
     assert!(!feed.entries[0].read);
     assert!(feed.entries[0].feed_title.is_none());
     assert!(feed.entries[0].media.is_none());
+  }
+  #[test]
+  fn test_looks_like_html() {
+    assert!(looks_like_html("<p>Hello</p>"));
+    assert!(looks_like_html("Some <a href='test'>link</a>"));
+    assert!(!looks_like_html("Just plain text"));
+    assert!(!looks_like_html("Line one\nLine two\nLine three"));
+    assert!(!looks_like_html("URL: https://example.com?foo=1&bar=2"));
+  }
+
+  #[test]
+  fn test_youtube_media_description_preserves_newlines() {
+    let youtube_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns:media="http://search.yahoo.com/mrss/" xmlns="http://www.w3.org/2005/Atom">
+  <title>Test Channel</title>
+  <entry>
+    <id>yt:video:test123</id>
+    <title>Test Video</title>
+    <published>2026-03-31T20:00:27+00:00</published>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=test123"/>
+    <media:group>
+      <media:description>Check out the game on Steam: https://store.steampowered.com/app/1040200/
+Support me on Patreon: https://www.patreon.com/LibrarianYT
+Join the Discord: https://discord.gg/aWa84VVcTA</media:description>
+    </media:group>
+  </entry>
+</feed>"#;
+
+    let config = FeedConfig {
+      link: "https://www.youtube.com/feeds/videos.xml".to_string(),
+      name: None,
+      tags: None,
+    };
+
+    let feed = parse_single_feed(config, youtube_xml).unwrap();
+    let text = &feed.entries[0].text;
+
+    // The description should preserve newlines between separate lines
+    assert!(
+      text.contains('\n'),
+      "YouTube description should preserve newlines, got: {}",
+      text
+    );
+    // Verify specific lines are separated
+    assert!(text.contains("Steam: https://store.steampowered.com/app/1040200/\n"));
+    assert!(text.contains("Patreon: https://www.patreon.com/LibrarianYT\n"));
   }
 }
