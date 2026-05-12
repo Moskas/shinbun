@@ -38,7 +38,14 @@ async fn main() -> io::Result<()> {
 
   // Initialize cache
   let cache_path = config::get_cache_path();
-  let cache = FeedCache::new(cache_path).expect("Failed to initialize cache");
+  let cache = match FeedCache::new(cache_path) {
+    Ok(c) => c,
+    Err(e) => {
+      ui::restore()?;
+      eprintln!("Failed to initialize cache: {}", e);
+      std::process::exit(1);
+    }
+  };
 
   // Remove any feeds that are in the cache but no longer listed in feeds.toml.
   // Their entries are cascade-deleted automatically.

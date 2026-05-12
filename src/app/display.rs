@@ -90,12 +90,7 @@ impl App {
       })
       .collect();
 
-    entries.sort_by(|a, b| match (&b.published, &a.published) {
-      (Some(b_date), Some(a_date)) => b_date.cmp(a_date),
-      (Some(_), None) => std::cmp::Ordering::Less,
-      (None, Some(_)) => std::cmp::Ordering::Greater,
-      (None, None) => std::cmp::Ordering::Equal,
-    });
+    query::sort_entries_by_published_desc(&mut entries);
 
     let tag_name = tag_query
       .strip_prefix("tags:")

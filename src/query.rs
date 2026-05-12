@@ -70,14 +70,19 @@ pub fn apply_query(feeds: &[Feed], query: &str) -> Vec<FeedEntry> {
     })
     .collect();
 
+  sort_entries_by_published_desc(&mut entries);
+
+  entries
+}
+
+/// Sort entries by `published` descending, placing entries without a date last.
+pub fn sort_entries_by_published_desc(entries: &mut [FeedEntry]) {
   entries.sort_by(|a, b| match (&b.published, &a.published) {
     (Some(b_date), Some(a_date)) => b_date.cmp(a_date),
     (Some(_), None) => std::cmp::Ordering::Less,
     (None, Some(_)) => std::cmp::Ordering::Greater,
     (None, None) => std::cmp::Ordering::Equal,
   });
-
-  entries
 }
 
 /// Check if a FeedConfig matches a query filter.

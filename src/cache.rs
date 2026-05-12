@@ -279,24 +279,31 @@ impl FeedCache {
   /// Returns the number of feeds that were pruned.
   pub fn remove_dead_feeds(&self, active_urls: &[&str]) -> Result<usize> {
     // Load every URL currently stored in the cache.
-    let mut stmt = self.conn.prepare("SELECT url FROM feeds")?;
-    let cached: Vec<String> = stmt
-      .query_map([], |row| row.get(0))?
-      .collect::<Result<Vec<_>>>()?;
+    let cached: Vec<String> = {
+      let mut stmt = self.conn.prepare("SELECT url FROM feeds")?;
+      let rows = stmt
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<Vec<_>>>()?;
+      rows
+    };
 
     let active: HashSet<&str> = active_urls.iter().copied().collect();
+    let dead: Vec<&String> = cached.iter().filter(|u| !active.contains(u.as_str())).collect();
 
-    let mut removed = 0usize;
-    for url in cached {
-      if !active.contains(url.as_str()) {
-        self
-          .conn
-          .execute("DELETE FROM feeds WHERE url = ?1", params![url])?;
-        removed += 1;
-      }
+    if dead.is_empty() {
+      return Ok(0);
     }
 
-    Ok(removed)
+    let tx = self.conn.unchecked_transaction()?;
+    {
+      let mut stmt = tx.prepare("DELETE FROM feeds WHERE url = ?1")?;
+      for url in &dead {
+        stmt.execute(params![url])?;
+      }
+    }
+    tx.commit()?;
+
+    Ok(dead.len())
   }
 
   /// Create a cache backed by an in-memory SQLite database (for testing).
