@@ -288,7 +288,10 @@ impl FeedCache {
     };
 
     let active: HashSet<&str> = active_urls.iter().copied().collect();
-    let dead: Vec<&String> = cached.iter().filter(|u| !active.contains(u.as_str())).collect();
+    let dead: Vec<&String> = cached
+      .iter()
+      .filter(|u| !active.contains(u.as_str()))
+      .collect();
 
     if dead.is_empty() {
       return Ok(0);

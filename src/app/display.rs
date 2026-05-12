@@ -18,7 +18,7 @@ impl App {
     }
 
     let mut tags: Vec<(String, usize)> = tag_counts.into_iter().collect();
-    tags.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    tags.sort_by_key(|a| a.0.to_lowercase());
     tags
   }
 
