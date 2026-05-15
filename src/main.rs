@@ -1,5 +1,11 @@
+use clap::{Parser, Subcommand};
 use crossterm::event::{self, poll, Event, KeyEventKind};
+use crossterm::{
+  execute,
+  style::{Color, Print, ResetColor, SetForegroundColor},
+};
 use std::io;
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -7,6 +13,7 @@ mod app;
 mod cache;
 mod config;
 mod feeds;
+mod opml;
 mod query;
 mod theme;
 mod ui;
@@ -15,8 +22,48 @@ mod views;
 use app::{App, FeedUpdate};
 use cache::FeedCache;
 
+#[derive(Parser)]
+#[command(name = "shinbun", about = "Terminal RSS reader")]
+struct Cli {
+  #[command(subcommand)]
+  command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+  /// Export feed subscriptions to OPML
+  Export {
+    /// Write to file instead of stdout
+    #[arg(short, long, value_name = "FILE")]
+    output: Option<PathBuf>,
+  },
+  /// Import feed subscriptions from an OPML file
+  Import {
+    /// OPML file to read
+    file: PathBuf,
+    /// Replace existing feeds instead of merging (default: merge, skip duplicates)
+    #[arg(long)]
+    force: bool,
+    /// Preview changes without writing to feeds.toml
+    #[arg(long)]
+    dry_run: bool,
+  },
+}
+
 #[tokio::main]
 async fn main() -> io::Result<()> {
+  let cli = Cli::parse();
+
+  match cli.command {
+    Some(Commands::Export { output }) => {
+      return cmd_export(output);
+    }
+    Some(Commands::Import { file, force, dry_run }) => {
+      return cmd_import(file, force, dry_run);
+    }
+    None => {}
+  }
+
   let mut terminal = ui::init()?;
 
   // Restore terminal on panic so the shell isn't left in raw mode.
@@ -125,4 +172,156 @@ fn run_app(
     }
   }
   Ok(())
+}
+
+fn cmd_export(output: Option<PathBuf>) -> io::Result<()> {
+  let feeds = match config::parse_config() {
+    Ok(c) => c.feeds,
+    Err(e) => {
+      eprintln!("Error reading config: {}", e);
+      std::process::exit(1);
+    }
+  };
+
+  if let Some(path) = output {
+    let file = std::fs::File::create(&path)
+      .map_err(|e| io::Error::new(e.kind(), format!("{}: {}", path.display(), e)))?;
+    opml::export_opml(&feeds, file)
+      .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+  } else {
+    opml::export_opml(&feeds, io::stdout().lock())
+      .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+  }
+}
+
+fn cmd_import(file: PathBuf, force: bool, dry_run: bool) -> io::Result<()> {
+  use std::io::IsTerminal;
+  let color = io::stdout().is_terminal();
+
+  let f = std::fs::File::open(&file)
+    .map_err(|e| io::Error::new(e.kind(), format!("{}: {}", file.display(), e)))?;
+  let imported = opml::import_opml(io::BufReader::new(f))
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+  if imported.is_empty() {
+    eprintln!("No feeds found in OPML file.");
+    return Ok(());
+  }
+
+  // Fast path: --force without dry-run just overwrites.
+  if force && !dry_run {
+    println!("Imported {} feed(s).", imported.len());
+    return config::write_feeds(&imported);
+  }
+
+  let existing = config::parse_config().map(|c| c.feeds).unwrap_or_default();
+  let existing_urls: std::collections::HashSet<String> =
+    existing.iter().map(|f| f.link.clone()).collect();
+
+  if force {
+    // --force --dry-run: show full diff against current config.
+    let imported_urls: std::collections::HashSet<String> =
+      imported.iter().map(|f| f.link.clone()).collect();
+
+    let mut n_added = 0usize;
+    let mut n_kept = 0usize;
+    let mut n_removed = 0usize;
+
+    for feed in &existing {
+      if !imported_urls.contains(&feed.link) {
+        let label = feed.name.as_deref().unwrap_or(&feed.link);
+        colored_out(&format!("  - {}", label), Color::DarkRed, color);
+        n_removed += 1;
+      }
+    }
+    for feed in &imported {
+      let label = feed.name.as_deref().unwrap_or(&feed.link);
+      let tags = feed_tags(feed);
+      if existing_urls.contains(&feed.link) {
+        colored_out(&format!("  = {}{}", label, tags), Color::DarkCyan, color);
+        n_kept += 1;
+      } else {
+        colored_out(&format!("  + {}{}", label, tags), Color::DarkGreen, color);
+        n_added += 1;
+      }
+    }
+    println!();
+    colored_segment(&format!("{} addition(s)", n_added), Color::DarkGreen, color);
+    print!(", ");
+    colored_segment(&format!("{} unchanged", n_kept), Color::DarkCyan, color);
+    print!(", ");
+    colored_segment(&format!("{} removal(s)", n_removed), Color::DarkRed, color);
+    println!();
+    println!("(dry run — feeds.toml not modified)");
+    return Ok(());
+  }
+
+  // Merge path: partition imported into new vs duplicate.
+  let (to_add, to_skip): (Vec<config::Feed>, Vec<config::Feed>) = imported
+    .into_iter()
+    .partition(|feed| !existing_urls.contains(&feed.link));
+
+  if dry_run {
+    for feed in &to_add {
+      let label = feed.name.as_deref().unwrap_or(&feed.link);
+      colored_out(&format!("  + {}{}", label, feed_tags(feed)), Color::DarkGreen, color);
+    }
+    for feed in &to_skip {
+      let label = feed.name.as_deref().unwrap_or(&feed.link);
+      colored_out(&format!("  = {} (already exists)", label), Color::DarkCyan, color);
+    }
+    println!();
+    colored_segment(&format!("{} addition(s)", to_add.len()), Color::DarkGreen, color);
+    print!(", ");
+    colored_segment(&format!("{} unchanged", to_skip.len()), Color::DarkCyan, color);
+    println!();
+    println!("(dry run — feeds.toml not modified)");
+    return Ok(());
+  }
+
+  let added = to_add.len();
+  let skipped = to_skip.len();
+  let mut merged = existing;
+  merged.extend(to_add);
+  println!("Added {} feed(s), skipped {} duplicate(s).", added, skipped);
+  config::write_feeds(&merged)
+}
+
+fn feed_tags(feed: &config::Feed) -> String {
+  feed
+    .tags
+    .as_deref()
+    .filter(|t| !t.is_empty())
+    .map(|t| format!(" [{}]", t.join(", ")))
+    .unwrap_or_default()
+}
+
+/// Print `text` in `color` followed by a newline, falling back to plain text
+/// when `use_color` is false (non-TTY or piped output).
+fn colored_out(text: &str, color: Color, use_color: bool) {
+  if use_color {
+    let _ = execute!(
+      io::stdout(),
+      SetForegroundColor(color),
+      Print(text),
+      ResetColor,
+      Print("\n"),
+    );
+  } else {
+    println!("{}", text);
+  }
+}
+
+/// Print `text` in `color` without a trailing newline (for building summary lines).
+fn colored_segment(text: &str, color: Color, use_color: bool) {
+  if use_color {
+    let _ = execute!(
+      io::stdout(),
+      SetForegroundColor(color),
+      Print(text),
+      ResetColor,
+    );
+  } else {
+    print!("{}", text);
+  }
 }

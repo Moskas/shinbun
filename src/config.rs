@@ -1,6 +1,6 @@
 use crate::theme::ThemeConfig;
 use dirs::config_dir;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
   fmt, fs,
   path::{Path, PathBuf},
@@ -37,14 +37,14 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-#[derive(Debug, Default, Deserialize, Clone)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
 pub struct Feed {
   pub link: String,
   pub name: Option<String>,
   pub tags: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct FeedsFile {
   feeds: Vec<Feed>,
 }
@@ -179,9 +179,27 @@ fn get_config_dir() -> PathBuf {
   config_dir.join("shinbun")
 }
 
+/// Get the feeds.toml path
+pub fn get_feeds_path() -> PathBuf {
+  get_config_dir().join("feeds.toml")
+}
+
 /// Get the cache database path
 pub fn get_cache_path() -> PathBuf {
   get_config_dir().join("cache.db")
+}
+
+/// Overwrite feeds.toml with the given feed list.
+pub fn write_feeds(feeds: &[Feed]) -> std::io::Result<()> {
+  let path = get_feeds_path();
+  if let Some(parent) = path.parent() {
+    fs::create_dir_all(parent)?;
+  }
+  let content = toml::to_string_pretty(&FeedsFile {
+    feeds: feeds.to_vec(),
+  })
+  .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+  fs::write(path, content)
 }
 
 #[cfg(test)]
