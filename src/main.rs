@@ -48,6 +48,12 @@ enum Commands {
     #[arg(long)]
     dry_run: bool,
   },
+  /// Fetch all feeds and update the cache without launching the TUI
+  Refresh {
+    /// Suppress per-feed output; only print the final summary
+    #[arg(short, long)]
+    quiet: bool,
+  },
 }
 
 #[tokio::main]
@@ -58,8 +64,15 @@ async fn main() -> io::Result<()> {
     Some(Commands::Export { output }) => {
       return cmd_export(output);
     }
-    Some(Commands::Import { file, force, dry_run }) => {
+    Some(Commands::Import {
+      file,
+      force,
+      dry_run,
+    }) => {
       return cmd_import(file, force, dry_run);
+    }
+    Some(Commands::Refresh { quiet }) => {
+      return cmd_refresh(quiet).await;
     }
     None => {}
   }
@@ -186,8 +199,7 @@ fn cmd_export(output: Option<PathBuf>) -> io::Result<()> {
   if let Some(path) = output {
     let file = std::fs::File::create(&path)
       .map_err(|e| io::Error::new(e.kind(), format!("{}: {}", path.display(), e)))?;
-    opml::export_opml(&feeds, file)
-      .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+    opml::export_opml(&feeds, file).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
   } else {
     opml::export_opml(&feeds, io::stdout().lock())
       .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
@@ -264,16 +276,32 @@ fn cmd_import(file: PathBuf, force: bool, dry_run: bool) -> io::Result<()> {
   if dry_run {
     for feed in &to_add {
       let label = feed.name.as_deref().unwrap_or(&feed.link);
-      colored_out(&format!("  + {}{}", label, feed_tags(feed)), Color::DarkGreen, color);
+      colored_out(
+        &format!("  + {}{}", label, feed_tags(feed)),
+        Color::DarkGreen,
+        color,
+      );
     }
     for feed in &to_skip {
       let label = feed.name.as_deref().unwrap_or(&feed.link);
-      colored_out(&format!("  = {} (already exists)", label), Color::DarkCyan, color);
+      colored_out(
+        &format!("  = {} (already exists)", label),
+        Color::DarkCyan,
+        color,
+      );
     }
     println!();
-    colored_segment(&format!("{} addition(s)", to_add.len()), Color::DarkGreen, color);
+    colored_segment(
+      &format!("{} addition(s)", to_add.len()),
+      Color::DarkGreen,
+      color,
+    );
     print!(", ");
-    colored_segment(&format!("{} unchanged", to_skip.len()), Color::DarkCyan, color);
+    colored_segment(
+      &format!("{} unchanged", to_skip.len()),
+      Color::DarkCyan,
+      color,
+    );
     println!();
     println!("(dry run — feeds.toml not modified)");
     return Ok(());
@@ -285,6 +313,100 @@ fn cmd_import(file: PathBuf, force: bool, dry_run: bool) -> io::Result<()> {
   merged.extend(to_add);
   println!("Added {} feed(s), skipped {} duplicate(s).", added, skipped);
   config::write_feeds(&merged)
+}
+
+async fn cmd_refresh(quiet: bool) -> io::Result<()> {
+  use std::io::IsTerminal;
+  let color = io::stdout().is_terminal();
+
+  let config = match config::parse_config() {
+    Ok(c) => c,
+    Err(e) => {
+      eprintln!("Error reading config: {}", e);
+      std::process::exit(1);
+    }
+  };
+
+  if config.feeds.is_empty() {
+    println!("No feeds configured.");
+    return Ok(());
+  }
+
+  let cache_path = config::get_cache_path();
+  let cache = match FeedCache::new(cache_path) {
+    Ok(c) => c,
+    Err(e) => {
+      eprintln!("Failed to initialize cache: {}", e);
+      std::process::exit(1);
+    }
+  };
+
+  {
+    let active_urls: Vec<&str> = config.feeds.iter().map(|f| f.link.as_str()).collect();
+    let _ = cache.remove_dead_feeds(&active_urls);
+  }
+
+  let total = config.feeds.len();
+  let feed_config = config.feeds.clone();
+  let (tx, mut rx) = mpsc::unbounded_channel::<FeedUpdate>();
+
+  tokio::spawn(async move {
+    feeds::fetch_feeds_subset_with_progress(feed_config, tx).await;
+  });
+
+  let mut updated = 0usize;
+  let mut errors = 0usize;
+
+  while let Some(update) = rx.recv().await {
+    match update {
+      FeedUpdate::FetchingFeed(name) => {
+        if !quiet {
+          colored_out(&format!("Fetching: {}", name), Color::DarkCyan, color);
+        }
+      }
+      FeedUpdate::UpdateSingle(feed) => {
+        let pos = config.feeds.iter().position(|fc| fc.link == feed.url).unwrap_or(0);
+        match cache.save_feed(&feed, pos) {
+          Ok(_) => {
+            if !quiet {
+              colored_out(&format!("  OK: {}", feed.title), Color::DarkGreen, color);
+            }
+            updated += 1;
+          }
+          Err(e) => {
+            colored_out(
+              &format!("  Cache error: {}: {}", feed.title, e),
+              Color::DarkRed,
+              color,
+            );
+            errors += 1;
+          }
+        }
+      }
+      FeedUpdate::FeedError { name, error } => {
+        colored_out(&format!("  Error: {}: {}", name, error), Color::DarkRed, color);
+        errors += 1;
+      }
+      FeedUpdate::FetchComplete => break,
+      _ => {}
+    }
+  }
+
+  if !quiet {
+    println!();
+  }
+  colored_segment(&format!("{}/{} feeds updated", updated, total), Color::DarkGreen, color);
+  if errors > 0 {
+    print!(", ");
+    colored_segment(&format!("{} error(s)", errors), Color::DarkRed, color);
+  }
+  println!();
+
+  if errors > 0 {
+    std::process::exit(1);
+  }
+
+  Ok(())
 }
 
 fn feed_tags(feed: &config::Feed) -> String {
