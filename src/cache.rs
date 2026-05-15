@@ -322,7 +322,9 @@ impl FeedCache {
     let mut stmt = self.conn.prepare("SELECT url, title FROM feeds")?;
     let active: HashSet<&str> = active_urls.iter().copied().collect();
     let dead = stmt
-      .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+      .query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+      })?
       .filter_map(|r| r.ok())
       .filter(|(url, _)| !active.contains(url.as_str()))
       .collect();
@@ -331,13 +333,18 @@ impl FeedCache {
 
   /// Aggregate statistics about the current cache contents.
   pub fn get_stats(&self) -> Result<CacheStats> {
-    let feed_count: i64 =
-      self.conn.query_row("SELECT COUNT(*) FROM feeds", [], |r| r.get(0))?;
-    let entry_count: i64 =
-      self.conn.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?;
-    let read_count: i64 = self
+    let feed_count: i64 = self
       .conn
-      .query_row("SELECT COUNT(*) FROM entries WHERE read = 1", [], |r| r.get(0))?;
+      .query_row("SELECT COUNT(*) FROM feeds", [], |r| r.get(0))?;
+    let entry_count: i64 = self
+      .conn
+      .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?;
+    let read_count: i64 =
+      self
+        .conn
+        .query_row("SELECT COUNT(*) FROM entries WHERE read = 1", [], |r| {
+          r.get(0)
+        })?;
     Ok(CacheStats {
       feed_count: feed_count as usize,
       entry_count: entry_count as usize,

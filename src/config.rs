@@ -198,7 +198,7 @@ pub fn write_feeds(feeds: &[Feed]) -> std::io::Result<()> {
   let content = toml::to_string_pretty(&FeedsFile {
     feeds: feeds.to_vec(),
   })
-  .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+  .map_err(std::io::Error::other)?;
   fs::write(path, content)
 }
 

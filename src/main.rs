@@ -213,10 +213,9 @@ fn cmd_export(output: Option<PathBuf>) -> io::Result<()> {
   if let Some(path) = output {
     let file = std::fs::File::create(&path)
       .map_err(|e| io::Error::new(e.kind(), format!("{}: {}", path.display(), e)))?;
-    opml::export_opml(&feeds, file).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+    opml::export_opml(&feeds, file).map_err(|e| io::Error::other(e.to_string()))
   } else {
-    opml::export_opml(&feeds, io::stdout().lock())
-      .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+    opml::export_opml(&feeds, io::stdout().lock()).map_err(|e| io::Error::other(e.to_string()))
   }
 }
 
@@ -379,7 +378,11 @@ async fn cmd_refresh(quiet: bool) -> io::Result<()> {
         }
       }
       FeedUpdate::UpdateSingle(feed) => {
-        let pos = config.feeds.iter().position(|fc| fc.link == feed.url).unwrap_or(0);
+        let pos = config
+          .feeds
+          .iter()
+          .position(|fc| fc.link == feed.url)
+          .unwrap_or(0);
         match cache.save_feed(&feed, pos) {
           Ok(_) => {
             if !quiet {
@@ -398,7 +401,11 @@ async fn cmd_refresh(quiet: bool) -> io::Result<()> {
         }
       }
       FeedUpdate::FeedError { name, error } => {
-        colored_out(&format!("  Error: {}: {}", name, error), Color::DarkRed, color);
+        colored_out(
+          &format!("  Error: {}: {}", name, error),
+          Color::DarkRed,
+          color,
+        );
         errors += 1;
       }
       FeedUpdate::FetchComplete => break,
@@ -409,7 +416,11 @@ async fn cmd_refresh(quiet: bool) -> io::Result<()> {
   if !quiet {
     println!();
   }
-  colored_segment(&format!("{}/{} feeds updated", updated, total), Color::DarkGreen, color);
+  colored_segment(
+    &format!("{}/{} feeds updated", updated, total),
+    Color::DarkGreen,
+    color,
+  );
   if errors > 0 {
     print!(", ");
     colored_segment(&format!("{} error(s)", errors), Color::DarkRed, color);
@@ -447,7 +458,7 @@ fn cmd_clean(dry_run: bool) -> io::Result<()> {
   let active_urls: Vec<&str> = config.feeds.iter().map(|f| f.link.as_str()).collect();
   let dead = cache
     .list_dead_feeds(&active_urls)
-    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    .map_err(|e| io::Error::other(e.to_string()))?;
 
   if dead.is_empty() {
     println!("Cache is clean. Nothing to remove.");
@@ -467,7 +478,7 @@ fn cmd_clean(dry_run: bool) -> io::Result<()> {
   } else {
     cache
       .remove_dead_feeds(&active_urls)
-      .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+      .map_err(|e| io::Error::other(e.to_string()))?;
     println!("Removed {} orphaned feed(s).", dead.len());
   }
 
@@ -498,16 +509,20 @@ fn cmd_stats() -> io::Result<()> {
   let active_urls: Vec<&str> = config.feeds.iter().map(|f| f.link.as_str()).collect();
   let stats = cache
     .get_stats()
-    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    .map_err(|e| io::Error::other(e.to_string()))?;
   let orphaned = cache
     .list_dead_feeds(&active_urls)
-    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
+    .map_err(|e| io::Error::other(e.to_string()))?
     .len();
 
   // ── Feeds section ──────────────────────────────────────────────────────
   println!("Feeds");
   print!("  In config: ");
-  colored_segment(&format!("{:>6}", config.feeds.len()), Color::DarkCyan, color);
+  colored_segment(
+    &format!("{:>6}", config.feeds.len()),
+    Color::DarkCyan,
+    color,
+  );
   println!();
   print!("  In cache:  ");
   colored_segment(&format!("{:>6}", stats.feed_count), Color::DarkCyan, color);
@@ -536,7 +551,11 @@ fn cmd_stats() -> io::Result<()> {
     println!();
 
     print!("  Unread:    ");
-    let unread_color = if stats.unread_count > 0 { Color::DarkYellow } else { Color::DarkCyan };
+    let unread_color = if stats.unread_count > 0 {
+      Color::DarkYellow
+    } else {
+      Color::DarkCyan
+    };
     colored_segment(&format!("{:>6}", stats.unread_count), unread_color, color);
     colored_segment(&format!("  ({:.1}%)", unread_pct), unread_color, color);
     println!();
