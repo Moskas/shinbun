@@ -372,10 +372,8 @@ async fn cmd_refresh(quiet: bool) -> io::Result<()> {
 
   while let Some(update) = rx.recv().await {
     match update {
-      FeedUpdate::FetchingFeed(name) => {
-        if !quiet {
-          colored_out(&format!("Fetching: {}", name), Color::DarkCyan, color);
-        }
+      FeedUpdate::FetchingFeed(name) if !quiet => {
+        colored_out(&format!("Fetching: {}", name), Color::DarkCyan, color);
       }
       FeedUpdate::UpdateSingle(feed) => {
         let pos = config
