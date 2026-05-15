@@ -54,6 +54,14 @@ enum Commands {
     #[arg(short, long)]
     quiet: bool,
   },
+  /// Remove cached feeds that are no longer listed in feeds.toml
+  Clean {
+    /// Show what would be removed without modifying the cache
+    #[arg(long)]
+    dry_run: bool,
+  },
+  /// Show cache statistics (feed counts, read/unread entries)
+  Stats,
 }
 
 #[tokio::main]
@@ -73,6 +81,12 @@ async fn main() -> io::Result<()> {
     }
     Some(Commands::Refresh { quiet }) => {
       return cmd_refresh(quiet).await;
+    }
+    Some(Commands::Clean { dry_run }) => {
+      return cmd_clean(dry_run);
+    }
+    Some(Commands::Stats) => {
+      return cmd_stats();
     }
     None => {}
   }
@@ -404,6 +418,128 @@ async fn cmd_refresh(quiet: bool) -> io::Result<()> {
 
   if errors > 0 {
     std::process::exit(1);
+  }
+
+  Ok(())
+}
+
+fn cmd_clean(dry_run: bool) -> io::Result<()> {
+  use std::io::IsTerminal;
+  let color = io::stdout().is_terminal();
+
+  let config = match config::parse_config() {
+    Ok(c) => c,
+    Err(e) => {
+      eprintln!("Error reading config: {}", e);
+      std::process::exit(1);
+    }
+  };
+
+  let cache_path = config::get_cache_path();
+  let cache = match FeedCache::new(cache_path) {
+    Ok(c) => c,
+    Err(e) => {
+      eprintln!("Failed to initialize cache: {}", e);
+      std::process::exit(1);
+    }
+  };
+
+  let active_urls: Vec<&str> = config.feeds.iter().map(|f| f.link.as_str()).collect();
+  let dead = cache
+    .list_dead_feeds(&active_urls)
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+  if dead.is_empty() {
+    println!("Cache is clean. Nothing to remove.");
+    return Ok(());
+  }
+
+  for (url, title) in &dead {
+    colored_out(&format!("  - {} ({})", title, url), Color::DarkRed, color);
+  }
+  println!();
+
+  if dry_run {
+    println!(
+      "{} orphaned feed(s) would be removed. (dry run — cache not modified)",
+      dead.len()
+    );
+  } else {
+    cache
+      .remove_dead_feeds(&active_urls)
+      .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    println!("Removed {} orphaned feed(s).", dead.len());
+  }
+
+  Ok(())
+}
+
+fn cmd_stats() -> io::Result<()> {
+  use std::io::IsTerminal;
+  let color = io::stdout().is_terminal();
+
+  let config = match config::parse_config() {
+    Ok(c) => c,
+    Err(e) => {
+      eprintln!("Error reading config: {}", e);
+      std::process::exit(1);
+    }
+  };
+
+  let cache_path = config::get_cache_path();
+  let cache = match FeedCache::new(cache_path) {
+    Ok(c) => c,
+    Err(e) => {
+      eprintln!("Failed to initialize cache: {}", e);
+      std::process::exit(1);
+    }
+  };
+
+  let active_urls: Vec<&str> = config.feeds.iter().map(|f| f.link.as_str()).collect();
+  let stats = cache
+    .get_stats()
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+  let orphaned = cache
+    .list_dead_feeds(&active_urls)
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
+    .len();
+
+  // ── Feeds section ──────────────────────────────────────────────────────
+  println!("Feeds");
+  print!("  In config: ");
+  colored_segment(&format!("{:>6}", config.feeds.len()), Color::DarkCyan, color);
+  println!();
+  print!("  In cache:  ");
+  colored_segment(&format!("{:>6}", stats.feed_count), Color::DarkCyan, color);
+  println!();
+  if orphaned > 0 {
+    print!("  Orphaned:  ");
+    colored_segment(&format!("{:>6}", orphaned), Color::DarkYellow, color);
+    print!("  (run 'shinbun clean' to remove)");
+    println!();
+  }
+
+  // ── Entries section ────────────────────────────────────────────────────
+  println!();
+  println!("Entries");
+  print!("  Total:     ");
+  colored_segment(&format!("{:>6}", stats.entry_count), Color::DarkCyan, color);
+  println!();
+
+  if stats.entry_count > 0 {
+    let read_pct = stats.read_count as f64 / stats.entry_count as f64 * 100.0;
+    let unread_pct = stats.unread_count as f64 / stats.entry_count as f64 * 100.0;
+
+    print!("  Read:      ");
+    colored_segment(&format!("{:>6}", stats.read_count), Color::DarkGreen, color);
+    colored_segment(&format!("  ({:.1}%)", read_pct), Color::DarkGreen, color);
+    println!();
+
+    print!("  Unread:    ");
+    let unread_color = if stats.unread_count > 0 { Color::DarkYellow } else { Color::DarkCyan };
+    colored_segment(&format!("{:>6}", stats.unread_count), unread_color, color);
+    colored_segment(&format!("  ({:.1}%)", unread_pct), unread_color, color);
+    println!();
   }
 
   Ok(())

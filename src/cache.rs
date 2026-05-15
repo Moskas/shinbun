@@ -3,6 +3,13 @@ use rusqlite::{params, Connection, Result};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+pub struct CacheStats {
+  pub feed_count: usize,
+  pub entry_count: usize,
+  pub read_count: usize,
+  pub unread_count: usize,
+}
+
 pub struct FeedCache {
   conn: Connection,
 }
@@ -307,6 +314,36 @@ impl FeedCache {
     tx.commit()?;
 
     Ok(dead.len())
+  }
+
+  /// Return `(url, title)` for every feed in the cache that is **not** present
+  /// in `active_urls`. Does not modify the database.
+  pub fn list_dead_feeds(&self, active_urls: &[&str]) -> Result<Vec<(String, String)>> {
+    let mut stmt = self.conn.prepare("SELECT url, title FROM feeds")?;
+    let active: HashSet<&str> = active_urls.iter().copied().collect();
+    let dead = stmt
+      .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+      .filter_map(|r| r.ok())
+      .filter(|(url, _)| !active.contains(url.as_str()))
+      .collect();
+    Ok(dead)
+  }
+
+  /// Aggregate statistics about the current cache contents.
+  pub fn get_stats(&self) -> Result<CacheStats> {
+    let feed_count: i64 =
+      self.conn.query_row("SELECT COUNT(*) FROM feeds", [], |r| r.get(0))?;
+    let entry_count: i64 =
+      self.conn.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?;
+    let read_count: i64 = self
+      .conn
+      .query_row("SELECT COUNT(*) FROM entries WHERE read = 1", [], |r| r.get(0))?;
+    Ok(CacheStats {
+      feed_count: feed_count as usize,
+      entry_count: entry_count as usize,
+      read_count: read_count as usize,
+      unread_count: (entry_count - read_count) as usize,
+    })
   }
 
   /// Create a cache backed by an in-memory SQLite database (for testing).
