@@ -82,6 +82,7 @@ impl App {
               .map(|e| {
                 let mut e = e.clone();
                 e.feed_title = Some(f.title.clone());
+                e.feed_url = Some(f.url.clone());
                 e
               })
               .collect::<Vec<_>>()
@@ -142,6 +143,7 @@ mod tests {
       links: vec![],
       media: None,
       feed_title: None,
+      feed_url: None,
       read,
     }
   }

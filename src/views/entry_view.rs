@@ -344,6 +344,7 @@ mod tests {
       links: vec!["https://example.com/post".to_string()],
       media: None,
       feed_title: None,
+      feed_url: None,
       read: false,
     };
 
@@ -365,6 +366,7 @@ mod tests {
       links: vec![],
       media: None,
       feed_title: None,
+      feed_url: None,
       read: false,
     };
 
@@ -382,6 +384,7 @@ mod tests {
       links: vec![],
       media: Some("https://example.com/episode.mp3".to_string()),
       feed_title: None,
+      feed_url: None,
       read: false,
     };
 
@@ -403,6 +406,7 @@ mod tests {
       ],
       media: None,
       feed_title: None,
+      feed_url: None,
       read: false,
     };
 

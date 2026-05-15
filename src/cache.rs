@@ -251,6 +251,7 @@ impl FeedCache {
             links,
             media,
             feed_title: None,
+            feed_url: None,
             read: read != 0,
           })
         })?
@@ -384,6 +385,7 @@ mod tests {
       links: vec![format!("https://example.com/{}", title)],
       media: None,
       feed_title: None,
+      feed_url: None,
       read: false,
     }
   }

@@ -836,6 +836,7 @@ mod tests {
       links: vec![],
       media: None,
       feed_title: None,
+      feed_url: None,
       read,
     }
   }

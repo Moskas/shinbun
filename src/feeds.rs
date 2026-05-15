@@ -21,7 +21,8 @@ pub struct FeedEntry {
   pub text: String,
   pub links: Vec<String>,
   pub media: Option<String>,      // Media attachment URL if present
-  pub feed_title: Option<String>, // Source feed title (for query feeds)
+  pub feed_title: Option<String>, // Source feed title (for query feeds — display only)
+  pub feed_url: Option<String>,   // Source feed URL (for query feeds — used for reliable lookup)
   pub read: bool,                 // Whether this entry has been read
 }
 
@@ -186,6 +187,7 @@ pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {
         links,
         media,
         feed_title: None,
+        feed_url: None,
         read: false,
       }
     })

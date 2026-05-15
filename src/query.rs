@@ -62,9 +62,11 @@ pub fn apply_query(feeds: &[Feed], query: &str) -> Vec<FeedEntry> {
     .filter(|feed| feed_matches(feed, &filter))
     .flat_map(|feed| {
       let title = feed.title.clone();
+      let url = feed.url.clone();
       feed.entries.iter().map(move |entry| {
         let mut entry = entry.clone();
         entry.feed_title = Some(title.clone());
+        entry.feed_url = Some(url.clone());
         entry
       })
     })
@@ -257,6 +259,7 @@ mod tests {
             links: vec![],
             media: None,
             feed_title: None,
+            feed_url: None,
             read: false,
           },
           FeedEntry {
@@ -266,6 +269,7 @@ mod tests {
             links: vec![],
             media: None,
             feed_title: None,
+            feed_url: None,
             read: false,
           },
         ],
@@ -281,6 +285,7 @@ mod tests {
           links: vec![],
           media: None,
           feed_title: None,
+          feed_url: None,
           read: false,
         }],
         tags: Some(vec!["tech".to_string()]),
@@ -317,6 +322,7 @@ mod tests {
         links: vec![],
         media: None,
         feed_title: None,
+        feed_url: None,
         read: false,
       }],
       tags: Some(vec!["blog".to_string()]),
@@ -339,6 +345,7 @@ mod tests {
           links: vec![],
           media: None,
           feed_title: None,
+          feed_url: None,
           read: false,
         },
         FeedEntry {
@@ -348,6 +355,7 @@ mod tests {
           links: vec![],
           media: None,
           feed_title: None,
+          feed_url: None,
           read: false,
         },
       ],

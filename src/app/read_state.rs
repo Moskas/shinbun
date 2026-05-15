@@ -31,13 +31,14 @@ impl App {
         let entry = entries.get(entry_idx)?;
         let currently_read = entry.read;
 
-        // Locate the source feed by its title.
+        // Locate the source feed by its URL (unique) rather than title, so
+        // that two feeds with the same display name are distinguished correctly.
         // self.feeds is a different field from self.display_feeds → simultaneous
         // immutable borrows are permitted by the borrow checker.
         let feed_vec_idx = entry
-          .feed_title
+          .feed_url
           .as_deref()
-          .and_then(|ft| self.feeds.iter().position(|f| f.title == ft))?;
+          .and_then(|url| self.feeds.iter().position(|f| f.url == url))?;
 
         // Locate the raw entry by title + published date.
         let entry_title = entry.title.as_str();
@@ -72,7 +73,7 @@ impl App {
       entry.read = read;
     }
 
-    // 2. Borrow title/published from self.feeds for query-entry matching.
+    // 2. Borrow url/title/published from self.feeds for query-entry matching.
     //    self.display_feeds is a different field → the mutable borrow below is allowed.
     let Some(feed) = self.feeds.get(feed_vec_idx) else {
       return;
@@ -80,7 +81,7 @@ impl App {
     let Some(entry) = feed.entries.get(entry_vec_idx) else {
       return;
     };
-    let feed_title = feed.title.as_str();
+    let feed_url = feed.url.as_str();
     let entry_title = entry.title.as_str();
     let entry_published = entry.published.as_deref();
 
@@ -88,7 +89,7 @@ impl App {
     for df in self.display_feeds.iter_mut() {
       if let DisplayFeed::Query { entries, .. } = df {
         for qe in entries.iter_mut() {
-          if qe.feed_title.as_deref() == Some(feed_title)
+          if qe.feed_url.as_deref() == Some(feed_url)
             && qe.title == entry_title
             && qe.published.as_deref() == entry_published
           {
@@ -210,12 +211,9 @@ impl App {
           .entries(&self.feeds)
           .iter()
           .filter_map(|e| {
-            let feed_title = e.feed_title.as_deref()?;
-            let feed_url = self
-              .feeds
-              .iter()
-              .find(|f| f.title == feed_title)
-              .map(|f| f.url.clone())?;
+            // Use the stored feed URL directly — it's the unique identifier
+            // and avoids ambiguity when two feeds share the same display name.
+            let feed_url = e.feed_url.clone()?;
             Some((feed_url, e.title.clone(), e.published.clone()))
           })
           .collect();
