@@ -75,7 +75,6 @@ impl App {
     feed_tx: mpsc::UnboundedSender<FeedUpdate>,
     cache: FeedCache,
   ) -> Self {
-    let is_loading = feeds.is_empty();
     let display_feeds = Self::build_display_feeds(&feeds, &query_config);
     let hide_read = !ui_config.show_read_entries;
     let theme = Theme::from_config(&ui_config.theme);
@@ -101,11 +100,7 @@ impl App {
       ui_config,
       exit: false,
       feed_tx,
-      loading_state: if is_loading {
-        LoadingState::new()
-      } else {
-        LoadingState::idle()
-      },
+      loading_state: LoadingState::idle(),
       current_feed: None,
       feed_errors: Vec::new(),
       show_error_popup: false,
@@ -143,11 +138,19 @@ impl App {
   pub fn handle_feed_update(&mut self, update: FeedUpdate) {
     match update {
       FeedUpdate::Replace(new_feeds) => {
-        for feed in new_feeds.iter() {
-          self.loading_state.updated_feeds.push(feed.title.clone());
+        if self.loading_state.is_loading {
+          for feed in new_feeds.iter() {
+            self.loading_state.updated_feeds.push(feed.title.clone());
+          }
         }
         for (i, feed) in new_feeds.iter().enumerate() {
-          if let Err(e) = self.cache.save_feed(feed, i) {
+          let interval = self
+            .feed_config
+            .iter()
+            .find(|fc| fc.link == feed.url)
+            .and_then(|fc| fc.refresh.as_deref())
+            .and_then(crate::config::parse_refresh_interval);
+          if let Err(e) = self.cache.save_feed(feed, i, interval) {
             self.push_error(&feed.title, format!("Failed to cache: {}", e));
           }
         }
@@ -171,22 +174,35 @@ impl App {
           .iter()
           .position(|fc| fc.link == feed.url)
           .unwrap_or(0);
-        self.loading_state.updated_feeds.push(feed.title.clone());
-        if let Err(e) = self.cache.save_feed(&feed, pos) {
+        let interval = self
+          .feed_config
+          .iter()
+          .find(|fc| fc.link == feed.url)
+          .and_then(|fc| fc.refresh.as_deref())
+          .and_then(crate::config::parse_refresh_interval);
+        if self.loading_state.is_loading {
+          self.loading_state.updated_feeds.push(feed.title.clone());
+        }
+        if let Err(e) = self.cache.save_feed(&feed, pos, interval) {
           self.push_error(&feed.title, format!("Failed to cache: {}", e));
         }
         self.feeds = self.cache.load_all_feeds().unwrap_or_default();
         self.rebuild_display_feeds();
       }
 
+      FeedUpdate::SkippedFeed(name) => {
+        if self.loading_state.is_loading {
+          self.loading_state.skipped_feeds.push(name);
+        }
+      }
+
       FeedUpdate::FetchComplete => {
         self.feeds.clear();
         self.feeds = self.cache.load_all_feeds().unwrap_or_default();
-        if self.loading_state.is_initial_load {
-          self.loading_state.updated_feeds = self.feeds.iter().map(|f| f.title.clone()).collect();
-        }
         self.rebuild_display_feeds();
-        self.loading_state.stop();
+        if self.loading_state.is_loading {
+          self.loading_state.stop();
+        }
         self.current_feed = None;
       }
     }
@@ -1003,7 +1019,7 @@ mod tests {
     let cache = crate::cache::FeedCache::new_in_memory().unwrap();
 
     // Save the feed to the cache so mark_feed_read works
-    cache.save_feed(&feeds[0], 0).unwrap();
+    cache.save_feed(&feeds[0], 0, None).unwrap();
 
     let mut app = App::new(
       feeds,
@@ -1100,7 +1116,7 @@ mod tests {
     )];
     let (tx, _rx) = mpsc::unbounded_channel();
     let cache = crate::cache::FeedCache::new_in_memory().unwrap();
-    cache.save_feed(&feeds[0], 0).unwrap();
+    cache.save_feed(&feeds[0], 0, None).unwrap();
 
     let mut app = App::new(
       feeds,
@@ -1144,7 +1160,7 @@ mod tests {
     )];
     let (tx, _rx) = mpsc::unbounded_channel();
     let cache = crate::cache::FeedCache::new_in_memory().unwrap();
-    cache.save_feed(&feeds[0], 0).unwrap();
+    cache.save_feed(&feeds[0], 0, None).unwrap();
 
     let mut app = App::new(
       feeds,

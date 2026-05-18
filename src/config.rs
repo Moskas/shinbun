@@ -42,6 +42,26 @@ pub struct Feed {
   pub link: String,
   pub name: Option<String>,
   pub tags: Option<Vec<String>>,
+  /// Optional refresh interval: "1h", "3d", "1w", etc.
+  /// When set, the feed is re-fetched at startup if the interval has elapsed
+  /// since the last successful fetch stored in the cache.
+  pub refresh: Option<String>,
+}
+
+/// Parse a human-readable refresh interval string into a number of seconds.
+/// Supported suffixes: `h` (hours), `d` (days), `w` (weeks).
+/// Returns `None` for an unrecognised format.
+pub fn parse_refresh_interval(s: &str) -> Option<u64> {
+  let s = s.trim();
+  let split_at = s.find(|c: char| c.is_alphabetic())?;
+  let (num_str, unit) = s.split_at(split_at);
+  let n: u64 = num_str.trim().parse().ok()?;
+  match unit {
+    "h" => Some(n * 3600),
+    "d" => Some(n * 86400),
+    "w" => Some(n * 7 * 86400),
+    _ => None,
+  }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -206,6 +226,20 @@ pub fn write_feeds(feeds: &[Feed]) -> std::io::Result<()> {
 mod tests {
   use super::*;
   use std::io;
+
+  #[test]
+  fn test_parse_refresh_interval() {
+    assert_eq!(super::parse_refresh_interval("1h"), Some(3600));
+    assert_eq!(super::parse_refresh_interval("3h"), Some(10800));
+    assert_eq!(super::parse_refresh_interval("1d"), Some(86400));
+    assert_eq!(super::parse_refresh_interval("3d"), Some(259200));
+    assert_eq!(super::parse_refresh_interval("1w"), Some(604800));
+    assert_eq!(super::parse_refresh_interval("2w"), Some(1209600));
+    assert_eq!(super::parse_refresh_interval("  6h  "), Some(21600));
+    assert_eq!(super::parse_refresh_interval("bad"), None);
+    assert_eq!(super::parse_refresh_interval("1x"), None);
+    assert_eq!(super::parse_refresh_interval(""), None);
+  }
 
   #[test]
   fn test_config_error_not_found_display() {

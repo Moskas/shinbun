@@ -7,6 +7,7 @@ pub struct LoadingState {
   pub is_initial_load: bool,
   pub finish_time: Option<Instant>,
   pub updated_feeds: Vec<String>,
+  pub skipped_feeds: Vec<String>,
 }
 
 impl LoadingState {
@@ -17,6 +18,7 @@ impl LoadingState {
       start_time: Instant::now(),
       finish_time: None,
       updated_feeds: Vec::new(),
+      skipped_feeds: Vec::new(),
     }
   }
 
@@ -33,6 +35,7 @@ impl LoadingState {
     self.start_time = Instant::now();
     self.finish_time = None;
     self.updated_feeds.clear();
+    self.skipped_feeds.clear();
   }
 
   pub fn stop(&mut self) {

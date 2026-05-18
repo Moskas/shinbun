@@ -722,9 +722,9 @@ fn render_loading_popup(
   current_feed: Option<&str>,
   theme: &Theme,
 ) {
-  let status_line = if loading_state.is_loading {
+  let (border_style, status_line) = if loading_state.is_loading {
     let spinner = loading_state.spinner_frame();
-    if let Some(feed_name) = current_feed {
+    let text = if let Some(feed_name) = current_feed {
       let display_name = if feed_name.len() > 28 {
         let truncated: String = feed_name.chars().take(25).collect();
         format!("{}...", truncated)
@@ -739,17 +739,37 @@ fn render_loading_popup(
       } else {
         format!(" {} Loading... ", spinner)
       }
-    }
-  } else if loading_state.is_initial_load {
-    format!(" ✓ {} feeds loaded ", loading_state.updated_feeds.len())
+    };
+    let style = Style::new().fg(theme.loading_border);
+    (style, Line::from(Span::styled(text, style)))
   } else {
-    match loading_state.updated_feeds.len() {
-      0 => " ✓ Updated ".to_string(),
-      1 => format!(" ✓ {} updated ", loading_state.updated_feeds[0]),
-      n => format!(" ✓ {} feeds updated ", n),
-    }
+    let done_style = Style::new().fg(theme.loading_done_border);
+    let skip_style = Style::new().fg(Color::Yellow);
+    let n_skipped = loading_state.skipped_feeds.len();
+
+    let main_text = if loading_state.is_initial_load {
+      format!(" ✓ {} feeds loaded", loading_state.updated_feeds.len())
+    } else {
+      match loading_state.updated_feeds.len() {
+        0 => " ✓ Updated".to_string(),
+        1 => format!(" ✓ {} updated", loading_state.updated_feeds[0]),
+        n => format!(" ✓ {} feeds updated", n),
+      }
+    };
+
+    let line = if n_skipped > 0 {
+      Line::from(vec![
+        Span::styled(main_text, done_style),
+        Span::styled(format!(", {} skipped ", n_skipped), skip_style),
+      ])
+    } else {
+      Line::from(Span::styled(format!("{} ", main_text), done_style))
+    };
+    (done_style, line)
   };
-  let popup_width = (status_line.len() as u16 + 2).min(area.width.saturating_sub(2));
+
+  let text_width: usize = status_line.spans.iter().map(|s| s.content.len()).sum();
+  let popup_width = (text_width as u16 + 2).min(area.width.saturating_sub(2));
   let popup_height = 3u16;
   let popup_x = area.x + area.width.saturating_sub(popup_width + 1);
   let popup_y = area.y + 1;
@@ -763,19 +783,7 @@ fn render_loading_popup(
 
   Clear.render(popup_area, frame.buffer_mut());
 
-  let (border_style, text_style) = if loading_state.is_loading {
-    (
-      Style::new().fg(theme.loading_border),
-      Style::new().fg(theme.loading_border),
-    )
-  } else {
-    (
-      Style::new().fg(theme.loading_done_border),
-      Style::new().fg(theme.loading_done_border),
-    )
-  };
-
-  let popup = Paragraph::new(Line::from(status_line).style(text_style)).block(
+  let popup = Paragraph::new(status_line).block(
     Block::default()
       .borders(Borders::ALL)
       .border_style(border_style)

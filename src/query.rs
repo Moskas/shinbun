@@ -375,6 +375,7 @@ mod tests {
       link: "https://example.com".to_string(),
       name: None,
       tags: None,
+      refresh: None,
     };
     assert!(config_feed_matches(&fc, &QueryFilter::All));
   }
@@ -385,6 +386,7 @@ mod tests {
       link: "https://example.com".to_string(),
       name: None,
       tags: Some(vec!["rust".to_string(), "dev".to_string()]),
+      refresh: None,
     };
     let filter = QueryFilter::Tags(vec!["rust".to_string()]);
     assert!(config_feed_matches(&fc, &filter));
@@ -399,6 +401,7 @@ mod tests {
       link: "https://example.com".to_string(),
       name: None,
       tags: None,
+      refresh: None,
     };
     let filter = QueryFilter::Tags(vec!["rust".to_string()]);
     assert!(!config_feed_matches(&fc, &filter));
@@ -410,6 +413,7 @@ mod tests {
       link: "https://example.com".to_string(),
       name: None,
       tags: Some(vec!["rust".to_string()]),
+      refresh: None,
     };
     let filter = QueryFilter::Tags(vec![]);
     assert!(!config_feed_matches(&fc, &filter));

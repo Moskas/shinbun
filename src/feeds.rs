@@ -286,6 +286,7 @@ mod tests {
       link: "https://example.com/feed.xml".to_string(),
       name: None,
       tags: Some(vec!["blog".to_string()]),
+      refresh: None,
     };
 
     let feed = parse_single_feed(config, atom_xml).unwrap();
@@ -317,6 +318,7 @@ mod tests {
       link: "https://example.com/rss".to_string(),
       name: None,
       tags: None,
+      refresh: None,
     };
 
     let feed = parse_single_feed(config, rss_xml).unwrap();
@@ -336,6 +338,7 @@ mod tests {
       link: "https://example.com/feed.xml".to_string(),
       name: Some("My Custom Name".to_string()),
       tags: None,
+      refresh: None,
     };
 
     let feed = parse_single_feed(config, atom_xml).unwrap();
@@ -354,6 +357,7 @@ mod tests {
       link: "https://example.com/notitle".to_string(),
       name: None,
       tags: None,
+      refresh: None,
     };
 
     let feed = parse_single_feed(config, atom_xml).unwrap();
@@ -366,6 +370,7 @@ mod tests {
       link: "https://example.com/bad".to_string(),
       name: None,
       tags: None,
+      refresh: None,
     };
 
     let result = parse_single_feed(config, "not xml at all");
@@ -386,6 +391,7 @@ mod tests {
       link: "https://example.com/feed.xml".to_string(),
       name: None,
       tags: None,
+      refresh: None,
     };
 
     let feed = parse_single_feed(config, atom_xml).unwrap();
@@ -427,6 +433,7 @@ Join the Discord: https://discord.gg/aWa84VVcTA</media:description>
       link: "https://www.youtube.com/feeds/videos.xml".to_string(),
       name: None,
       tags: None,
+      refresh: None,
     };
 
     let feed = parse_single_feed(config, youtube_xml).unwrap();

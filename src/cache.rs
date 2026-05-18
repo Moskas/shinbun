@@ -1,5 +1,5 @@
 use crate::feeds::{Feed, FeedEntry};
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Connection, OptionalExtension, Result};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -33,7 +33,8 @@ impl FeedCache {
         title TEXT NOT NULL,
         last_fetched INTEGER NOT NULL,
         tags TEXT,
-        position INTEGER NOT NULL DEFAULT 0
+        position INTEGER NOT NULL DEFAULT 0,
+        refresh_interval_secs INTEGER
       )",
       [],
     )?;
@@ -70,6 +71,23 @@ impl FeedCache {
       )?;
     }
 
+    // Migrate existing databases that may lack the refresh_interval_secs column
+    let has_refresh_col: bool = conn
+      .query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('feeds') WHERE name = 'refresh_interval_secs'",
+        [],
+        |row| row.get::<_, i64>(0),
+      )
+      .unwrap_or(0)
+      > 0;
+
+    if !has_refresh_col {
+      conn.execute(
+        "ALTER TABLE feeds ADD COLUMN refresh_interval_secs INTEGER",
+        [],
+      )?;
+    }
+
     conn.execute("CREATE INDEX IF NOT EXISTS idx_feed_url ON feeds(url)", [])?;
 
     // Unique index that drives incremental upserts in save_feed.
@@ -94,25 +112,34 @@ impl FeedCache {
   ///   the user never loses history or read state.
   /// - All entry upserts are wrapped in a single transaction so the operation
   ///   is both atomic and fast (one fsync instead of one per entry).
-  pub fn save_feed(&self, feed: &Feed, position: usize) -> Result<()> {
+  /// - `refresh_interval_secs`: when `Some`, stored so startup can decide
+  ///   whether the feed is due for re-fetching.
+  pub fn save_feed(
+    &self,
+    feed: &Feed,
+    position: usize,
+    refresh_interval_secs: Option<u64>,
+  ) -> Result<()> {
     let now = chrono::Utc::now().timestamp();
     let tags_json = feed
       .tags
       .as_ref()
       .map(|t| serde_json::to_string(t).unwrap_or_default());
+    let interval = refresh_interval_secs.map(|s| s as i64);
 
     // Upsert the feed row and retrieve its id in a single round-trip using
     // RETURNING (available since SQLite 3.35.0, released March 2021).
     let feed_id: i64 = self.conn.query_row(
-      "INSERT INTO feeds (url, title, last_fetched, tags, position)
-       VALUES (?1, ?2, ?3, ?4, ?5)
+      "INSERT INTO feeds (url, title, last_fetched, tags, position, refresh_interval_secs)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6)
        ON CONFLICT(url) DO UPDATE SET
-         title        = excluded.title,
-         last_fetched = excluded.last_fetched,
-         tags         = excluded.tags,
-         position     = excluded.position
+         title                 = excluded.title,
+         last_fetched          = excluded.last_fetched,
+         tags                  = excluded.tags,
+         position              = excluded.position,
+         refresh_interval_secs = excluded.refresh_interval_secs
        RETURNING id",
-      params![feed.url, feed.title, now, tags_json, position as i64],
+      params![feed.url, feed.title, now, tags_json, position as i64, interval],
       |row| row.get(0),
     )?;
 
@@ -268,6 +295,19 @@ impl FeedCache {
     Ok(feeds)
   }
 
+  /// Return the unix timestamp of the last successful fetch for `url`,
+  /// or `None` if the feed is not in the cache.
+  pub fn get_last_fetched(&self, url: &str) -> Result<Option<i64>> {
+    self
+      .conn
+      .query_row(
+        "SELECT last_fetched FROM feeds WHERE url = ?1",
+        params![url],
+        |row| row.get(0),
+      )
+      .optional()
+  }
+
   /// Check if a feed exists in cache
   pub fn has_feed(&self, url: &str) -> Result<bool> {
     let count: i64 = self.conn.query_row(
@@ -409,7 +449,7 @@ mod tests {
       ],
     );
 
-    cache.save_feed(&feed, 0).unwrap();
+    cache.save_feed(&feed, 0, None).unwrap();
     let feeds = cache.load_all_feeds().unwrap();
     assert_eq!(feeds.len(), 1);
     assert_eq!(feeds[0].title, "Example Feed");
@@ -426,7 +466,7 @@ mod tests {
     let mut feed = make_feed("https://example.com/rss", "Tagged Feed", vec![]);
     feed.tags = Some(vec!["blog".to_string(), "tech".to_string()]);
 
-    cache.save_feed(&feed, 0).unwrap();
+    cache.save_feed(&feed, 0, None).unwrap();
     let feeds = cache.load_all_feeds().unwrap();
     assert_eq!(feeds[0].tags.as_ref().unwrap().len(), 2);
     assert!(feeds[0]
@@ -445,10 +485,10 @@ mod tests {
   fn test_save_feed_upsert_updates_title() {
     let cache = FeedCache::new_in_memory().unwrap();
     let feed1 = make_feed("https://example.com/rss", "Old Title", vec![]);
-    cache.save_feed(&feed1, 0).unwrap();
+    cache.save_feed(&feed1, 0, None).unwrap();
 
     let feed2 = make_feed("https://example.com/rss", "New Title", vec![]);
-    cache.save_feed(&feed2, 0).unwrap();
+    cache.save_feed(&feed2, 0, None).unwrap();
 
     let feeds = cache.load_all_feeds().unwrap();
     assert_eq!(feeds.len(), 1);
@@ -463,7 +503,7 @@ mod tests {
       "Feed",
       vec![make_entry("Post 1", Some("2024-01-01T00:00:00Z"))],
     );
-    cache.save_feed(&feed, 0).unwrap();
+    cache.save_feed(&feed, 0, None).unwrap();
 
     // Mark the entry as read
     cache
@@ -475,7 +515,7 @@ mod tests {
       .unwrap();
 
     // Re-save the feed (simulating a refresh)
-    cache.save_feed(&feed, 0).unwrap();
+    cache.save_feed(&feed, 0, None).unwrap();
 
     // Entry should still be read
     let feeds = cache.load_all_feeds().unwrap();
@@ -490,7 +530,7 @@ mod tests {
       "Feed",
       vec![make_entry("Post 1", Some("2024-01-01T00:00:00Z"))],
     );
-    cache.save_feed(&feed, 0).unwrap();
+    cache.save_feed(&feed, 0, None).unwrap();
 
     // Initially unread
     let feeds = cache.load_all_feeds().unwrap();
@@ -527,7 +567,7 @@ mod tests {
       "Feed",
       vec![make_entry("Post No Date", None)],
     );
-    cache.save_feed(&feed, 0).unwrap();
+    cache.save_feed(&feed, 0, None).unwrap();
 
     cache
       .mark_entry_read("https://example.com/rss", "Post No Date", None)
@@ -542,7 +582,7 @@ mod tests {
     assert!(!cache.has_feed("https://example.com/rss").unwrap());
 
     let feed = make_feed("https://example.com/rss", "Feed", vec![]);
-    cache.save_feed(&feed, 0).unwrap();
+    cache.save_feed(&feed, 0, None).unwrap();
 
     assert!(cache.has_feed("https://example.com/rss").unwrap());
     assert!(!cache.has_feed("https://other.com/rss").unwrap());
@@ -554,9 +594,9 @@ mod tests {
     let feed_a = make_feed("https://a.com/rss", "Feed A", vec![make_entry("A1", None)]);
     let feed_b = make_feed("https://b.com/rss", "Feed B", vec![make_entry("B1", None)]);
     let feed_c = make_feed("https://c.com/rss", "Feed C", vec![]);
-    cache.save_feed(&feed_a, 0).unwrap();
-    cache.save_feed(&feed_b, 1).unwrap();
-    cache.save_feed(&feed_c, 2).unwrap();
+    cache.save_feed(&feed_a, 0, None).unwrap();
+    cache.save_feed(&feed_b, 1, None).unwrap();
+    cache.save_feed(&feed_c, 2, None).unwrap();
 
     // Keep only A and C
     let removed = cache
@@ -580,7 +620,7 @@ mod tests {
       "Feed",
       vec![make_entry("Post 1", None)],
     );
-    cache.save_feed(&feed, 0).unwrap();
+    cache.save_feed(&feed, 0, None).unwrap();
 
     let removed = cache.remove_dead_feeds(&[]).unwrap();
     assert_eq!(removed, 1);
@@ -597,9 +637,9 @@ mod tests {
     let feed_c = make_feed("https://c.com/rss", "Feed C", vec![]);
 
     // Save in reverse position order
-    cache.save_feed(&feed_c, 2).unwrap();
-    cache.save_feed(&feed_a, 0).unwrap();
-    cache.save_feed(&feed_b, 1).unwrap();
+    cache.save_feed(&feed_c, 2, None).unwrap();
+    cache.save_feed(&feed_a, 0, None).unwrap();
+    cache.save_feed(&feed_b, 1, None).unwrap();
 
     let feeds = cache.load_all_feeds().unwrap();
     assert_eq!(feeds[0].title, "Feed A");
@@ -614,7 +654,7 @@ mod tests {
     entry.media = Some("https://example.com/podcast.mp3".to_string());
 
     let feed = make_feed("https://example.com/rss", "Feed", vec![entry]);
-    cache.save_feed(&feed, 0).unwrap();
+    cache.save_feed(&feed, 0, None).unwrap();
 
     let feeds = cache.load_all_feeds().unwrap();
     assert_eq!(
@@ -633,7 +673,7 @@ mod tests {
     ];
 
     let feed = make_feed("https://example.com/rss", "Feed", vec![entry]);
-    cache.save_feed(&feed, 0).unwrap();
+    cache.save_feed(&feed, 0, None).unwrap();
 
     let feeds = cache.load_all_feeds().unwrap();
     assert_eq!(feeds[0].entries[0].links.len(), 2);
@@ -649,7 +689,7 @@ mod tests {
       "Feed",
       vec![make_entry("Post 1", Some("2024-01-01T00:00:00Z"))],
     );
-    cache.save_feed(&feed1, 0).unwrap();
+    cache.save_feed(&feed1, 0, None).unwrap();
 
     // Second save adds a new entry, keeps the old one
     let feed2 = make_feed(
@@ -660,7 +700,7 @@ mod tests {
         make_entry("Post 2", Some("2024-02-01T00:00:00Z")),
       ],
     );
-    cache.save_feed(&feed2, 0).unwrap();
+    cache.save_feed(&feed2, 0, None).unwrap();
 
     let feeds = cache.load_all_feeds().unwrap();
     assert_eq!(feeds[0].entries.len(), 2);
@@ -677,7 +717,7 @@ mod tests {
         make_entry("Post 2", Some("2024-02-01T00:00:00Z")),
       ],
     );
-    cache.save_feed(&feed1, 0).unwrap();
+    cache.save_feed(&feed1, 0, None).unwrap();
 
     // Second save only has Post 2 (Post 1 aged out of remote feed)
     let feed2 = make_feed(
@@ -685,7 +725,7 @@ mod tests {
       "Feed",
       vec![make_entry("Post 2", Some("2024-02-01T00:00:00Z"))],
     );
-    cache.save_feed(&feed2, 0).unwrap();
+    cache.save_feed(&feed2, 0, None).unwrap();
 
     // Post 1 should still be in the cache
     let feeds = cache.load_all_feeds().unwrap();
@@ -704,7 +744,7 @@ mod tests {
         make_entry("Post 3", None),
       ],
     );
-    cache.save_feed(&feed, 0).unwrap();
+    cache.save_feed(&feed, 0, None).unwrap();
 
     // Initially all unread
     let feeds = cache.load_all_feeds().unwrap();

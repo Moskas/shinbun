@@ -132,13 +132,27 @@ async fn main() -> io::Result<()> {
   // Load cached feeds (already sorted by position)
   let cached_feeds = cache.load_all_feeds().unwrap_or_default();
 
-  // Determine which feeds need to be fetched
+  // Determine which feeds need to be fetched:
+  // - new feeds not yet in the cache
+  // - feeds whose configured refresh interval has elapsed since last fetch
+  let now = chrono::Utc::now().timestamp();
   let feeds_to_fetch: Vec<_> = config
     .feeds
     .iter()
     .filter(|feed_config| {
-      // Fetch if not in cache
-      !cache.has_feed(&feed_config.link).unwrap_or(false)
+      if !cache.has_feed(&feed_config.link).unwrap_or(false) {
+        return true;
+      }
+      if let Some(interval_secs) = feed_config
+        .refresh
+        .as_deref()
+        .and_then(config::parse_refresh_interval)
+      {
+        if let Ok(Some(last_fetched)) = cache.get_last_fetched(&feed_config.link) {
+          return (now - last_fetched) >= interval_secs as i64;
+        }
+      }
+      false
     })
     .cloned()
     .collect();
@@ -146,7 +160,23 @@ async fn main() -> io::Result<()> {
   // Create channel for feed updates
   let (feed_tx, feed_rx) = mpsc::unbounded_channel();
 
-  // Start background fetch for missing feeds
+  // Notify the TUI about feeds intentionally skipped (have a refresh interval that hasn't elapsed)
+  for feed_config in &config.feeds {
+    if feed_config.refresh.is_none() {
+      continue;
+    }
+    let in_cache = cache.has_feed(&feed_config.link).unwrap_or(false);
+    let is_being_fetched = feeds_to_fetch.iter().any(|f| f.link == feed_config.link);
+    if in_cache && !is_being_fetched {
+      let name = feed_config
+        .name
+        .clone()
+        .unwrap_or_else(|| feed_config.link.clone());
+      let _ = feed_tx.send(FeedUpdate::SkippedFeed(name));
+    }
+  }
+
+  // Start background fetch for missing/due feeds
   if !feeds_to_fetch.is_empty() {
     let tx = feed_tx.clone();
     tokio::spawn(async move {
@@ -359,8 +389,37 @@ async fn cmd_refresh(quiet: bool) -> io::Result<()> {
     let _ = cache.remove_dead_feeds(&active_urls);
   }
 
-  let total = config.feeds.len();
-  let feed_config = config.feeds.clone();
+  // Split feeds into those due for refresh and those whose interval has not elapsed
+  let now = chrono::Utc::now().timestamp();
+  let (feeds_to_fetch, feeds_to_skip): (Vec<_>, Vec<_>) =
+    config.feeds.iter().partition(|feed_config| {
+      if !cache.has_feed(&feed_config.link).unwrap_or(false) {
+        return true;
+      }
+      if let Some(interval_secs) = feed_config
+        .refresh
+        .as_deref()
+        .and_then(config::parse_refresh_interval)
+      {
+        if let Ok(Some(last_fetched)) = cache.get_last_fetched(&feed_config.link) {
+          return (now - last_fetched) >= interval_secs as i64;
+        }
+      }
+      true // no interval set: always refresh
+    });
+
+  if !quiet {
+    for feed_config in &feeds_to_skip {
+      let name = feed_config
+        .name
+        .as_deref()
+        .unwrap_or(&feed_config.link);
+      colored_out(&format!("Skipped: {}", name), Color::DarkYellow, color);
+    }
+  }
+
+  let total = feeds_to_fetch.len();
+  let feed_config: Vec<_> = feeds_to_fetch.into_iter().cloned().collect();
   let (tx, mut rx) = mpsc::unbounded_channel::<FeedUpdate>();
 
   tokio::spawn(async move {
@@ -381,7 +440,13 @@ async fn cmd_refresh(quiet: bool) -> io::Result<()> {
           .iter()
           .position(|fc| fc.link == feed.url)
           .unwrap_or(0);
-        match cache.save_feed(&feed, pos) {
+        let interval = config
+          .feeds
+          .iter()
+          .find(|fc| fc.link == feed.url)
+          .and_then(|fc| fc.refresh.as_deref())
+          .and_then(config::parse_refresh_interval);
+        match cache.save_feed(&feed, pos, interval) {
           Ok(_) => {
             if !quiet {
               colored_out(&format!("  OK: {}", feed.title), Color::DarkGreen, color);
@@ -419,6 +484,14 @@ async fn cmd_refresh(quiet: bool) -> io::Result<()> {
     Color::DarkGreen,
     color,
   );
+  if feeds_to_skip.len() > 0 {
+    print!(", ");
+    colored_segment(
+      &format!("{} skipped", feeds_to_skip.len()),
+      Color::DarkYellow,
+      color,
+    );
+  }
   if errors > 0 {
     print!(", ");
     colored_segment(&format!("{} error(s)", errors), Color::DarkRed, color);

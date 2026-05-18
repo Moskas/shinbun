@@ -101,7 +101,12 @@ fn parse_outline(e: &BytesStart<'_>, folder_tag: Option<&str>) -> Option<Feed> {
     })
     .filter(|t| !t.is_empty())
     .or_else(|| folder_tag.map(|t| vec![t.to_string()]));
-  Some(Feed { link, name, tags })
+  Some(Feed {
+    link,
+    name,
+    tags,
+    refresh: None,
+  })
 }
 
 #[cfg(test)]
@@ -115,11 +120,13 @@ mod tests {
         link: "https://blog.rust-lang.org/feed.xml".into(),
         name: Some("Rust Blog".into()),
         tags: Some(vec!["tech".into(), "rust".into()]),
+        refresh: None,
       },
       Feed {
         link: "https://news.ycombinator.com/rss".into(),
         name: Some("Hacker News".into()),
         tags: None,
+        refresh: None,
       },
     ];
 

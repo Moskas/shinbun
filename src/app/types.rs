@@ -64,6 +64,8 @@ pub enum FeedUpdate {
     name: String,
     error: String,
   },
+  /// A feed was intentionally skipped because its refresh interval has not elapsed
+  SkippedFeed(String),
   /// All feeds finished fetching — reload from cache now
   FetchComplete,
 }
