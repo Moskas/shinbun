@@ -139,7 +139,14 @@ impl FeedCache {
          position              = excluded.position,
          refresh_interval_secs = excluded.refresh_interval_secs
        RETURNING id",
-      params![feed.url, feed.title, now, tags_json, position as i64, interval],
+      params![
+        feed.url,
+        feed.title,
+        now,
+        tags_json,
+        position as i64,
+        interval
+      ],
       |row| row.get(0),
     )?;
 

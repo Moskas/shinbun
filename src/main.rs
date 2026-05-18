@@ -410,10 +410,7 @@ async fn cmd_refresh(quiet: bool) -> io::Result<()> {
 
   if !quiet {
     for feed_config in &feeds_to_skip {
-      let name = feed_config
-        .name
-        .as_deref()
-        .unwrap_or(&feed_config.link);
+      let name = feed_config.name.as_deref().unwrap_or(&feed_config.link);
       colored_out(&format!("Skipped: {}", name), Color::DarkYellow, color);
     }
   }
@@ -484,7 +481,7 @@ async fn cmd_refresh(quiet: bool) -> io::Result<()> {
     Color::DarkGreen,
     color,
   );
-  if feeds_to_skip.len() > 0 {
+  if !feeds_to_skip.is_empty() {
     print!(", ");
     colored_segment(
       &format!("{} skipped", feeds_to_skip.len()),
