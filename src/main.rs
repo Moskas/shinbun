@@ -209,33 +209,47 @@ fn run_app(
   app: &mut App,
   mut feed_rx: mpsc::UnboundedReceiver<FeedUpdate>,
 ) -> io::Result<()> {
+  // Tracks whether the previous iteration showed the loading popup, so we can
+  // force one final render after the 3-second linger expires — otherwise the
+  // popup would remain visible on screen forever.
+  let mut prev_popup_showing = true;
+
   while !app.should_exit() {
     // Process pending feed updates first (may set app.dirty)
     while let Ok(update) = feed_rx.try_recv() {
       app.handle_feed_update(update);
     }
 
-    // Only render when something changed or a time-based animation is active
-    // (loading spinner, 3-second linger popup).  When idle this check avoids
-    // the expensive terminal.draw() call — the main CPU consumer — entirely.
-    let needs_render = app.dirty || app.loading_state.should_show_popup();
+    let popup_showing = app.loading_state.should_show_popup();
+
+    // Only render when:
+    //   - state changed (keypress, feed update, resize)
+    //   - a time-based animation is running (spinner, 3-second linger)
+    //   - the linger popup just expired and needs a cleanup frame
+    let needs_render = app.dirty || popup_showing || prev_popup_showing;
     if needs_render {
       terminal.draw(|frame| app.render(frame))?;
       app.dirty = false;
     }
+    prev_popup_showing = popup_showing;
 
     // Poll for key events.  Shorter timeout during animation so the spinner
     // updates smoothly; longer timeout when idle to reduce wake-ups.
-    let timeout = if app.loading_state.should_show_popup() {
+    let timeout = if popup_showing {
       Duration::from_millis(50)
     } else {
       Duration::from_millis(200)
     };
     if poll(timeout)? {
-      if let Event::Key(key) = event::read()? {
-        if key.kind == KeyEventKind::Press {
+      match event::read()? {
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
           app.handle_key(key);
         }
+        Event::Resize(_, _) => {
+          // Terminal resized — need a redraw on the next iteration.
+          app.dirty = true;
+        }
+        _ => {}
       }
     }
   }
