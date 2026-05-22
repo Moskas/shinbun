@@ -210,17 +210,28 @@ fn run_app(
   mut feed_rx: mpsc::UnboundedReceiver<FeedUpdate>,
 ) -> io::Result<()> {
   while !app.should_exit() {
-    terminal.draw(|frame| app.render(frame))?;
-
-    // Check for feed updates (non-blocking)
+    // Process pending feed updates first (may set app.dirty)
     while let Ok(update) = feed_rx.try_recv() {
       app.handle_feed_update(update);
     }
 
-    // Poll for key events with a short timeout to allow:
-    // - Feed updates to be processed
-    // - Spinner animation to update smoothly
-    if poll(Duration::from_millis(50))? {
+    // Only render when something changed or a time-based animation is active
+    // (loading spinner, 3-second linger popup).  When idle this check avoids
+    // the expensive terminal.draw() call — the main CPU consumer — entirely.
+    let needs_render = app.dirty || app.loading_state.should_show_popup();
+    if needs_render {
+      terminal.draw(|frame| app.render(frame))?;
+      app.dirty = false;
+    }
+
+    // Poll for key events.  Shorter timeout during animation so the spinner
+    // updates smoothly; longer timeout when idle to reduce wake-ups.
+    let timeout = if app.loading_state.should_show_popup() {
+      Duration::from_millis(50)
+    } else {
+      Duration::from_millis(200)
+    };
+    if poll(timeout)? {
       if let Event::Key(key) = event::read()? {
         if key.kind == KeyEventKind::Press {
           app.handle_key(key);
@@ -432,17 +443,21 @@ async fn cmd_refresh(quiet: bool) -> io::Result<()> {
         colored_out(&format!("Fetching: {}", name), Color::DarkCyan, color);
       }
       FeedUpdate::UpdateSingle(feed) => {
-        let pos = config
+        let (pos, interval) = config
           .feeds
           .iter()
-          .position(|fc| fc.link == feed.url)
-          .unwrap_or(0);
-        let interval = config
-          .feeds
-          .iter()
-          .find(|fc| fc.link == feed.url)
-          .and_then(|fc| fc.refresh.as_deref())
-          .and_then(config::parse_refresh_interval);
+          .enumerate()
+          .find(|(_, fc)| fc.link == feed.url)
+          .map(|(pos, fc)| {
+            (
+              pos,
+              fc
+                .refresh
+                .as_deref()
+                .and_then(config::parse_refresh_interval),
+            )
+          })
+          .unwrap_or((0, None));
         match cache.save_feed(&feed, pos, interval) {
           Ok(_) => {
             if !quiet {

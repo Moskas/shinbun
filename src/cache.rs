@@ -302,6 +302,74 @@ impl FeedCache {
     Ok(feeds)
   }
 
+  /// Load a single feed by its URL.
+  pub fn load_feed_by_url(&self, url: &str) -> Result<Option<Feed>> {
+    let feed_row = self
+      .conn
+      .query_row(
+        "SELECT id, url, title, tags FROM feeds WHERE url = ?1",
+        params![url],
+        |row| {
+          Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+          ))
+        },
+      )
+      .optional()?;
+
+    let Some((feed_id, url, title, tags_json)) = feed_row else {
+      return Ok(None);
+    };
+
+    let tags = tags_json.and_then(|json| serde_json::from_str(&json).ok());
+
+    let mut entry_stmt = self.conn.prepare(
+      "SELECT title, published, text, links, media, read
+       FROM entries
+       WHERE feed_id = ?1
+       ORDER BY published DESC",
+    )?;
+
+    let entries = entry_stmt
+      .query_map(params![feed_id], |row| {
+        let title: String = row.get(0)?;
+        let published: Option<String> = row.get(1)?;
+        let text: String = row.get(2)?;
+        let links_json: String = row.get(3)?;
+        let media_str: String = row.get(4)?;
+        let read: i64 = row.get(5)?;
+
+        let links: Vec<String> = serde_json::from_str(&links_json).unwrap_or_default();
+        let media = if media_str.is_empty() {
+          None
+        } else {
+          Some(media_str)
+        };
+
+        Ok(FeedEntry {
+          title,
+          published,
+          text,
+          links,
+          media,
+          feed_title: None,
+          feed_url: None,
+          read: read != 0,
+        })
+      })?
+      .collect::<Result<Vec<_>>>()?;
+
+    Ok(Some(Feed {
+      url,
+      title,
+      entries,
+      tags,
+    }))
+  }
+
   /// Return the unix timestamp of the last successful fetch for `url`,
   /// or `None` if the feed is not in the cache.
   pub fn get_last_fetched(&self, url: &str) -> Result<Option<i64>> {

@@ -63,6 +63,10 @@ pub struct App {
   /// Cached visible (unfiltered) entry indices for the currently selected feed.
   /// Invalidated whenever `hide_read`, `feed_index`, or entry data changes.
   pub(crate) visible_indices_cache: Vec<usize>,
+  /// Tracks whether the display state has changed since the last render.
+  /// When `false` and no animation is running, the main loop can skip
+  /// the expensive `terminal.draw()` call to save CPU.
+  pub(crate) dirty: bool,
 }
 
 impl App {
@@ -120,6 +124,7 @@ impl App {
       theme,
       active_tag_query: None,
       visible_indices_cache: Vec::new(),
+      dirty: true,
     }
   }
 
@@ -136,6 +141,7 @@ impl App {
   }
 
   pub fn handle_feed_update(&mut self, update: FeedUpdate) {
+    self.dirty = true;
     match update {
       FeedUpdate::Replace(new_feeds) => {
         if self.loading_state.is_loading {
@@ -144,12 +150,10 @@ impl App {
           }
         }
         for (i, feed) in new_feeds.iter().enumerate() {
-          let interval = self
-            .feed_config
-            .iter()
-            .find(|fc| fc.link == feed.url)
-            .and_then(|fc| fc.refresh.as_deref())
-            .and_then(crate::config::parse_refresh_interval);
+          let interval = Self::feed_config_interval(
+            &self.feed_config,
+            &feed.url,
+          );
           if let Err(e) = self.cache.save_feed(feed, i, interval) {
             self.push_error(&feed.title, format!("Failed to cache: {}", e));
           }
@@ -169,24 +173,39 @@ impl App {
       }
 
       FeedUpdate::UpdateSingle(feed) => {
-        let pos = self
+        let (pos, interval) = self
           .feed_config
           .iter()
-          .position(|fc| fc.link == feed.url)
-          .unwrap_or(0);
-        let interval = self
-          .feed_config
-          .iter()
-          .find(|fc| fc.link == feed.url)
-          .and_then(|fc| fc.refresh.as_deref())
-          .and_then(crate::config::parse_refresh_interval);
+          .enumerate()
+          .find(|(_, fc)| fc.link == feed.url)
+          .map(|(pos, fc)| {
+            (
+              pos,
+              fc
+                .refresh
+                .as_deref()
+                .and_then(crate::config::parse_refresh_interval),
+            )
+          })
+          .unwrap_or((0, None));
         if self.loading_state.is_loading {
           self.loading_state.updated_feeds.push(feed.title.clone());
         }
         if let Err(e) = self.cache.save_feed(&feed, pos, interval) {
           self.push_error(&feed.title, format!("Failed to cache: {}", e));
         }
-        self.feeds = self.cache.load_all_feeds().unwrap_or_default();
+        // Reload only the updated feed from cache to pick up merged entries
+        // (old entries preserved by the cache upsert), then replace in-place.
+        if let Ok(Some(updated_feed)) = self.cache.load_feed_by_url(&feed.url) {
+          if let Some(existing_pos) = self.feeds.iter().position(|f| f.url == updated_feed.url)
+          {
+            self.feeds[existing_pos] = updated_feed;
+          } else {
+            self.feeds = self.cache.load_all_feeds().unwrap_or_default();
+          }
+        } else {
+          self.feeds = self.cache.load_all_feeds().unwrap_or_default();
+        }
         self.rebuild_display_feeds();
       }
 
@@ -283,6 +302,15 @@ impl App {
     });
   }
 
+  /// Look up the refresh interval for a feed URL from the feed config.
+  fn feed_config_interval(feed_config: &[FeedConfig], url: &str) -> Option<u64> {
+    feed_config
+      .iter()
+      .find(|fc| fc.link == url)
+      .and_then(|fc| fc.refresh.as_deref())
+      .and_then(crate::config::parse_refresh_interval)
+  }
+
   pub fn render(&mut self, frame: &mut Frame) {
     let area = frame.area();
 
@@ -372,6 +400,7 @@ impl App {
   }
 
   pub fn handle_key(&mut self, key: KeyEvent) {
+    self.dirty = true;
     if self.show_help_popup {
       match key.code {
         KeyCode::Esc | KeyCode::Char('?') | KeyCode::Enter => {

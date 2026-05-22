@@ -41,15 +41,17 @@ fn format_entry_date(date_str: Option<&str>) -> String {
 
 // ─── Row builders ─────────────────────────────────────────────────────────────
 
-/// Build a Table Row for a feed.
+/// Build a Table Row for a feed, returning the row and the display width of the
+/// count column so callers can compute the column width without re-iterating.
 /// `raw_feeds` is the canonical feed list used to resolve Regular indices.
-fn feed_row(feed: &DisplayFeed, raw_feeds: &[Feed], theme: &Theme) -> Row<'static> {
+fn feed_row(feed: &DisplayFeed, raw_feeds: &[Feed], theme: &Theme) -> (Row<'static>, u16) {
   let entries = feed.entries(raw_feeds);
   let total = entries.len();
   let unread = entries.iter().filter(|e| !e.read).count();
 
   let count_str = format!("{}/{}", unread, total);
   let title = feed.title(raw_feeds).to_string();
+  let width = count_str.len() as u16;
 
   let style = if unread == 0 {
     theme.read_style()
@@ -57,7 +59,7 @@ fn feed_row(feed: &DisplayFeed, raw_feeds: &[Feed], theme: &Theme) -> Row<'stati
     Style::default()
   };
 
-  Row::new(vec![
+  let row = Row::new(vec![
     Cell::from(
       Text::from(count_str)
         .alignment(Alignment::Right)
@@ -65,7 +67,9 @@ fn feed_row(feed: &DisplayFeed, raw_feeds: &[Feed], theme: &Theme) -> Row<'stati
     ),
     Cell::from(title),
   ])
-  .style(style)
+  .style(style);
+
+  (row, width)
 }
 
 /// Build a Table Row for an entry.
@@ -342,6 +346,7 @@ fn render_main_pane(
 ) {
   match app_state {
     AppState::BrowsingFeeds => {
+      let mut max_count_width = 5u16;
       let feed_rows: Vec<Row> = if display_feeds.is_empty() {
         let msg = if loading_state.is_loading {
           format!(" {} Loading feeds...", loading_state.spinner_frame())
@@ -355,7 +360,8 @@ fn render_main_pane(
           .iter()
           .enumerate()
           .map(|(i, f)| {
-            let row = feed_row(f, raw_feeds, theme);
+            let (row, width) = feed_row(f, raw_feeds, theme);
+            max_count_width = max_count_width.max(width);
             if search_matches.contains(&i) {
               row
             } else {
@@ -366,21 +372,15 @@ fn render_main_pane(
       } else {
         display_feeds
           .iter()
-          .map(|f| feed_row(f, raw_feeds, theme))
+          .map(|f| {
+            let (row, width) = feed_row(f, raw_feeds, theme);
+            max_count_width = max_count_width.max(width);
+            row
+          })
           .collect()
       };
 
-      let count_width = display_feeds
-        .iter()
-        .map(|f| {
-          let entries = f.entries(raw_feeds);
-          let total = entries.len();
-          let unread = entries.iter().filter(|e| !e.read).count();
-          format!("{}/{}", unread, total).len() as u16
-        })
-        .max()
-        .unwrap_or(5)
-        .max(5);
+      let count_width = max_count_width;
 
       let feed_widths = [Constraint::Length(count_width), Constraint::Fill(1)];
 
