@@ -150,10 +150,7 @@ impl App {
           }
         }
         for (i, feed) in new_feeds.iter().enumerate() {
-          let interval = Self::feed_config_interval(
-            &self.feed_config,
-            &feed.url,
-          );
+          let interval = Self::feed_config_interval(&self.feed_config, &feed.url);
           if let Err(e) = self.cache.save_feed(feed, i, interval) {
             self.push_error(&feed.title, format!("Failed to cache: {}", e));
           }
@@ -181,8 +178,7 @@ impl App {
           .map(|(pos, fc)| {
             (
               pos,
-              fc
-                .refresh
+              fc.refresh
                 .as_deref()
                 .and_then(crate::config::parse_refresh_interval),
             )
@@ -197,8 +193,7 @@ impl App {
         // Reload only the updated feed from cache to pick up merged entries
         // (old entries preserved by the cache upsert), then replace in-place.
         if let Ok(Some(updated_feed)) = self.cache.load_feed_by_url(&feed.url) {
-          if let Some(existing_pos) = self.feeds.iter().position(|f| f.url == updated_feed.url)
-          {
+          if let Some(existing_pos) = self.feeds.iter().position(|f| f.url == updated_feed.url) {
             self.feeds[existing_pos] = updated_feed;
           } else {
             self.feeds = self.cache.load_all_feeds().unwrap_or_default();

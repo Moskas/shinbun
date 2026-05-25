@@ -92,7 +92,12 @@ fn feed_row(feed: &DisplayFeed, raw_feeds: &[Feed], theme: &Theme) -> (Row<'stat
 /// Build a Table Row for an entry.
 /// `source_col_width` is the effective (already-capped) column width for the
 /// feed-source column; it is only used when `is_query` is true.
-fn entry_row(entry: &FeedEntry, is_query: bool, source_col_width: u16, theme: &Theme) -> Row<'static> {
+fn entry_row(
+  entry: &FeedEntry,
+  is_query: bool,
+  source_col_width: u16,
+  theme: &Theme,
+) -> Row<'static> {
   let date = format_entry_date(entry.published.as_deref());
 
   let date_style = if entry.read {
@@ -628,7 +633,13 @@ fn build_entry_rows(
       .map(|(i, e)| {
         if search_active && !search_query.is_empty() && search_matches.contains(&i) {
           if e.read {
-            entry_row_with_style(e, is_query, Some(theme.search_match_read), source_col_width, theme)
+            entry_row_with_style(
+              e,
+              is_query,
+              Some(theme.search_match_read),
+              source_col_width,
+              theme,
+            )
           } else {
             entry_row(e, is_query, source_col_width, theme)
           }
@@ -1056,8 +1067,17 @@ mod tests {
     )];
     let display = vec![DisplayFeed::Regular(0)];
 
-    let (rows, is_query, source_width) =
-      build_entry_rows(&display, &feeds, 0, false, false, "", &[], 80, &test_theme());
+    let (rows, is_query, source_width) = build_entry_rows(
+      &display,
+      &feeds,
+      0,
+      false,
+      false,
+      "",
+      &[],
+      80,
+      &test_theme(),
+    );
     assert_eq!(rows.len(), 2);
     assert!(!is_query);
     assert_eq!(source_width, 0);
@@ -1085,8 +1105,17 @@ mod tests {
     let feeds = vec![make_feed("https://example.com/rss", "Feed", vec![])];
     let display = vec![DisplayFeed::Regular(0)];
 
-    let (rows, is_query, _) =
-      build_entry_rows(&display, &feeds, 0, false, false, "", &[], 80, &test_theme());
+    let (rows, is_query, _) = build_entry_rows(
+      &display,
+      &feeds,
+      0,
+      false,
+      false,
+      "",
+      &[],
+      80,
+      &test_theme(),
+    );
     assert_eq!(rows.len(), 1); // "No entries" placeholder
     assert!(!is_query);
   }
@@ -1106,8 +1135,17 @@ mod tests {
       entries: vec![query_entry],
     }];
 
-    let (rows, is_query, source_width) =
-      build_entry_rows(&display, &feeds, 0, false, false, "", &[], 80, &test_theme());
+    let (rows, is_query, source_width) = build_entry_rows(
+      &display,
+      &feeds,
+      0,
+      false,
+      false,
+      "",
+      &[],
+      80,
+      &test_theme(),
+    );
     assert_eq!(rows.len(), 1);
     assert!(is_query);
     assert!(source_width > 0);
@@ -1125,8 +1163,17 @@ mod tests {
       entries: vec![query_entry],
     }];
 
-    let (_, is_query, source_col_width) =
-      build_entry_rows(&display, &feeds, 0, false, false, "", &[], 40, &test_theme());
+    let (_, is_query, source_col_width) = build_entry_rows(
+      &display,
+      &feeds,
+      0,
+      false,
+      false,
+      "",
+      &[],
+      40,
+      &test_theme(),
+    );
     assert!(is_query);
     assert_eq!(source_col_width, 9); // capped, not raw 28
   }
@@ -1136,8 +1183,17 @@ mod tests {
     let feeds: Vec<Feed> = vec![];
     let display: Vec<DisplayFeed> = vec![];
 
-    let (rows, is_query, _) =
-      build_entry_rows(&display, &feeds, 5, false, false, "", &[], 80, &test_theme());
+    let (rows, is_query, _) = build_entry_rows(
+      &display,
+      &feeds,
+      5,
+      false,
+      false,
+      "",
+      &[],
+      80,
+      &test_theme(),
+    );
     assert!(rows.is_empty());
     assert!(!is_query);
   }

@@ -206,7 +206,8 @@ impl App {
         }
       }
       DisplayFeed::Query { .. } => {
-        // For query feeds, mark each source feed entry individually
+        // Collect entries as owned data so we can release the borrow on
+        // `self.display_feeds` before mutating `self.feeds` / `self.cache`.
         let entries: Vec<(String, String, Option<String>)> = df
           .entries(&self.feeds)
           .iter()
@@ -218,6 +219,7 @@ impl App {
           })
           .collect();
 
+        // Mark each entry as read in the DB.
         for (feed_url, entry_title, published) in &entries {
           if let Err(e) = self
             .cache
@@ -227,15 +229,27 @@ impl App {
           }
         }
 
-        // Update in-memory state
-        for (feed_url, entry_title, published) in &entries {
-          if let Some(feed) = self.feeds.iter_mut().find(|f| f.url == *feed_url) {
-            if let Some(entry) = feed
-              .entries
-              .iter_mut()
-              .find(|e| e.title == *entry_title && e.published.as_deref() == published.as_deref())
-            {
-              entry.read = true;
+        // Update in-memory state.
+        // Group the to-mark entries by feed URL so we scan `self.feeds` once
+        // per unique feed rather than once per entry (O(feeds + entries) vs
+        // the previous O(feeds × entries)).
+        use std::collections::HashMap;
+        let mut by_feed: HashMap<&str, Vec<(&str, Option<&str>)>> = HashMap::new();
+        for (feed_url, title, published) in &entries {
+          by_feed
+            .entry(feed_url.as_str())
+            .or_default()
+            .push((title.as_str(), published.as_deref()));
+        }
+        for feed in self.feeds.iter_mut() {
+          if let Some(entry_list) = by_feed.get(feed.url.as_str()) {
+            for entry in feed.entries.iter_mut() {
+              if entry_list
+                .iter()
+                .any(|(t, p)| *t == entry.title && *p == entry.published.as_deref())
+              {
+                entry.read = true;
+              }
             }
           }
         }
