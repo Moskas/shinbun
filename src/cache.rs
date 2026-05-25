@@ -400,36 +400,30 @@ impl FeedCache {
   /// the `ON DELETE CASCADE` constraint defined in `init_schema`.
   ///
   /// Returns the number of feeds that were pruned.
+  ///
+  /// Uses a single `DELETE … WHERE url NOT IN (…)` statement instead of the
+  /// previous SELECT-then-loop approach, eliminating the round-trip and all
+  /// intermediate allocations.
   pub fn remove_dead_feeds(&self, active_urls: &[&str]) -> Result<usize> {
-    // Load every URL currently stored in the cache.
-    let cached: Vec<String> = {
-      let mut stmt = self.conn.prepare("SELECT url FROM feeds")?;
-      let rows = stmt
-        .query_map([], |row| row.get(0))?
-        .collect::<Result<Vec<_>>>()?;
-      rows
-    };
-
-    let active: HashSet<&str> = active_urls.iter().copied().collect();
-    let dead: Vec<&String> = cached
-      .iter()
-      .filter(|u| !active.contains(u.as_str()))
-      .collect();
-
-    if dead.is_empty() {
-      return Ok(0);
+    if active_urls.is_empty() {
+      // No active feeds at all — drop everything.
+      return self.conn.execute("DELETE FROM feeds", []);
     }
 
-    let tx = self.conn.unchecked_transaction()?;
-    {
-      let mut stmt = tx.prepare("DELETE FROM feeds WHERE url = ?1")?;
-      for url in &dead {
-        stmt.execute(params![url])?;
-      }
-    }
-    tx.commit()?;
+    // Build: DELETE FROM feeds WHERE url NOT IN (?1, ?2, …, ?N)
+    // rusqlite doesn't support variable-length IN lists natively, so we
+    // generate the placeholder string dynamically.  The input is trusted
+    // (URLs from feeds.toml), but we still use bound parameters so that
+    // URL strings with special chars are handled safely.
+    let placeholders = (1..=active_urls.len())
+      .map(|i| format!("?{i}"))
+      .collect::<Vec<_>>()
+      .join(", ");
+    let sql = format!("DELETE FROM feeds WHERE url NOT IN ({placeholders})");
 
-    Ok(dead.len())
+    self
+      .conn
+      .execute(&sql, rusqlite::params_from_iter(active_urls))
   }
 
   /// Return `(url, title)` for every feed in the cache that is **not** present
