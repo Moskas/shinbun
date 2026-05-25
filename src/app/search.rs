@@ -9,12 +9,28 @@ use super::App;
 ///   1 — pattern is a contiguous substring (case-insensitive)
 ///   2 — pattern matches at word boundaries (e.g. initials)
 ///   3 — subsequence match (characters in order, but not contiguous)
+///
+/// When scoring many items against the same query, prefer
+/// [`fuzzy_score_lowered_pattern`] to avoid re-lowercasing the pattern on
+/// every call.
+#[allow(dead_code)] // public API; used by tests and future callers
 pub fn fuzzy_score(text: &str, pattern: &str) -> Option<u32> {
   if pattern.is_empty() {
     return Some(0);
   }
-  let text_lower = text.to_lowercase();
   let pattern_lower = pattern.to_lowercase();
+  fuzzy_score_lowered_pattern(text, &pattern_lower)
+}
+
+/// Like [`fuzzy_score`] but `pattern_lower` is already lowercased.
+///
+/// Use this in hot loops where the same query is tested against many items so
+/// the pattern string is only lowercased once by the caller.
+pub(super) fn fuzzy_score_lowered_pattern(text: &str, pattern_lower: &str) -> Option<u32> {
+  if pattern_lower.is_empty() {
+    return Some(0);
+  }
+  let text_lower = text.to_lowercase();
 
   // Tier 0 — exact
   if text_lower == pattern_lower {
@@ -22,19 +38,19 @@ pub fn fuzzy_score(text: &str, pattern: &str) -> Option<u32> {
   }
 
   // Tier 1 — contiguous substring
-  if text_lower.contains(&pattern_lower) {
+  if text_lower.contains(pattern_lower) {
     return Some(1);
   }
 
   // Tier 2 — word-boundary / initials match
   // Each pattern char must match the start of a word (or continue within the
   // same word as the previous matched char).
-  if word_boundary_match(&text_lower, &pattern_lower) {
+  if word_boundary_match(&text_lower, pattern_lower) {
     return Some(2);
   }
 
   // Tier 3 — subsequence (characters in order, gaps allowed)
-  if subsequence_match(&text_lower, &pattern_lower) {
+  if subsequence_match(&text_lower, pattern_lower) {
     return Some(3);
   }
 
@@ -60,33 +76,39 @@ fn subsequence_match(text: &str, pattern: &str) -> bool {
 /// Check if the pattern matches at word boundaries in the text.
 /// A "word boundary" is the first character of the text or a character following
 /// a non-alphanumeric separator (space, dash, underscore, etc.).
+///
+/// After matching a char at a boundary, consecutive chars are also consumed
+/// within the same word (e.g. pattern "hel" matches at the start of "hello").
+///
+/// Implemented without heap allocation — avoids the `Vec<char>` collect that
+/// a naïve indexed approach would require.
 fn word_boundary_match(text: &str, pattern: &str) -> bool {
-  let text_chars: Vec<char> = text.chars().collect();
-  let pattern_chars: Vec<char> = pattern.chars().collect();
-  if pattern_chars.is_empty() {
-    return true;
-  }
+  let mut pat = pattern.chars();
+  let Some(mut need) = pat.next() else {
+    return true; // empty pattern always matches
+  };
 
-  let mut pi = 0; // index into pattern_chars
-  let mut i = 0; // index into text_chars
+  let mut prev_alnum = false; // whether the previous text char was alphanumeric
+  let mut in_match = false; // true while consuming consecutive chars after a boundary hit
 
-  while i < text_chars.len() && pi < pattern_chars.len() {
-    let is_boundary = i == 0 || !text_chars[i - 1].is_alphanumeric();
-    if is_boundary && text_chars[i] == pattern_chars[pi] {
-      // Start matching from this word boundary
-      pi += 1;
-      i += 1;
-      // Continue matching consecutive chars within the same word
-      while i < text_chars.len() && pi < pattern_chars.len() && text_chars[i] == pattern_chars[pi] {
-        pi += 1;
-        i += 1;
+  for ch in text.chars() {
+    let is_boundary = !prev_alnum;
+    if (is_boundary || in_match) && ch == need {
+      match pat.next() {
+        Some(next) => {
+          need = next;
+          in_match = true;
+        }
+        None => return true, // consumed all pattern chars
       }
-    } else {
-      i += 1;
+    } else if in_match {
+      // Consecutive-char streak broken; resume scanning for next boundary.
+      in_match = false;
     }
+    prev_alnum = ch.is_alphanumeric();
   }
 
-  pi == pattern_chars.len()
+  false
 }
 
 /// Backwards-compatible boolean wrapper: returns true if the pattern matches at any tier.
@@ -126,19 +148,22 @@ impl App {
     // ties by original index to preserve list order among equal-score matches.
     let mut scored: Vec<(usize, u32)> = Vec::new();
 
+    // Pre-lowercase the query once so each candidate doesn't re-allocate it.
+    let query_lower = self.input.search_query.to_lowercase();
+
     match self.state {
       AppState::BrowsingFeeds => match self.list_pane {
         ListPane::Feeds => {
           for (i, df) in self.display_feeds.iter().enumerate() {
             let title = df.title(&self.feeds);
-            if let Some(score) = fuzzy_score(title, &self.input.search_query) {
+            if let Some(score) = fuzzy_score_lowered_pattern(title, &query_lower) {
               scored.push((i, score));
             }
           }
         }
         ListPane::Tags => {
           for (i, (tag_name, _)) in self.tag_list.iter().enumerate() {
-            if let Some(score) = fuzzy_score(tag_name, &self.input.search_query) {
+            if let Some(score) = fuzzy_score_lowered_pattern(tag_name, &query_lower) {
               scored.push((i, score));
             }
           }
@@ -149,7 +174,7 @@ impl App {
         for (visible_idx, &real_idx) in visible.iter().enumerate() {
           if let Some(df) = self.display_feeds.get(self.feed_index) {
             if let Some(entry) = df.entries(&self.feeds).get(real_idx) {
-              if let Some(score) = fuzzy_score(&entry.title, &self.input.search_query) {
+              if let Some(score) = fuzzy_score_lowered_pattern(&entry.title, &query_lower) {
                 scored.push((visible_idx, score));
               }
             }
