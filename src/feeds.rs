@@ -1,8 +1,18 @@
 use crate::app::FeedUpdate;
 use crate::config::Feed as FeedConfig;
 use feed_rs::parser;
-use reqwest::{get, Error as ReqError};
+use reqwest::{Client, Error as ReqError};
+use std::time::Duration;
 use tokio::sync::mpsc;
+
+/// Shared HTTP client configured with a 30-second timeout.
+/// `reqwest::Client` is cheaply cloneable (it wraps an `Arc` internally).
+fn build_client() -> Client {
+  Client::builder()
+    .timeout(Duration::from_secs(30))
+    .build()
+    .unwrap_or_default()
+}
 
 #[derive(Debug, Clone)]
 pub struct Feed {
@@ -33,18 +43,24 @@ pub async fn fetch_feed_with_progress(
   feeds: Vec<FeedConfig>,
   tx: mpsc::UnboundedSender<FeedUpdate>,
 ) {
+  // Build the client once; cloning it into each task is cheap (Arc internally).
+  let client = build_client();
   let mut tasks = Vec::new();
 
   for feed_config in feeds {
     let tx_clone = tx.clone();
+    let client = client.clone();
     let task = tokio::spawn(async move {
+      // Avoid cloning `name` when it's `Some` — borrow as &str and convert
+      // to owned only once, without a redundant intermediate clone.
       let feed_name = feed_config
         .name
-        .clone()
-        .unwrap_or_else(|| feed_config.link.clone());
+        .as_deref()
+        .unwrap_or(&feed_config.link)
+        .to_owned();
       let _ = tx_clone.send(FeedUpdate::FetchingFeed(feed_name.clone()));
 
-      match fetch_single_feed(&feed_config.link).await {
+      match fetch_single_feed(&client, &feed_config.link).await {
         Ok(body) => match parse_single_feed(feed_config.clone(), &body) {
           Some(feed) => Some(feed),
           None => {
@@ -78,29 +94,35 @@ pub async fn fetch_feed_with_progress(
   let _ = tx.send(FeedUpdate::FetchComplete);
 }
 
-/// Fetch a single feed from URL
-async fn fetch_single_feed(url: &str) -> Result<String, ReqError> {
-  get(url).await?.text().await
+/// Fetch a single feed from `url` using the provided client (which carries the
+/// configured timeout).
+async fn fetch_single_feed(client: &Client, url: &str) -> Result<String, ReqError> {
+  client.get(url).send().await?.text().await
 }
 
-/// Fetch a single feed with progress reporting
-/// Fetch a subset of feeds concurrently, sending UpdateSingle for each result.
+/// Fetch a subset of feeds concurrently, sending `UpdateSingle` for each result.
 pub async fn fetch_feeds_subset_with_progress(
   feeds: Vec<FeedConfig>,
   tx: mpsc::UnboundedSender<FeedUpdate>,
 ) {
+  // Build the client once; cloning it into each task is cheap (Arc internally).
+  let client = build_client();
   let mut tasks = Vec::new();
 
   for feed_config in feeds {
     let tx_clone = tx.clone();
+    let client = client.clone();
     let task = tokio::spawn(async move {
+      // Avoid cloning `name` when it's `Some` — borrow as &str and convert
+      // to owned only once, without a redundant intermediate clone.
       let feed_name = feed_config
         .name
-        .clone()
-        .unwrap_or_else(|| feed_config.link.clone());
+        .as_deref()
+        .unwrap_or(&feed_config.link)
+        .to_owned();
       let _ = tx_clone.send(FeedUpdate::FetchingFeed(feed_name.clone()));
 
-      match fetch_single_feed(&feed_config.link).await {
+      match fetch_single_feed(&client, &feed_config.link).await {
         Ok(body) => match parse_single_feed(feed_config, &body) {
           Some(feed) => {
             let _ = tx_clone.send(FeedUpdate::UpdateSingle(feed));
