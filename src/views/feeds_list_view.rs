@@ -10,6 +10,23 @@ use ratatui::{
   },
 };
 
+// ─── String helpers ───────────────────────────────────────────────────────────
+
+/// Truncate `s` to at most `max_chars` terminal columns.  If truncation is
+/// needed the last character is replaced with `…` so the column width is always
+/// ≤ `max_chars`.
+fn truncate_feed_title(s: &str, max_chars: usize) -> String {
+  let char_count = s.chars().count();
+  if char_count <= max_chars {
+    s.to_string()
+  } else if max_chars <= 1 {
+    "…".to_string()
+  } else {
+    let truncated: String = s.chars().take(max_chars - 1).collect();
+    format!("{}…", truncated)
+  }
+}
+
 // ─── Date formatting ──────────────────────────────────────────────────────────
 
 fn format_entry_date(date_str: Option<&str>) -> String {
@@ -73,7 +90,9 @@ fn feed_row(feed: &DisplayFeed, raw_feeds: &[Feed], theme: &Theme) -> (Row<'stat
 }
 
 /// Build a Table Row for an entry.
-fn entry_row(entry: &FeedEntry, is_query: bool, theme: &Theme) -> Row<'static> {
+/// `source_col_width` is the effective (already-capped) column width for the
+/// feed-source column; it is only used when `is_query` is true.
+fn entry_row(entry: &FeedEntry, is_query: bool, source_col_width: u16, theme: &Theme) -> Row<'static> {
   let date = format_entry_date(entry.published.as_deref());
 
   let date_style = if entry.read {
@@ -95,7 +114,8 @@ fn entry_row(entry: &FeedEntry, is_query: bool, theme: &Theme) -> Row<'static> {
   };
 
   if is_query {
-    let source = entry.feed_title.clone().unwrap_or_default();
+    let raw = entry.feed_title.clone().unwrap_or_default();
+    let source = truncate_feed_title(&raw, source_col_width as usize);
     Row::new(vec![
       Cell::from(date.clone()).style(date_style),
       Cell::from(Text::from(source).alignment(Alignment::Left)).style(source_style),
@@ -110,10 +130,13 @@ fn entry_row(entry: &FeedEntry, is_query: bool, theme: &Theme) -> Row<'static> {
 }
 
 /// Build a Table Row for an entry with a custom foreground color for search highlighting.
+/// `source_col_width` is the effective (already-capped) column width for the
+/// feed-source column; it is only used when `is_query` is true.
 fn entry_row_with_style(
   entry: &FeedEntry,
   is_query: bool,
   fg_color: Option<Color>,
+  source_col_width: u16,
   theme: &Theme,
 ) -> Row<'static> {
   let date = format_entry_date(entry.published.as_deref());
@@ -143,7 +166,8 @@ fn entry_row_with_style(
   };
 
   if is_query {
-    let source = entry.feed_title.clone().unwrap_or_default();
+    let raw = entry.feed_title.clone().unwrap_or_default();
+    let source = truncate_feed_title(&raw, source_col_width as usize);
     Row::new(vec![
       Cell::from(date.clone()).style(date_style),
       Cell::from(Text::from(source).alignment(Alignment::Left)).style(source_style),
@@ -407,6 +431,7 @@ fn render_main_pane(
         search_active,
         search_query,
         search_matches,
+        area.width,
         theme,
       );
 
@@ -521,8 +546,25 @@ fn render_tags_pane(
 /// Width of the date column in the entries table.
 const DATE_COL_WIDTH: u16 = 6;
 
-/// Build entry rows for the selected feed, returning (rows, is_query, max_source_col_width).
+/// Compute the capped width for the feed-source column.
+///
+/// The cap ensures the title column keeps at least ⅔ of the space that remains
+/// after the fixed date column and column spacings are subtracted.  The
+/// horizontal padding (1 cell each side) of the entry block is also accounted
+/// for so the arithmetic is anchored to actual terminal columns.
+///
+/// * `area_width`   – full width of the area rect passed to the entries table
+/// * `raw_max`      – actual maximum feed-title length across visible entries
+fn compute_source_cap(area_width: u16, raw_max: u16) -> u16 {
+  // Subtract: 2 (block padding) + DATE_COL_WIDTH + 4 (two column_spacing(2) gaps)
+  let avail = area_width.saturating_sub(2 + DATE_COL_WIDTH + 4);
+  let cap = (avail / 3).max(8); // source ≤ ⅓ of remaining, minimum 8
+  raw_max.min(cap)
+}
+
+/// Build entry rows for the selected feed, returning (rows, is_query, effective_source_col_width).
 /// When `hide_read` is true, entries marked as read are excluded from the result.
+/// `area_width` is used to cap the feed-source column so the title column is never starved.
 #[allow(clippy::too_many_arguments)]
 fn build_entry_rows(
   display_feeds: &[DisplayFeed],
@@ -532,6 +574,7 @@ fn build_entry_rows(
   search_active: bool,
   search_query: &str,
   search_matches: &[usize],
+  area_width: u16,
   theme: &Theme,
 ) -> (Vec<Row<'static>>, bool, u16) {
   if let Some(feed) = display_feeds.get(selected_feed_idx) {
@@ -556,12 +599,25 @@ fn build_entry_rows(
 
     let is_query = feed.is_query();
 
-    let source_width: u16 = if is_query {
+    // Raw maximum width of all feed-title strings in this view.
+    let raw_source_width: u16 = if is_query {
       entries
         .iter()
-        .map(|e| e.feed_title.as_deref().map(|t| t.len() as u16).unwrap_or(0))
+        .map(|e| {
+          e.feed_title
+            .as_deref()
+            .map(|t| t.chars().count() as u16)
+            .unwrap_or(0)
+        })
         .max()
         .unwrap_or(0)
+    } else {
+      0
+    };
+
+    // Apply the responsive cap so narrow terminals keep enough room for titles.
+    let source_col_width = if is_query {
+      compute_source_cap(area_width, raw_source_width)
     } else {
       0
     };
@@ -572,19 +628,19 @@ fn build_entry_rows(
       .map(|(i, e)| {
         if search_active && !search_query.is_empty() && search_matches.contains(&i) {
           if e.read {
-            entry_row_with_style(e, is_query, Some(theme.search_match_read), theme)
+            entry_row_with_style(e, is_query, Some(theme.search_match_read), source_col_width, theme)
           } else {
-            entry_row(e, is_query, theme)
+            entry_row(e, is_query, source_col_width, theme)
           }
         } else if search_active && !search_query.is_empty() {
-          entry_row_with_style(e, is_query, Some(theme.search_dim), theme)
+          entry_row_with_style(e, is_query, Some(theme.search_dim), source_col_width, theme)
         } else {
-          entry_row(e, is_query, theme)
+          entry_row(e, is_query, source_col_width, theme)
         }
       })
       .collect();
 
-    (rows, is_query, source_width)
+    (rows, is_query, source_col_width)
   } else {
     (vec![], false, 0)
   }
@@ -934,6 +990,60 @@ mod tests {
 
   // ─── build_entry_rows tests ──────────────────────────────────────────────
 
+  // ─── truncate_feed_title tests ───────────────────────────────────────────
+
+  #[test]
+  fn test_truncate_feed_title_fits() {
+    assert_eq!(truncate_feed_title("Short", 10), "Short");
+  }
+
+  #[test]
+  fn test_truncate_feed_title_exact() {
+    assert_eq!(truncate_feed_title("12345", 5), "12345");
+  }
+
+  #[test]
+  fn test_truncate_feed_title_too_long() {
+    assert_eq!(truncate_feed_title("Jeff Geerling", 9), "Jeff Gee…");
+  }
+
+  #[test]
+  fn test_truncate_feed_title_max_one() {
+    assert_eq!(truncate_feed_title("Hello", 1), "…");
+  }
+
+  #[test]
+  fn test_truncate_feed_title_zero() {
+    // zero is treated as ≤1, returns ellipsis
+    assert_eq!(truncate_feed_title("Hello", 0), "…");
+  }
+
+  // ─── compute_source_cap tests ────────────────────────────────────────────
+
+  #[test]
+  fn test_compute_source_cap_narrow_terminal() {
+    // area_width=40: avail = 40 - 2 - 6 - 4 = 28; cap = 28/3 = 9
+    let cap = compute_source_cap(40, 30);
+    assert_eq!(cap, 9);
+  }
+
+  #[test]
+  fn test_compute_source_cap_wide_terminal() {
+    // area_width=120: avail = 120 - 2 - 6 - 4 = 108; cap = 108/3 = 36
+    // raw_max=15 < 36, so result is 15
+    let cap = compute_source_cap(120, 15);
+    assert_eq!(cap, 15);
+  }
+
+  #[test]
+  fn test_compute_source_cap_minimum() {
+    // Very narrow terminal: minimum 8
+    let cap = compute_source_cap(10, 20);
+    assert_eq!(cap, 8);
+  }
+
+  // ─── build_entry_rows tests ──────────────────────────────────────────────
+
   #[test]
   fn test_build_entry_rows_regular_feed() {
     let feeds = vec![make_feed(
@@ -947,7 +1057,7 @@ mod tests {
     let display = vec![DisplayFeed::Regular(0)];
 
     let (rows, is_query, source_width) =
-      build_entry_rows(&display, &feeds, 0, false, false, "", &[], &test_theme());
+      build_entry_rows(&display, &feeds, 0, false, false, "", &[], 80, &test_theme());
     assert_eq!(rows.len(), 2);
     assert!(!is_query);
     assert_eq!(source_width, 0);
@@ -965,7 +1075,8 @@ mod tests {
     )];
     let display = vec![DisplayFeed::Regular(0)];
 
-    let (rows, _, _) = build_entry_rows(&display, &feeds, 0, true, false, "", &[], &test_theme());
+    let (rows, _, _) =
+      build_entry_rows(&display, &feeds, 0, true, false, "", &[], 80, &test_theme());
     assert_eq!(rows.len(), 1); // Only unread entry
   }
 
@@ -975,7 +1086,7 @@ mod tests {
     let display = vec![DisplayFeed::Regular(0)];
 
     let (rows, is_query, _) =
-      build_entry_rows(&display, &feeds, 0, false, false, "", &[], &test_theme());
+      build_entry_rows(&display, &feeds, 0, false, false, "", &[], 80, &test_theme());
     assert_eq!(rows.len(), 1); // "No entries" placeholder
     assert!(!is_query);
   }
@@ -996,10 +1107,28 @@ mod tests {
     }];
 
     let (rows, is_query, source_width) =
-      build_entry_rows(&display, &feeds, 0, false, false, "", &[], &test_theme());
+      build_entry_rows(&display, &feeds, 0, false, false, "", &[], 80, &test_theme());
     assert_eq!(rows.len(), 1);
     assert!(is_query);
     assert!(source_width > 0);
+  }
+
+  #[test]
+  fn test_build_entry_rows_query_feed_narrow_terminal() {
+    // On a narrow terminal (40 cols), the source_col_width should be capped.
+    // avail = 40 - 2 - 6 - 4 = 28; cap = 28/3 = 9
+    let feeds: Vec<Feed> = vec![];
+    let mut query_entry = make_entry("Post 1", None, false);
+    query_entry.feed_title = Some("A Very Long Feed Name Indeed".to_string()); // 28 chars
+    let display = vec![DisplayFeed::Query {
+      name: "All".to_string(),
+      entries: vec![query_entry],
+    }];
+
+    let (_, is_query, source_col_width) =
+      build_entry_rows(&display, &feeds, 0, false, false, "", &[], 40, &test_theme());
+    assert!(is_query);
+    assert_eq!(source_col_width, 9); // capped, not raw 28
   }
 
   #[test]
@@ -1008,7 +1137,7 @@ mod tests {
     let display: Vec<DisplayFeed> = vec![];
 
     let (rows, is_query, _) =
-      build_entry_rows(&display, &feeds, 5, false, false, "", &[], &test_theme());
+      build_entry_rows(&display, &feeds, 5, false, false, "", &[], 80, &test_theme());
     assert!(rows.is_empty());
     assert!(!is_query);
   }
@@ -1025,7 +1154,8 @@ mod tests {
     )];
     let display = vec![DisplayFeed::Regular(0)];
 
-    let (rows, _, _) = build_entry_rows(&display, &feeds, 0, true, false, "", &[], &test_theme());
+    let (rows, _, _) =
+      build_entry_rows(&display, &feeds, 0, true, false, "", &[], 80, &test_theme());
     // When all entries are read and hide_read is on, should show "No entries"
     assert_eq!(rows.len(), 1);
   }
