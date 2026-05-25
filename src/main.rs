@@ -160,19 +160,25 @@ async fn main() -> io::Result<()> {
   // Create channel for feed updates
   let (feed_tx, feed_rx) = mpsc::unbounded_channel();
 
-  // Notify the TUI about feeds intentionally skipped (have a refresh interval that hasn't elapsed)
-  for feed_config in &config.feeds {
-    if feed_config.refresh.is_none() {
-      continue;
-    }
-    let in_cache = cache.has_feed(&feed_config.link).unwrap_or(false);
-    let is_being_fetched = feeds_to_fetch.iter().any(|f| f.link == feed_config.link);
-    if in_cache && !is_being_fetched {
-      let name = feed_config
-        .name
-        .clone()
-        .unwrap_or_else(|| feed_config.link.clone());
-      let _ = feed_tx.send(FeedUpdate::SkippedFeed(name));
+  // Notify the TUI about feeds intentionally skipped (have a refresh interval that hasn't elapsed).
+  // Build a HashSet of the URLs being fetched so the inner check is O(1) instead of O(n).
+  {
+    use std::collections::HashSet;
+    let fetching_urls: HashSet<&str> = feeds_to_fetch.iter().map(|f| f.link.as_str()).collect();
+    for feed_config in &config.feeds {
+      if feed_config.refresh.is_none() {
+        continue;
+      }
+      let in_cache = cache.has_feed(&feed_config.link).unwrap_or(false);
+      let is_being_fetched = fetching_urls.contains(feed_config.link.as_str());
+      if in_cache && !is_being_fetched {
+        let name = feed_config
+          .name
+          .as_deref()
+          .unwrap_or(&feed_config.link)
+          .to_owned();
+        let _ = feed_tx.send(FeedUpdate::SkippedFeed(name));
+      }
     }
   }
 
@@ -414,24 +420,34 @@ async fn cmd_refresh(quiet: bool) -> io::Result<()> {
     let _ = cache.remove_dead_feeds(&active_urls);
   }
 
-  // Split feeds into those due for refresh and those whose interval has not elapsed
+  // Split feeds into those due for refresh and those whose interval has not elapsed.
+  // Feeds-to-fetch are cloned directly (needed for the async task); feeds-to-skip
+  // stay as references into `config.feeds` to avoid unnecessary allocations.
   let now = chrono::Utc::now().timestamp();
-  let (feeds_to_fetch, feeds_to_skip): (Vec<_>, Vec<_>) =
-    config.feeds.iter().partition(|feed_config| {
-      if !cache.has_feed(&feed_config.link).unwrap_or(false) {
-        return true;
-      }
-      if let Some(interval_secs) = feed_config
-        .refresh
-        .as_deref()
-        .and_then(config::parse_refresh_interval)
-      {
-        if let Ok(Some(last_fetched)) = cache.get_last_fetched(&feed_config.link) {
-          return (now - last_fetched) >= interval_secs as i64;
-        }
-      }
+  let mut feeds_to_fetch: Vec<config::Feed> = Vec::new();
+  let mut feeds_to_skip: Vec<&config::Feed> = Vec::new();
+  for fc in &config.feeds {
+    let due = if !cache.has_feed(&fc.link).unwrap_or(false) {
+      true
+    } else if let Some(interval_secs) = fc
+      .refresh
+      .as_deref()
+      .and_then(config::parse_refresh_interval)
+    {
+      cache
+        .get_last_fetched(&fc.link)
+        .ok()
+        .flatten()
+        .is_some_and(|last| (now - last) >= interval_secs as i64)
+    } else {
       true // no interval set: always refresh
-    });
+    };
+    if due {
+      feeds_to_fetch.push(fc.clone());
+    } else {
+      feeds_to_skip.push(fc);
+    }
+  }
 
   if !quiet {
     for feed_config in &feeds_to_skip {
@@ -441,11 +457,10 @@ async fn cmd_refresh(quiet: bool) -> io::Result<()> {
   }
 
   let total = feeds_to_fetch.len();
-  let feed_config: Vec<_> = feeds_to_fetch.into_iter().cloned().collect();
   let (tx, mut rx) = mpsc::unbounded_channel::<FeedUpdate>();
 
   tokio::spawn(async move {
-    feeds::fetch_feeds_subset_with_progress(feed_config, tx).await;
+    feeds::fetch_feeds_subset_with_progress(feeds_to_fetch, tx).await;
   });
 
   let mut updated = 0usize;
@@ -465,8 +480,7 @@ async fn cmd_refresh(quiet: bool) -> io::Result<()> {
           .map(|(pos, fc)| {
             (
               pos,
-              fc
-                .refresh
+              fc.refresh
                 .as_deref()
                 .and_then(config::parse_refresh_interval),
             )
