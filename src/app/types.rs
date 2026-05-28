@@ -1,4 +1,5 @@
 use crate::feeds::{Feed, FeedEntry};
+use image::DynamicImage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {
@@ -68,6 +69,16 @@ pub enum FeedUpdate {
   SkippedFeed(String),
   /// All feeds finished fetching — reload from cache now
   FetchComplete,
+  /// A background image fetch completed successfully
+  ImageReady {
+    url: String,
+    image: DynamicImage,
+  },
+  /// A background image fetch failed
+  ImageError {
+    url: String,
+    error: String,
+  },
 }
 
 #[derive(Debug, Clone)]

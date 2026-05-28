@@ -20,6 +20,9 @@ use crate::views::{entry_view, feeds_list_view, help_view, links_view};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::widgets::TableState;
+use ratatui_image::picker::Picker;
+use ratatui_image::protocol::StatefulProtocol;
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 pub struct App {
@@ -67,9 +70,14 @@ pub struct App {
   /// When `false` and no animation is running, the main loop can skip
   /// the expensive `terminal.draw()` call to save CPU.
   pub(crate) dirty: bool,
+  /// Protocol picker for terminal image rendering (Kitty, Sixel, halfblocks fallback).
+  pub(crate) picker: Picker,
+  /// Cache of decoded + protocol-encoded images keyed by URL.
+  pub(crate) image_cache: HashMap<String, StatefulProtocol>,
 }
 
 impl App {
+  #[allow(clippy::too_many_arguments)]
   pub fn new(
     feeds: Vec<Feed>,
     general_config: GeneralConfig,
@@ -78,6 +86,7 @@ impl App {
     query_config: Vec<QueryFeed>,
     feed_tx: mpsc::UnboundedSender<FeedUpdate>,
     cache: FeedCache,
+    picker: Picker,
   ) -> Self {
     let display_feeds = Self::build_display_feeds(&feeds, &query_config);
     let hide_read = !ui_config.show_read_entries;
@@ -125,6 +134,8 @@ impl App {
       active_tag_query: None,
       visible_indices_cache: Vec::new(),
       dirty: true,
+      picker,
+      image_cache: HashMap::new(),
     }
   }
 
@@ -218,6 +229,15 @@ impl App {
           self.loading_state.stop();
         }
         self.current_feed = None;
+      }
+
+      FeedUpdate::ImageReady { url, image } => {
+        let protocol = self.picker.new_resize_protocol(image);
+        self.image_cache.insert(url, protocol);
+      }
+
+      FeedUpdate::ImageError { .. } => {
+        // Silently ignore — placeholder will continue showing
       }
     }
   }
@@ -320,10 +340,11 @@ impl App {
                 display_feed.title(&self.feeds),
                 entry,
                 &mut self.entry_scroll,
-                &entry_view::EntryViewConfig {
+                &mut entry_view::EntryViewConfig {
                   show_borders: self.ui_config.show_borders,
                   show_scrollbar: self.ui_config.show_scrollbar,
                   theme: &self.theme,
+                  image_cache: &mut self.image_cache,
                 },
               );
             }
@@ -702,6 +723,10 @@ mod tests {
     }
   }
 
+  fn test_picker() -> Picker {
+    Picker::halfblocks()
+  }
+
   fn make_test_app() -> App {
     let (tx, _rx) = mpsc::unbounded_channel();
     let cache = crate::cache::FeedCache::new_in_memory().unwrap();
@@ -718,6 +743,7 @@ mod tests {
       vec![],
       tx,
       cache,
+      test_picker(),
     )
   }
 
@@ -737,6 +763,7 @@ mod tests {
       vec![],
       tx,
       cache,
+      test_picker(),
     )
   }
 
@@ -1058,6 +1085,7 @@ mod tests {
       vec![],
       tx,
       cache,
+      test_picker(),
     );
 
     // Press 'A' to request mark-as-read
@@ -1155,6 +1183,7 @@ mod tests {
       vec![],
       tx,
       cache,
+      test_picker(),
     );
 
     // Navigate into the entry list
@@ -1199,6 +1228,7 @@ mod tests {
       vec![],
       tx,
       cache,
+      test_picker(),
     );
 
     // Navigate into entry view

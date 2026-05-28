@@ -21,6 +21,7 @@ mod views;
 
 use app::{App, FeedUpdate};
 use cache::FeedCache;
+use ratatui_image::picker::Picker;
 
 #[derive(Parser)]
 #[command(name = "shinbun", about = "Terminal RSS reader")]
@@ -90,6 +91,12 @@ async fn main() -> io::Result<()> {
     }
     None => {}
   }
+
+  // Detect terminal graphics protocol before entering raw mode.
+  // from_query_stdio() sends escape sequences and reads back responses,
+  // which requires a non-raw terminal. Falls back to Unicode halfblocks
+  // (works everywhere) if detection fails or is unsupported.
+  let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
 
   let mut terminal = ui::init()?;
 
@@ -202,6 +209,7 @@ async fn main() -> io::Result<()> {
     config.queries,
     feed_tx,
     cache,
+    picker,
   );
   let result = run_app(&mut terminal, &mut app, feed_rx);
 

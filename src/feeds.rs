@@ -189,8 +189,7 @@ pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {
 
       let text = if looks_like_html(&html_content) {
         links.extend(extract_html_links(&html_content));
-        html2text::from_read(html_content.as_bytes(), usize::MAX)
-          .unwrap_or_else(|_| String::from("Failed to parse content"))
+        htmd::convert(&html_content).unwrap_or(html_content)
       } else {
         html_content
       };

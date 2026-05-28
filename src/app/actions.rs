@@ -1,3 +1,4 @@
+use super::types::FeedUpdate;
 use super::App;
 use std::process::Command;
 
@@ -119,6 +120,38 @@ impl App {
     }
   }
 
+  /// Queue background HTTP fetches for every image URL found in the current entry's text.
+  /// Already-cached images are skipped. Each successful fetch sends `ImageReady` over
+  /// the feed channel so `handle_feed_update` can encode and store the protocol image.
+  pub(super) fn queue_entry_images(&mut self) {
+    let Some(real_idx) = self.input.current_entry_relative_index else {
+      return;
+    };
+    let Some(df) = self.display_feeds.get(self.feed_index) else {
+      return;
+    };
+    let Some(entry) = df.entries(&self.feeds).get(real_idx) else {
+      return;
+    };
+    let urls = extract_image_urls(&entry.text);
+    for url in urls {
+      if self.image_cache.contains_key(&url) {
+        continue;
+      }
+      let tx = self.feed_tx.clone();
+      tokio::spawn(async move {
+        match fetch_image_bytes(url.clone()).await {
+          Ok(img) => {
+            let _ = tx.send(FeedUpdate::ImageReady { url, image: img });
+          }
+          Err(e) => {
+            let _ = tx.send(FeedUpdate::ImageError { url, error: e });
+          }
+        }
+      });
+    }
+  }
+
   /// Open the media attachment of the currently selected entry.
   pub(super) fn open_media_in_player(&mut self) {
     let Some(real_idx) = self.resolve_current_entry_idx() else {
@@ -141,4 +174,46 @@ impl App {
       self.push_error("Media player", e);
     }
   }
+}
+
+/// Extract `https?://…` image URLs from `![alt](url)` patterns in a markdown string.
+fn extract_image_urls(md: &str) -> Vec<String> {
+  let mut urls = Vec::new();
+  let mut search_from = 0;
+  while let Some(rel) = md[search_from..].find("![") {
+    let abs = search_from + rel;
+    let after_excl = abs + 2;
+    if let Some(bracket_end) = md[after_excl..].find(']') {
+      let after_bracket = after_excl + bracket_end;
+      if md[after_bracket..].starts_with("](") {
+        let url_start = after_bracket + 2;
+        if let Some(paren_end) = md[url_start..].find(')') {
+          let url = &md[url_start..url_start + paren_end];
+          if url.starts_with("http") {
+            urls.push(url.to_string());
+          }
+          search_from = url_start + paren_end + 1;
+          continue;
+        }
+      }
+    }
+    search_from = abs + 2;
+  }
+  urls
+}
+
+async fn fetch_image_bytes(url: String) -> Result<image::DynamicImage, String> {
+  let client = reqwest::Client::builder()
+    .timeout(std::time::Duration::from_secs(30))
+    .build()
+    .map_err(|e| e.to_string())?;
+  let bytes = client
+    .get(&url)
+    .send()
+    .await
+    .map_err(|e| e.to_string())?
+    .bytes()
+    .await
+    .map_err(|e| e.to_string())?;
+  image::load_from_memory(&bytes).map_err(|e| e.to_string())
 }
