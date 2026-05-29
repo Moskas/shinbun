@@ -75,10 +75,7 @@ pub enum FeedUpdate {
     image: DynamicImage,
   },
   /// A background image fetch failed
-  ImageError {
-    url: String,
-    error: String,
-  },
+  ImageError,
 }
 
 #[derive(Debug, Clone)]

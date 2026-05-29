@@ -74,6 +74,8 @@ pub struct App {
   pub(crate) picker: Picker,
   /// Cache of decoded + protocol-encoded images keyed by URL.
   pub(crate) image_cache: HashMap<String, StatefulProtocol>,
+  /// Runtime toggle for image rendering; initialized from ui_config.show_images.
+  pub(crate) show_images: bool,
 }
 
 impl App {
@@ -90,6 +92,7 @@ impl App {
   ) -> Self {
     let display_feeds = Self::build_display_feeds(&feeds, &query_config);
     let hide_read = !ui_config.show_read_entries;
+    let show_images = ui_config.show_images;
     let theme = Theme::from_config(&ui_config.theme);
 
     let tag_list = Self::build_tag_list(&feeds);
@@ -136,6 +139,7 @@ impl App {
       dirty: true,
       picker,
       image_cache: HashMap::new(),
+      show_images,
     }
   }
 
@@ -236,7 +240,7 @@ impl App {
         self.image_cache.insert(url, protocol);
       }
 
-      FeedUpdate::ImageError { .. } => {
+      FeedUpdate::ImageError => {
         // Silently ignore — placeholder will continue showing
       }
     }
@@ -345,6 +349,7 @@ impl App {
                   show_scrollbar: self.ui_config.show_scrollbar,
                   theme: &self.theme,
                   image_cache: &mut self.image_cache,
+                  show_images: self.show_images,
                 },
               );
             }
@@ -583,6 +588,9 @@ impl App {
         if !self.visible_entry_indices().is_empty() {
           self.entry_list_state.select(Some(0));
         }
+      }
+      KeyCode::Char('i') | KeyCode::Char('I') => {
+        self.show_images = !self.show_images;
       }
       KeyCode::Char('m') | KeyCode::Char('M') => match self.state {
         AppState::BrowsingEntries => {

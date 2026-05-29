@@ -116,6 +116,10 @@ fn build_help_content(theme: &Theme) -> Vec<Line<'static>> {
       key: "e",
       description: "Show feed errors",
     },
+    Keybind {
+      key: "i",
+      description: "Toggle image rendering",
+    },
   ];
   for bind in &action_binds {
     lines.push(keybind_line(bind, theme));

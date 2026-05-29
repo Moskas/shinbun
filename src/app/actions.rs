@@ -144,8 +144,8 @@ impl App {
           Ok(img) => {
             let _ = tx.send(FeedUpdate::ImageReady { url, image: img });
           }
-          Err(e) => {
-            let _ = tx.send(FeedUpdate::ImageError { url, error: e });
+          Err(_) => {
+            let _ = tx.send(FeedUpdate::ImageError);
           }
         }
       });

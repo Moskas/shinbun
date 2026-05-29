@@ -4,7 +4,10 @@ use ratatui::{
   layout::Rect,
   prelude::{Alignment, Color, Line, Modifier, Span, Style, Stylize},
   symbols::border,
-  widgets::{Block, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, StatefulWidget, Widget, Wrap},
+  widgets::{
+    Block, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    StatefulWidget, Widget, Wrap,
+  },
   Frame,
 };
 use ratatui_image::{protocol::StatefulProtocol, StatefulImage};
@@ -29,6 +32,7 @@ enum ContentSegment {
 pub struct EntryViewConfig<'a> {
   pub show_borders: bool,
   pub show_scrollbar: bool,
+  pub show_images: bool,
   pub theme: &'a Theme,
   /// Cache of decoded images keyed by URL; mutated as images are rendered.
   pub image_cache: &'a mut HashMap<String, StatefulProtocol>,
@@ -223,14 +227,26 @@ fn build_all_segments(feed_title: &str, entry: &FeedEntry, theme: &Theme) -> Vec
 }
 
 /// Return the virtual height of a single segment given the available width.
-fn seg_height(seg: &ContentSegment, content_width: u16, stylesheet: ShinbunStyleSheet) -> usize {
+fn seg_height(
+  seg: &ContentSegment,
+  content_width: u16,
+  stylesheet: ShinbunStyleSheet,
+  show_images: bool,
+) -> usize {
   match seg {
     ContentSegment::PreStyled(lines) => calculate_wrapped_height(lines, content_width),
     ContentSegment::Text(md) => {
       let rendered = tui_markdown::from_str_with_options(md, &Options::new(stylesheet));
       calculate_wrapped_height(&rendered.lines, content_width)
     }
-    ContentSegment::Image { .. } => IMAGE_RENDER_ROWS,
+    // 1 blank + alt text + 1 blank when images are off; full reserved rows otherwise.
+    ContentSegment::Image { .. } => {
+      if show_images {
+        IMAGE_RENDER_ROWS
+      } else {
+        3
+      }
+    }
   }
 }
 
@@ -245,6 +261,7 @@ fn render_segments(
   stylesheet: ShinbunStyleSheet,
   theme: &Theme,
   image_cache: &mut HashMap<String, StatefulProtocol>,
+  show_images: bool,
 ) {
   let visible_height = area.height as usize;
   let mut virtual_row = 0usize;
@@ -295,26 +312,40 @@ fn render_segments(
           .render(seg_area, frame.buffer_mut());
       }
       ContentSegment::Image { src, alt } => {
-        // Only render when the image is fully visible. Passing a variable-height
-        // area to StatefulImage causes it to re-encode on every scroll step, which
-        // is extremely expensive. A fixed IMAGE_RENDER_ROWS area means it encodes
-        // once and caches thereafter.
         let ph = if alt.is_empty() {
           " [image] ".to_string()
         } else {
           format!(" [image: {}] ", alt)
         };
-        if inner_skip == 0 && avail >= IMAGE_RENDER_ROWS {
-          let full_area = Rect { height: IMAGE_RENDER_ROWS as u16, ..seg_area };
-          if let Some(protocol) = image_cache.get_mut(src.as_str()) {
-            frame.render_stateful_widget(StatefulImage::default(), full_area, protocol);
+        if show_images {
+          if inner_skip == 0 && avail >= IMAGE_RENDER_ROWS {
+            // Only render when the image is fully visible. Passing a variable-height
+            // area to StatefulImage causes it to re-encode on every scroll step, which
+            // is extremely expensive. A fixed IMAGE_RENDER_ROWS area means it encodes
+            // once and caches thereafter.
+            let full_area = Rect {
+              height: IMAGE_RENDER_ROWS as u16,
+              ..seg_area
+            };
+            if let Some(protocol) = image_cache.get_mut(src.as_str()) {
+              frame.render_stateful_widget(StatefulImage::default(), full_area, protocol);
+            } else {
+              Paragraph::new(Line::from(ph).fg(theme.meta_link))
+                .render(full_area, frame.buffer_mut());
+            }
           } else {
-            Paragraph::new(Line::from(ph).fg(theme.meta_link)).render(full_area, frame.buffer_mut());
+            Paragraph::new(Line::from(ph).fg(theme.meta_link)).render(seg_area, frame.buffer_mut());
           }
         } else {
-          // Partially visible (scrolling into/out of image): show placeholder text
-          // so the layout space is visibly occupied without triggering re-encode.
-          Paragraph::new(Line::from(ph).fg(theme.meta_link)).render(seg_area, frame.buffer_mut());
+          // Images disabled: compact 3-row layout (blank / alt text / blank).
+          let lines = vec![
+            Line::from(""),
+            Line::from(ph).fg(theme.meta_link),
+            Line::from(""),
+          ];
+          Paragraph::new(lines)
+            .scroll((inner_skip as u16, 0))
+            .render(seg_area, frame.buffer_mut());
         }
       }
     }
@@ -382,9 +413,10 @@ pub fn render(
   // Build segments and compute layout heights.
   let stylesheet = ShinbunStyleSheet::from_theme(theme);
   let segments = build_all_segments(feed_title, entry, theme);
+  let show_images = cfg.show_images;
   let heights: Vec<usize> = segments
     .iter()
-    .map(|seg| seg_height(seg, content_width, stylesheet))
+    .map(|seg| seg_height(seg, content_width, stylesheet, show_images))
     .collect();
   let content_length: usize = heights.iter().sum();
 
@@ -409,7 +441,10 @@ pub fn render(
   // Render outer and entry blocks.
   outer_block.render(area, frame.buffer_mut());
   entry_block
-    .title_bottom(Span::styled(line_info, Style::default().fg(theme.line_info)))
+    .title_bottom(Span::styled(
+      line_info,
+      Style::default().fg(theme.line_info),
+    ))
     .render(inner_area, frame.buffer_mut());
 
   // Render content segments.
@@ -422,6 +457,7 @@ pub fn render(
     stylesheet,
     theme,
     cfg.image_cache,
+    cfg.show_images,
   );
 
   // Scrollbar.
@@ -525,7 +561,9 @@ mod tests {
     let md = "![local](./relative/path.png) text";
     let segs = split_into_segments(md);
     // Non-HTTP image is skipped; remaining text becomes one text segment
-    assert!(segs.iter().all(|s| !matches!(s, ContentSegment::Image { .. })));
+    assert!(segs
+      .iter()
+      .all(|s| !matches!(s, ContentSegment::Image { .. })));
   }
 
   #[test]

@@ -86,6 +86,10 @@ pub struct UiConfig {
   /// Theme configuration for colors and styles
   #[serde(default)]
   pub theme: ThemeConfig,
+
+  /// Render inline images in the entry view (default: true)
+  #[serde(default = "default_show_images")]
+  pub show_images: bool,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -110,6 +114,10 @@ fn default_show_read_entries() -> bool {
 }
 
 fn default_show_scrollbar() -> bool {
+  true
+}
+
+fn default_show_images() -> bool {
   true
 }
 
