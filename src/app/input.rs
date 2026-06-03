@@ -1,3 +1,57 @@
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum AddFeedField {
+  #[default]
+  Url,
+  Name,
+  Tags,
+  Refresh,
+}
+
+impl AddFeedField {
+  pub fn next(self) -> Self {
+    match self {
+      Self::Url => Self::Name,
+      Self::Name => Self::Tags,
+      Self::Tags => Self::Refresh,
+      Self::Refresh => Self::Url,
+    }
+  }
+
+  pub fn prev(self) -> Self {
+    match self {
+      Self::Url => Self::Refresh,
+      Self::Name => Self::Url,
+      Self::Tags => Self::Name,
+      Self::Refresh => Self::Tags,
+    }
+  }
+}
+
+#[derive(Debug, Default)]
+pub struct AddFeedForm {
+  pub url: String,
+  pub name: String,
+  pub tags: String,
+  pub refresh: String,
+  pub focus: AddFeedField,
+  pub error: Option<String>,
+}
+
+impl AddFeedForm {
+  pub fn clear(&mut self) {
+    *self = Self::default();
+  }
+
+  pub fn active_buffer(&mut self) -> &mut String {
+    match self.focus {
+      AddFeedField::Url => &mut self.url,
+      AddFeedField::Name => &mut self.name,
+      AddFeedField::Tags => &mut self.tags,
+      AddFeedField::Refresh => &mut self.refresh,
+    }
+  }
+}
+
 /// Tracks all state that is created and mutated directly by keypresses.
 #[derive(Debug, Default)]
 pub struct InputState {

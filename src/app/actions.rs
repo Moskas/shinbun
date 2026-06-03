@@ -1,5 +1,8 @@
 use super::types::FeedUpdate;
 use super::App;
+use crate::config::{parse_refresh_interval, write_feeds, Feed as FeedConfig};
+use crate::feeds;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::process::Command;
 
 impl App {
@@ -149,6 +152,111 @@ impl App {
           }
         }
       });
+    }
+  }
+
+  /// Handle a keypress while the add-feed popup is open.
+  pub(super) fn handle_add_feed_key(&mut self, key: KeyEvent) {
+    match key.code {
+      KeyCode::Esc => {
+        self.show_add_feed_popup = false;
+        self.add_feed_form.clear();
+      }
+      KeyCode::Tab => {
+        self.add_feed_form.focus = self.add_feed_form.focus.next();
+        self.add_feed_form.error = None;
+      }
+      KeyCode::BackTab => {
+        self.add_feed_form.focus = self.add_feed_form.focus.prev();
+        self.add_feed_form.error = None;
+      }
+      KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        self.add_feed_form.focus = self.add_feed_form.focus.next();
+        self.add_feed_form.error = None;
+      }
+      KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        self.add_feed_form.focus = self.add_feed_form.focus.prev();
+        self.add_feed_form.error = None;
+      }
+      KeyCode::Backspace => {
+        self.add_feed_form.active_buffer().pop();
+        self.add_feed_form.error = None;
+      }
+      KeyCode::Enter => {
+        let url = self.add_feed_form.url.trim().to_string();
+        if url.is_empty() {
+          self.add_feed_form.error = Some("URL is required".to_string());
+          return;
+        }
+
+        let name = {
+          let s = self.add_feed_form.name.trim().to_string();
+          if s.is_empty() {
+            None
+          } else {
+            Some(s)
+          }
+        };
+
+        let tags = {
+          let raw = &self.add_feed_form.tags;
+          let v: Vec<String> = raw
+            .split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
+          if v.is_empty() {
+            None
+          } else {
+            Some(v)
+          }
+        };
+
+        let refresh = {
+          let s = self.add_feed_form.refresh.trim().to_string();
+          if s.is_empty() {
+            None
+          } else if parse_refresh_interval(&s).is_none() {
+            self.add_feed_form.error =
+              Some("Invalid refresh format (use e.g. 1h, 3d, 1w)".to_string());
+            return;
+          } else {
+            Some(s)
+          }
+        };
+
+        let new_feed = FeedConfig {
+          link: url,
+          name,
+          tags,
+          refresh,
+        };
+        self.feed_config.push(new_feed.clone());
+
+        if self.loading_state.is_loading {
+          self.add_feed_form.error = Some("A fetch is already in progress".to_string());
+          return;
+        }
+
+        if let Err(e) = write_feeds(&self.feed_config) {
+          self.push_error("Add Feed", format!("Failed to save feeds.toml: {}", e));
+        }
+
+        let tx = self.feed_tx.clone();
+        let feeds_to_fetch = vec![new_feed];
+        tokio::spawn(async move {
+          feeds::fetch_feeds_subset_with_progress(feeds_to_fetch, tx).await;
+        });
+
+        self.loading_state.start();
+        self.show_add_feed_popup = false;
+        self.add_feed_form.clear();
+      }
+      KeyCode::Char(c) => {
+        self.add_feed_form.active_buffer().push(c);
+        self.add_feed_form.error = None;
+      }
+      _ => {}
     }
   }
 

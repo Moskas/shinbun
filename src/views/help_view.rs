@@ -77,6 +77,10 @@ fn build_help_content(theme: &Theme) -> Vec<Line<'static>> {
 
   let action_binds = [
     Keybind {
+      key: "a",
+      description: "Add new feed",
+    },
+    Keybind {
       key: "r",
       description: "Refresh selected feed",
     },

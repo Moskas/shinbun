@@ -1,4 +1,6 @@
-use crate::app::{AppState, DisplayFeed, FeedError, ListPane, LoadingState};
+use crate::app::{
+  AddFeedField, AddFeedForm, AppState, DisplayFeed, FeedError, ListPane, LoadingState,
+};
 use crate::feeds::{Feed, FeedEntry};
 use crate::theme::Theme;
 use ratatui::{
@@ -892,6 +894,105 @@ pub fn render_confirm_popup(frame: &mut Frame, area: Rect, feed_name: &str, them
     .block(block)
     .alignment(Alignment::Center);
 
+  popup.render(popup_area, frame.buffer_mut());
+}
+
+pub fn render_add_feed_popup(frame: &mut Frame, area: Rect, form: &AddFeedForm, theme: &Theme) {
+  let popup_width = 60u16.min(area.width.saturating_sub(4));
+  let popup_height = 14u16;
+
+  let popup_area = Rect {
+    x: area.x + (area.width.saturating_sub(popup_width)) / 2,
+    y: area.y + (area.height.saturating_sub(popup_height)) / 2,
+    width: popup_width,
+    height: popup_height,
+  };
+
+  Clear.render(popup_area, frame.buffer_mut());
+
+  let focused_style = Style::default().fg(theme.highlight_fg);
+  let label_style = Style::default().bold();
+  let hint_style = Style::default().fg(theme.count);
+
+  let field_line = |label: &'static str, value: &str, focused: bool, hint: &'static str| {
+    let cursor = if focused { "▌" } else { " " };
+    let value_display = if value.is_empty() && !focused {
+      hint.to_string()
+    } else {
+      format!("{}{}", value, if focused { "▌" } else { "" })
+    };
+    let value_style = if focused {
+      focused_style
+    } else if value.is_empty() {
+      hint_style
+    } else {
+      Style::default()
+    };
+    (
+      Line::from(Span::styled(format!(" {}", label), label_style)),
+      Line::from(vec![
+        Span::raw(format!("  {}", cursor)),
+        Span::styled(value_display, value_style),
+      ]),
+    )
+  };
+
+  let (url_label, url_val) = field_line(
+    "URL *",
+    &form.url,
+    form.focus == AddFeedField::Url,
+    "https://example.com/feed.xml",
+  );
+  let (name_label, name_val) = field_line(
+    "Name",
+    &form.name,
+    form.focus == AddFeedField::Name,
+    "(optional)",
+  );
+  let (tags_label, tags_val) = field_line(
+    "Tags",
+    &form.tags,
+    form.focus == AddFeedField::Tags,
+    "comma-separated, optional",
+  );
+  let (refresh_label, refresh_val) = field_line(
+    "Refresh",
+    &form.refresh,
+    form.focus == AddFeedField::Refresh,
+    "1h / 3d / 1w (optional)",
+  );
+
+  let mut lines = vec![
+    url_label,
+    url_val,
+    name_label,
+    name_val,
+    tags_label,
+    tags_val,
+    refresh_label,
+    refresh_val,
+    Line::from(""),
+  ];
+
+  if let Some(ref err) = form.error {
+    lines.push(Line::from(Span::styled(
+      format!(" ✗ {}", err),
+      Style::default().fg(theme.error_title),
+    )));
+  } else {
+    lines.push(Line::from(Span::styled(
+      " Tab: next field  Enter: add  Esc: cancel",
+      hint_style,
+    )));
+  }
+
+  let block = Block::default()
+    .title(Span::styled(" Add Feed ", theme.title_style()))
+    .borders(Borders::ALL)
+    .border_style(Style::default().fg(theme.confirm))
+    .border_set(border::PLAIN);
+
+  let popup = Paragraph::new(lines).block(block);
   popup.render(popup_area, frame.buffer_mut());
 }
 

@@ -7,7 +7,7 @@ pub mod read_state;
 pub mod search;
 pub mod types;
 
-pub use input::InputState;
+pub use input::{AddFeedField, AddFeedForm, InputState};
 pub use loading::LoadingState;
 pub use types::*;
 
@@ -56,6 +56,8 @@ pub struct App {
   pub(crate) links_selected: usize,
   pub(crate) show_confirm_popup: bool,
   pub(crate) confirm_feed_name: String,
+  pub(crate) show_add_feed_popup: bool,
+  pub(crate) add_feed_form: AddFeedForm,
   pub(crate) input: InputState,
   pub(crate) cache: FeedCache,
   pub(crate) theme: Theme,
@@ -128,6 +130,8 @@ impl App {
       links_selected: 0,
       show_confirm_popup: false,
       confirm_feed_name: String::new(),
+      show_add_feed_popup: false,
+      add_feed_form: AddFeedForm::default(),
       input: InputState {
         hide_read,
         ..InputState::default()
@@ -418,6 +422,10 @@ impl App {
     if self.show_confirm_popup {
       feeds_list_view::render_confirm_popup(frame, area, &self.confirm_feed_name, &self.theme);
     }
+
+    if self.show_add_feed_popup {
+      feeds_list_view::render_add_feed_popup(frame, area, &self.add_feed_form, &self.theme);
+    }
   }
 
   pub fn handle_key(&mut self, key: KeyEvent) {
@@ -526,6 +534,11 @@ impl App {
         }
         _ => {} // ignore all other keys while popup is open
       }
+      return;
+    }
+
+    if self.show_add_feed_popup {
+      self.handle_add_feed_key(key);
       return;
     }
 
@@ -649,6 +662,13 @@ impl App {
           };
           self.tag_list_state.select(Some(0));
           self.tag_index = 0;
+        }
+      }
+      KeyCode::Char('a') => {
+        if self.state == AppState::BrowsingFeeds {
+          self.input.cancel_sequence();
+          self.add_feed_form.clear();
+          self.show_add_feed_popup = true;
         }
       }
       KeyCode::Char('/') => match self.state {
@@ -1574,5 +1594,165 @@ mod tests {
     input.vim_g = true;
     input.cancel_sequence();
     assert!(!input.vim_g);
+  }
+
+  // ─── Add feed popup tests ─────────────────────────────────────────────
+
+  #[test]
+  fn test_add_feed_popup_opens_with_a() {
+    let mut app = make_test_app();
+    assert!(!app.show_add_feed_popup);
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    assert!(app.show_add_feed_popup);
+  }
+
+  #[test]
+  fn test_add_feed_popup_not_opened_from_entry_list() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let mut app = make_app_with_feeds(feeds);
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // BrowsingEntries
+    assert_eq!(app.state, AppState::BrowsingEntries);
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    assert!(!app.show_add_feed_popup);
+  }
+
+  #[test]
+  fn test_add_feed_popup_esc_closes() {
+    let mut app = make_test_app();
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    assert!(app.show_add_feed_popup);
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(!app.show_add_feed_popup);
+  }
+
+  #[test]
+  fn test_add_feed_popup_typing() {
+    let mut app = make_test_app();
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    for c in "https://test.com/rss".chars() {
+      app.handle_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    assert_eq!(app.add_feed_form.url, "https://test.com/rss");
+  }
+
+  #[test]
+  fn test_add_feed_popup_tab_cycles_fields() {
+    let mut app = make_test_app();
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    assert_eq!(app.add_feed_form.focus, AddFeedField::Url);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.add_feed_form.focus, AddFeedField::Name);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.add_feed_form.focus, AddFeedField::Tags);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.add_feed_form.focus, AddFeedField::Refresh);
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    assert_eq!(app.add_feed_form.focus, AddFeedField::Url);
+  }
+
+  #[test]
+  fn test_add_feed_popup_backtab_cycles_fields() {
+    let mut app = make_test_app();
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    assert_eq!(app.add_feed_form.focus, AddFeedField::Url);
+    app.handle_key(KeyEvent::from(KeyCode::BackTab));
+    assert_eq!(app.add_feed_form.focus, AddFeedField::Refresh);
+  }
+
+  #[test]
+  fn test_add_feed_popup_backspace_removes_char() {
+    let mut app = make_test_app();
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('h')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('i')));
+    assert_eq!(app.add_feed_form.url, "hi");
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.add_feed_form.url, "h");
+  }
+
+  #[test]
+  fn test_add_feed_popup_enter_with_empty_url_shows_error() {
+    let mut app = make_test_app();
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.show_add_feed_popup);
+    assert!(app.add_feed_form.error.is_some());
+  }
+
+  #[test]
+  fn test_add_feed_popup_enter_with_invalid_refresh_shows_error() {
+    let mut app = make_test_app();
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    for c in "https://test.com/rss".chars() {
+      app.handle_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    for c in "2x".chars() {
+      app.handle_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(app.show_add_feed_popup);
+    assert!(app.add_feed_form.error.is_some());
+  }
+
+  #[test]
+  fn test_add_feed_popup_blocks_quit() {
+    let mut app = make_test_app();
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+    // 'q' typed into URL field, not quit
+    assert!(!app.should_exit());
+    assert_eq!(app.add_feed_form.url, "q");
+  }
+
+  #[tokio::test]
+  async fn test_add_feed_popup_enter_adds_to_feed_config() {
+    let mut app = make_test_app();
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    for c in "https://example.com/feed.xml".chars() {
+      app.handle_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    for c in "My Feed".chars() {
+      app.handle_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    for c in "tech, rust".chars() {
+      app.handle_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Tab));
+    for c in "1d".chars() {
+      app.handle_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(!app.show_add_feed_popup);
+    assert_eq!(app.feed_config.len(), 1);
+    assert_eq!(app.feed_config[0].link, "https://example.com/feed.xml");
+    assert_eq!(app.feed_config[0].name.as_deref(), Some("My Feed"));
+    let tags = app.feed_config[0].tags.as_ref().unwrap();
+    assert!(tags.contains(&"tech".to_string()));
+    assert!(tags.contains(&"rust".to_string()));
+    assert_eq!(app.feed_config[0].refresh.as_deref(), Some("1d"));
+  }
+
+  #[tokio::test]
+  async fn test_add_feed_popup_optional_fields_empty() {
+    let mut app = make_test_app();
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    for c in "https://example.com/rss".chars() {
+      app.handle_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert!(!app.show_add_feed_popup);
+    assert_eq!(app.feed_config.len(), 1);
+    assert!(app.feed_config[0].name.is_none());
+    assert!(app.feed_config[0].tags.is_none());
+    assert!(app.feed_config[0].refresh.is_none());
   }
 }
