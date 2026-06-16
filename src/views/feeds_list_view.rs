@@ -240,7 +240,7 @@ pub fn render(frame: &mut Frame, area: Rect, s: &mut FeedsViewState) {
         format!(
           " Shinbun - Tags ({}{}) ",
           tag_count,
-          if tag_count == 1 { " tag)" } else { " tags)" }
+          if tag_count == 1 { " tag" } else { " tags" }
         )
       }
     },

@@ -7,8 +7,11 @@ use tokio::sync::mpsc;
 
 /// Shared HTTP client configured with a 30-second timeout.
 /// `reqwest::Client` is cheaply cloneable (it wraps an `Arc` internally).
+pub const USER_AGENT: &str = concat!("shinbun/", env!("CARGO_PKG_VERSION"), " (RSS reader)");
+
 fn build_client() -> Client {
   Client::builder()
+    .user_agent(USER_AGENT)
     .timeout(Duration::from_secs(30))
     .build()
     .unwrap_or_default()

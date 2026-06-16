@@ -334,8 +334,7 @@ fn render_segments(
                 .render(full_area, frame.buffer_mut());
             }
           } else {
-            Paragraph::new(Line::from(ph).fg(theme.meta_link))
-              .render(seg_area, frame.buffer_mut());
+            Paragraph::new(Line::from(ph).fg(theme.meta_link)).render(seg_area, frame.buffer_mut());
           }
         } else {
           // Images disabled: compact 3-row layout (blank / alt text / blank).

@@ -312,6 +312,7 @@ fn extract_image_urls(md: &str) -> Vec<String> {
 
 async fn fetch_image_bytes(url: String) -> Result<image::DynamicImage, String> {
   let client = reqwest::Client::builder()
+    .user_agent(feeds::USER_AGENT)
     .timeout(std::time::Duration::from_secs(30))
     .build()
     .map_err(|e| e.to_string())?;
