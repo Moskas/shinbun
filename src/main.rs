@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 mod app;
 mod cache;
 mod config;
+mod content;
 mod feeds;
 mod opml;
 mod query;

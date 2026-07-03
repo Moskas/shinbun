@@ -1,8 +1,9 @@
+use crate::content::markdown::{render_markdown, MarkdownStyles, MdBlock};
 use crate::feeds::FeedEntry;
 use crate::theme::Theme;
 use ratatui::{
   layout::Rect,
-  prelude::{Alignment, Color, Line, Modifier, Span, Style, Stylize},
+  prelude::{Alignment, Line, Span, Style, Stylize},
   symbols::border,
   widgets::{
     Block, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
@@ -12,18 +13,17 @@ use ratatui::{
 };
 use ratatui_image::{protocol::StatefulProtocol, StatefulImage};
 use std::collections::HashMap;
-use tui_markdown::{self, Options, StyleSheet};
 
 /// Fixed cell-row height reserved for each image segment.
 const IMAGE_RENDER_ROWS: usize = 15;
 
-/// A piece of entry content: either markdown text or an inline image.
+/// A piece of entry content laid out for the viewport.
 #[derive(Debug)]
 enum ContentSegment {
-  /// Raw Markdown string; rendered lazily by tui-markdown each frame.
-  Text(String),
-  /// Pre-built styled lines (metadata header, footer links, etc.).
-  PreStyled(Vec<Line<'static>>),
+  /// Styled lines soft-wrapped by the renderer (paragraphs, metadata, footer).
+  Wrapped(Vec<Line<'static>>),
+  /// Pre-formatted lines already fitted to the width (tables) — never wrapped.
+  Fixed(Vec<Line<'static>>),
   /// Inline image: fetched asynchronously and stored in the App's image_cache.
   Image { src: String, alt: String },
 }
@@ -38,83 +38,7 @@ pub struct EntryViewConfig<'a> {
   pub image_cache: &'a mut HashMap<String, StatefulProtocol>,
 }
 
-/// A theme-aware stylesheet for tui-markdown rendering.
-#[derive(Clone, Copy, Debug)]
-pub struct ShinbunStyleSheet {
-  h1: Color,
-  h2: Color,
-  h3: Color,
-  h4: Color,
-  h5: Color,
-  code: Option<Color>,
-  link: Color,
-  metadata_block: Color,
-}
-
-impl ShinbunStyleSheet {
-  pub fn from_theme(theme: &Theme) -> Self {
-    Self {
-      h1: theme.h1,
-      h2: theme.h2,
-      h3: theme.h3,
-      h4: theme.h4,
-      h5: theme.h5,
-      code: theme.code,
-      link: theme.link,
-      metadata_block: theme.metadata_block,
-    }
-  }
-}
-
-impl Default for ShinbunStyleSheet {
-  fn default() -> Self {
-    Self::from_theme(&Theme::default())
-  }
-}
-
-impl StyleSheet for ShinbunStyleSheet {
-  fn heading(&self, level: u8) -> Style {
-    match level {
-      1 => Style::new()
-        .fg(self.h1)
-        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-      2 => Style::new().fg(self.h2).add_modifier(Modifier::BOLD),
-      3 => Style::new().fg(self.h3).add_modifier(Modifier::BOLD),
-      4 => Style::new().fg(self.h4),
-      5 => Style::new().fg(self.h5),
-      _ => Style::new(),
-    }
-  }
-
-  fn code(&self) -> Style {
-    let s = Style::new().add_modifier(Modifier::BOLD);
-    match self.code {
-      Some(c) => s.fg(c),
-      None => s,
-    }
-  }
-
-  fn link(&self) -> Style {
-    Style::new()
-      .fg(self.link)
-      .add_modifier(Modifier::UNDERLINED)
-  }
-
-  fn blockquote(&self) -> Style {
-    Style::new().dim()
-  }
-
-  fn heading_meta(&self) -> Style {
-    Style::new().dim()
-  }
-
-  fn metadata_block(&self) -> Style {
-    Style::new().fg(self.metadata_block)
-  }
-}
-
 /// Calculate the wrapped height of text lines given a content width.
-/// Adds 2 to provide natural spacing between segments.
 fn calculate_wrapped_height(lines: &[Line], content_width: u16) -> usize {
   let width = content_width.max(1) as usize;
   lines
@@ -130,58 +54,13 @@ fn calculate_wrapped_height(lines: &[Line], content_width: u16) -> usize {
     .sum::<usize>()
 }
 
-/// Split a Markdown string into alternating text and image segments.
-/// Images are detected by the `![alt](url)` syntax that `htmd` emits.
-fn split_into_segments(md: &str) -> Vec<ContentSegment> {
-  let mut segs = Vec::new();
-  let mut text_start = 0;
-  let mut i = 0;
-  let bytes = md.as_bytes();
-  let md_len = md.len();
-
-  while i < md_len {
-    if i + 1 < md_len && bytes[i] == b'!' && bytes[i + 1] == b'[' {
-      let after_excl = i + 2;
-      if let Some(rel_bracket) = md[after_excl..].find(']') {
-        let after_bracket = after_excl + rel_bracket;
-        if after_bracket + 1 < md_len && &md[after_bracket..after_bracket + 2] == "](" {
-          let url_start = after_bracket + 2;
-          if let Some(rel_paren) = md[url_start..].find(')') {
-            let url_end = url_start + rel_paren;
-            let url = &md[url_start..url_end];
-            let alt = &md[after_excl..after_bracket];
-            let img_end = url_end + 1;
-
-            let text_before = &md[text_start..i];
-            if !text_before.trim().is_empty() {
-              segs.push(ContentSegment::Text(text_before.to_string()));
-            }
-            // Only emit image segments for HTTP URLs (relative paths can't be fetched).
-            if url.starts_with("http") {
-              segs.push(ContentSegment::Image {
-                src: url.to_string(),
-                alt: alt.to_string(),
-              });
-            }
-            text_start = img_end;
-            i = img_end;
-            continue;
-          }
-        }
-      }
-    }
-    i += 1;
-  }
-
-  let remaining = &md[text_start..];
-  if !remaining.trim().is_empty() {
-    segs.push(ContentSegment::Text(remaining.to_string()));
-  }
-  segs
-}
-
 /// Build the full ordered list of content segments for the entry view.
-fn build_all_segments(feed_title: &str, entry: &FeedEntry, theme: &Theme) -> Vec<ContentSegment> {
+fn build_all_segments(
+  feed_title: &str,
+  entry: &FeedEntry,
+  theme: &Theme,
+  content_width: u16,
+) -> Vec<ContentSegment> {
   let mut segs = Vec::new();
 
   // Metadata header (theme-colored pre-styled lines)
@@ -202,10 +81,17 @@ fn build_all_segments(feed_title: &str, entry: &FeedEntry, theme: &Theme) -> Vec
     meta.push(Line::from(format!("Media: {}", url)).fg(theme.meta_link));
   }
   meta.push(Line::from(""));
-  segs.push(ContentSegment::PreStyled(meta));
+  segs.push(ContentSegment::Wrapped(meta));
 
-  // Body: split markdown into text + image segments
-  segs.extend(split_into_segments(&entry.text));
+  // Body: render markdown into text/table/image blocks fitted to the width.
+  let styles = MarkdownStyles::from_theme(theme);
+  for block in render_markdown(&entry.text, content_width, &styles) {
+    segs.push(match block {
+      MdBlock::Text(lines) => ContentSegment::Wrapped(lines),
+      MdBlock::Table(lines) => ContentSegment::Fixed(lines),
+      MdBlock::Image { src, alt } => ContentSegment::Image { src, alt },
+    });
+  }
 
   // Footer: additional links beyond the first
   if entry.links.len() > 1 {
@@ -220,25 +106,17 @@ fn build_all_segments(feed_title: &str, entry: &FeedEntry, theme: &Theme) -> Vec
         .enumerate()
         .map(|(i, link)| Line::from(format!("[{}]: {}", i + 1, link)).fg(theme.meta_link)),
     );
-    segs.push(ContentSegment::PreStyled(footer));
+    segs.push(ContentSegment::Wrapped(footer));
   }
 
   segs
 }
 
 /// Return the virtual height of a single segment given the available width.
-fn seg_height(
-  seg: &ContentSegment,
-  content_width: u16,
-  stylesheet: ShinbunStyleSheet,
-  show_images: bool,
-) -> usize {
+fn seg_height(seg: &ContentSegment, content_width: u16, show_images: bool) -> usize {
   match seg {
-    ContentSegment::PreStyled(lines) => calculate_wrapped_height(lines, content_width),
-    ContentSegment::Text(md) => {
-      let rendered = tui_markdown::from_str_with_options(md, &Options::new(stylesheet));
-      calculate_wrapped_height(&rendered.lines, content_width)
-    }
+    ContentSegment::Wrapped(lines) => calculate_wrapped_height(lines, content_width),
+    ContentSegment::Fixed(lines) => lines.len(),
     // 1 blank + alt text + 1 blank when images are off; full reserved rows otherwise.
     ContentSegment::Image { .. } => {
       if show_images {
@@ -258,7 +136,6 @@ fn render_segments(
   segments: &[ContentSegment],
   heights: &[usize],
   scroll: usize,
-  stylesheet: ShinbunStyleSheet,
   theme: &Theme,
   image_cache: &mut HashMap<String, StatefulProtocol>,
   show_images: bool,
@@ -298,17 +175,15 @@ fn render_segments(
     };
 
     match seg {
-      ContentSegment::PreStyled(lines) => {
+      ContentSegment::Wrapped(lines) => {
         Paragraph::new(lines.clone())
           .scroll((inner_skip as u16, 0))
           .wrap(Wrap { trim: false })
           .render(seg_area, frame.buffer_mut());
       }
-      ContentSegment::Text(md) => {
-        let rendered = tui_markdown::from_str_with_options(md, &Options::new(stylesheet));
-        Paragraph::new(rendered)
+      ContentSegment::Fixed(lines) => {
+        Paragraph::new(lines.clone())
           .scroll((inner_skip as u16, 0))
-          .wrap(Wrap { trim: false })
           .render(seg_area, frame.buffer_mut());
       }
       ContentSegment::Image { src, alt } => {
@@ -411,12 +286,11 @@ pub fn render(
   let visible_height = text_area.height as usize;
 
   // Build segments and compute layout heights.
-  let stylesheet = ShinbunStyleSheet::from_theme(theme);
-  let segments = build_all_segments(feed_title, entry, theme);
+  let segments = build_all_segments(feed_title, entry, theme, content_width);
   let show_images = cfg.show_images;
   let heights: Vec<usize> = segments
     .iter()
-    .map(|seg| seg_height(seg, content_width, stylesheet, show_images))
+    .map(|seg| seg_height(seg, content_width, show_images))
     .collect();
   let content_length: usize = heights.iter().sum();
 
@@ -454,7 +328,6 @@ pub fn render(
     &segments,
     &heights,
     cur_scroll,
-    stylesheet,
     theme,
     cfg.image_cache,
     cfg.show_images,
@@ -537,53 +410,30 @@ mod tests {
     assert_eq!(height, 1);
   }
 
-  #[test]
-  fn test_split_into_segments_no_images() {
-    let segs = split_into_segments("Hello world");
-    assert_eq!(segs.len(), 1);
-    assert!(matches!(&segs[0], ContentSegment::Text(s) if s == "Hello world"));
-  }
-
-  #[test]
-  fn test_split_into_segments_single_image() {
-    let md = "Before\n\n![alt text](https://example.com/img.png)\n\nAfter";
-    let segs = split_into_segments(md);
-    assert_eq!(segs.len(), 3);
-    assert!(matches!(&segs[0], ContentSegment::Text(_)));
-    assert!(
-      matches!(&segs[1], ContentSegment::Image { src, alt } if src == "https://example.com/img.png" && alt == "alt text")
-    );
-    assert!(matches!(&segs[2], ContentSegment::Text(_)));
-  }
-
-  #[test]
-  fn test_split_into_segments_skips_non_http_images() {
-    let md = "![local](./relative/path.png) text";
-    let segs = split_into_segments(md);
-    // Non-HTTP image is skipped; remaining text becomes one text segment
-    assert!(segs
-      .iter()
-      .all(|s| !matches!(s, ContentSegment::Image { .. })));
-  }
-
-  #[test]
-  fn test_build_all_segments_metadata() {
-    use crate::feeds::FeedEntry;
-    let entry = FeedEntry {
+  fn make_entry(text: &str, links: Vec<String>) -> FeedEntry {
+    FeedEntry {
       title: "Test Entry".to_string(),
       published: Some("2024-01-15".to_string()),
-      text: "Entry body text".to_string(),
-      links: vec!["https://example.com/post".to_string()],
+      text: text.to_string(),
+      links,
       media: None,
       feed_title: None,
       feed_url: None,
       read: false,
-    };
+    }
+  }
 
-    let segs = build_all_segments("My Feed", &entry, &test_theme());
-    // First segment should be PreStyled metadata
-    assert!(matches!(&segs[0], ContentSegment::PreStyled(_)));
-    if let ContentSegment::PreStyled(lines) = &segs[0] {
+  #[test]
+  fn test_build_all_segments_metadata() {
+    let entry = make_entry(
+      "Entry body text",
+      vec!["https://example.com/post".to_string()],
+    );
+
+    let segs = build_all_segments("My Feed", &entry, &test_theme(), 80);
+    // First segment should be wrapped metadata lines
+    assert!(matches!(&segs[0], ContentSegment::Wrapped(_)));
+    if let ContentSegment::Wrapped(lines) = &segs[0] {
       let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
       assert!(text.iter().any(|l| l.contains("Test Entry")));
       assert!(text.iter().any(|l| l.contains("My Feed")));
@@ -592,27 +442,34 @@ mod tests {
   }
 
   #[test]
+  fn test_build_all_segments_image_and_table() {
+    let entry = make_entry(
+      "Before\n\n![alt text](https://example.com/img.png)\n\n| a | b |\n| --- | --- |\n| 1 | 2 |",
+      vec![],
+    );
+
+    let segs = build_all_segments("Feed", &entry, &test_theme(), 80);
+    assert!(segs.iter().any(
+      |s| matches!(s, ContentSegment::Image { src, alt } if src == "https://example.com/img.png" && alt == "alt text")
+    ));
+    assert!(segs.iter().any(|s| matches!(s, ContentSegment::Fixed(_))));
+  }
+
+  #[test]
   fn test_build_all_segments_footer_links() {
-    use crate::feeds::FeedEntry;
-    let entry = FeedEntry {
-      title: "Multi Link".to_string(),
-      published: None,
-      text: "Content".to_string(),
-      links: vec![
+    let entry = make_entry(
+      "Content",
+      vec![
         "https://example.com/main".to_string(),
         "https://example.com/ref1".to_string(),
         "https://example.com/ref2".to_string(),
       ],
-      media: None,
-      feed_title: None,
-      feed_url: None,
-      read: false,
-    };
+    );
 
-    let segs = build_all_segments("Feed", &entry, &test_theme());
+    let segs = build_all_segments("Feed", &entry, &test_theme(), 80);
     let last = segs.last().unwrap();
-    assert!(matches!(last, ContentSegment::PreStyled(_)));
-    if let ContentSegment::PreStyled(lines) = last {
+    assert!(matches!(last, ContentSegment::Wrapped(_)));
+    if let ContentSegment::Wrapped(lines) = last {
       let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
       assert!(text.iter().any(|l| l.contains("Links:")));
       assert!(text.iter().any(|l| l.contains("ref1")));

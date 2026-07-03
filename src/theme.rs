@@ -165,9 +165,6 @@ pub struct ThemeConfig {
   /// Link color
   #[serde(default)]
   pub link: Option<String>,
-  /// Metadata block color (tui-markdown)
-  #[serde(default)]
-  pub metadata_block: Option<String>,
 
   // ── Popups ────────────────────────────────────────────────────────────────
   /// Error popup border color
@@ -257,7 +254,6 @@ pub struct Theme {
   pub h5: Color,
   pub code: Option<Color>,
   pub link: Color,
-  pub metadata_block: Color,
 
   // ── Popups ──
   pub error_border: Color,
@@ -321,7 +317,6 @@ impl Theme {
       h5: resolve(&cfg.h5, Color::LightCyan),
       code: cfg.code.as_ref().map(|s| parse_color(s)),
       link: resolve(&cfg.link, Color::Blue),
-      metadata_block: resolve(&cfg.metadata_block, Color::LightYellow),
 
       error_border: resolve(&cfg.error_border, Color::Red),
       error_title: resolve(&cfg.error_title, Color::Yellow),

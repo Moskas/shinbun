@@ -191,8 +191,19 @@ pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {
       let mut links: Vec<_> = e.links.into_iter().map(|l| l.href).collect();
 
       let text = if looks_like_html(&html_content) {
-        links.extend(extract_html_links(&html_content));
-        htmd::convert(&html_content).unwrap_or(html_content)
+        // Resolve relative URLs against the entry's own link (falling back
+        // to the feed URL), so feeds that emit relative paths still work.
+        let base = links
+          .first()
+          .map(String::as_str)
+          .unwrap_or(&feed_config.link);
+        let converted = crate::content::html::html_to_markdown(&html_content, Some(base));
+        for link in converted.links {
+          if !links.contains(&link) {
+            links.push(link);
+          }
+        }
+        converted.markdown
       } else {
         html_content
       };
@@ -231,61 +242,9 @@ fn looks_like_html(s: &str) -> bool {
   s.contains('<') && s.contains('>')
 }
 
-fn extract_html_links(html: &str) -> Vec<String> {
-  let dom = tl::parse(html, tl::ParserOptions::default()).ok();
-  let Some(dom) = dom else { return vec![] };
-  let parser = dom.parser();
-  dom
-    .query_selector("a[href]")
-    .into_iter()
-    .flatten()
-    .filter_map(|h| h.get(parser)?.as_tag())
-    .filter_map(|tag| tag.attributes().get("href"))
-    .map(|b| b.unwrap().as_utf8_str().into_owned())
-    .filter(|href| href.starts_with("http"))
-    .collect()
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
-
-  #[test]
-  fn test_extract_html_links_basic() {
-    let html = r#"<p>Check <a href="https://example.com">this</a> and <a href="https://other.com/page">that</a></p>"#;
-    let links = extract_html_links(html);
-    assert_eq!(links.len(), 2);
-    assert_eq!(links[0], "https://example.com");
-    assert_eq!(links[1], "https://other.com/page");
-  }
-
-  #[test]
-  fn test_extract_html_links_filters_non_http() {
-    let html = r#"<a href="https://example.com">ok</a><a href="mailto:test@test.com">email</a><a href="/relative">rel</a>"#;
-    let links = extract_html_links(html);
-    assert_eq!(links.len(), 1);
-    assert_eq!(links[0], "https://example.com");
-  }
-
-  #[test]
-  fn test_extract_html_links_empty_html() {
-    let links = extract_html_links("");
-    assert!(links.is_empty());
-  }
-
-  #[test]
-  fn test_extract_html_links_no_anchors() {
-    let html = "<p>No links here</p>";
-    let links = extract_html_links(html);
-    assert!(links.is_empty());
-  }
-
-  #[test]
-  fn test_extract_html_links_anchor_without_href() {
-    let html = r#"<a name="anchor">no href</a>"#;
-    let links = extract_html_links(html);
-    assert!(links.is_empty());
-  }
 
   #[test]
   fn test_parse_single_feed_atom() {

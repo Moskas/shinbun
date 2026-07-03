@@ -136,7 +136,7 @@ impl App {
     let Some(entry) = df.entries(&self.feeds).get(real_idx) else {
       return;
     };
-    let urls = extract_image_urls(&entry.text);
+    let urls = crate::content::markdown::extract_image_urls(&entry.text);
     for url in urls {
       if self.image_cache.contains_key(&url) {
         continue;
@@ -282,32 +282,6 @@ impl App {
       self.push_error("Media player", e);
     }
   }
-}
-
-/// Extract `https?://…` image URLs from `![alt](url)` patterns in a markdown string.
-fn extract_image_urls(md: &str) -> Vec<String> {
-  let mut urls = Vec::new();
-  let mut search_from = 0;
-  while let Some(rel) = md[search_from..].find("![") {
-    let abs = search_from + rel;
-    let after_excl = abs + 2;
-    if let Some(bracket_end) = md[after_excl..].find(']') {
-      let after_bracket = after_excl + bracket_end;
-      if md[after_bracket..].starts_with("](") {
-        let url_start = after_bracket + 2;
-        if let Some(paren_end) = md[url_start..].find(')') {
-          let url = &md[url_start..url_start + paren_end];
-          if url.starts_with("http") {
-            urls.push(url.to_string());
-          }
-          search_from = url_start + paren_end + 1;
-          continue;
-        }
-      }
-    }
-    search_from = abs + 2;
-  }
-  urls
 }
 
 async fn fetch_image_bytes(url: String) -> Result<image::DynamicImage, String> {
