@@ -76,6 +76,8 @@ pub struct App {
   pub(crate) picker: Picker,
   /// Cache of decoded + protocol-encoded images keyed by URL.
   pub(crate) image_cache: HashMap<String, StatefulProtocol>,
+  /// Cached entry-view segment layout; rebuilt when entry/width change.
+  pub(crate) entry_render_cache: entry_view::EntryRenderCache,
   /// Runtime toggle for image rendering; initialized from ui_config.show_images.
   pub(crate) show_images: bool,
 }
@@ -143,6 +145,7 @@ impl App {
       dirty: true,
       picker,
       image_cache: HashMap::new(),
+      entry_render_cache: entry_view::EntryRenderCache::default(),
       show_images,
     }
   }
@@ -353,6 +356,7 @@ impl App {
                   show_scrollbar: self.ui_config.show_scrollbar,
                   theme: &self.theme,
                   image_cache: &mut self.image_cache,
+                  render_cache: &mut self.entry_render_cache,
                   show_images: self.show_images,
                 },
               );

@@ -1,20 +1,22 @@
 //! Markdown → ratatui rendering for the entry view.
 //!
-//! Produces a sequence of [`MdBlock`]s: wrappable styled text, pre-formatted
-//! table lines fitted to the viewport width, and image references that the
-//! entry view turns into inline image segments.
+//! Produces a sequence of [`MdBlock`]s: styled lines already word-wrapped to
+//! the viewport width (so every `Line` is exactly one screen row — heights
+//! are exact), and image references that the entry view turns into inline
+//! image segments. Tables are laid out with content-sized columns and cell
+//! wrapping. Wrapped list items and blockquote lines keep their hanging
+//! indent / gutter on continuation lines.
 
 use crate::theme::Theme;
 use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::prelude::{Color, Line, Modifier, Span, Style};
+use std::collections::HashMap;
 
 /// A rendered piece of Markdown content.
 #[derive(Debug)]
 pub enum MdBlock {
-  /// Styled lines that may be soft-wrapped by the renderer.
+  /// Pre-wrapped styled lines; each `Line` occupies exactly one screen row.
   Text(Vec<Line<'static>>),
-  /// Pre-formatted table lines already fitted to the width — must not wrap.
-  Table(Vec<Line<'static>>),
   /// Inline image to be fetched and drawn by the entry view.
   Image { src: String, alt: String },
 }
@@ -70,6 +72,11 @@ impl MarkdownStyles {
       .add_modifier(Modifier::UNDERLINED)
   }
 
+  /// Inline `[n]` footnote marker tying a link to the links popup numbering.
+  fn link_number(&self) -> Style {
+    Style::new().fg(self.link)
+  }
+
   fn quote(&self) -> Style {
     Style::new().add_modifier(Modifier::DIM)
   }
@@ -80,10 +87,20 @@ fn md_options() -> Options {
 }
 
 /// Render a Markdown string into blocks fitted to `width` terminal columns.
-pub fn render_markdown(md: &str, width: u16, styles: &MarkdownStyles) -> Vec<MdBlock> {
+///
+/// `link_numbers` maps a URL to its 1-based position in the entry's link
+/// list; inline links whose URL is found there get an `[n]` marker matching
+/// the links popup.
+pub fn render_markdown(
+  md: &str,
+  width: u16,
+  styles: &MarkdownStyles,
+  link_numbers: &HashMap<String, usize>,
+) -> Vec<MdBlock> {
   let mut r = Renderer {
     styles: *styles,
     width: width.max(10) as usize,
+    link_numbers,
     blocks: Vec::new(),
     lines: Vec::new(),
     spans: Vec::new(),
@@ -94,6 +111,8 @@ pub fn render_markdown(md: &str, width: u16, styles: &MarkdownStyles) -> Vec<MdB
     quote: 0,
     in_code_block: false,
     list_stack: Vec::new(),
+    item_hangs: Vec::new(),
+    fresh_item: false,
     links: Vec::new(),
     table: None,
     image: None,
@@ -103,6 +122,17 @@ pub fn render_markdown(md: &str, width: u16, styles: &MarkdownStyles) -> Vec<MdB
   }
   r.end_text_block();
   r.blocks
+}
+
+/// Word-wrap a single styled line to `width` columns (no hanging indent).
+/// Used by the entry view for metadata lines. The line-level style (e.g. a
+/// color set via `Line::fg`) is preserved on every wrapped line.
+pub fn wrap_line(line: Line<'static>, width: u16) -> Vec<Line<'static>> {
+  let style = line.style;
+  wrap_styled(line.spans, width.max(1) as usize, &[])
+    .into_iter()
+    .map(|l| l.style(style))
+    .collect()
 }
 
 /// All `https?://` image URLs referenced by `![alt](url)` in a Markdown string.
@@ -124,9 +154,10 @@ struct TableBuild {
   in_cell: bool,
 }
 
-struct Renderer {
+struct Renderer<'a> {
   styles: MarkdownStyles,
   width: usize,
+  link_numbers: &'a HashMap<String, usize>,
   blocks: Vec<MdBlock>,
   lines: Vec<Line<'static>>,
   spans: Vec<Span<'static>>,
@@ -137,13 +168,18 @@ struct Renderer {
   quote: usize,
   in_code_block: bool,
   list_stack: Vec<Option<u64>>,
+  /// Hanging-indent widths of the currently open list items (marker widths).
+  item_hangs: Vec<usize>,
+  /// A list item marker was just emitted and no content followed yet; the
+  /// item's first paragraph must continue on the marker's line.
+  fresh_item: bool,
   /// Open links: (span count at open, destination URL).
   links: Vec<(usize, String)>,
   table: Option<TableBuild>,
   image: Option<(String, String)>,
 }
 
-impl Renderer {
+impl Renderer<'_> {
   fn event(&mut self, ev: Event) {
     // Inline content is diverted into an open image alt or table cell first.
     if self.try_sink(&ev) {
@@ -159,10 +195,12 @@ impl Renderer {
           .spans
           .push(Span::styled(t.into_string(), self.styles.code()));
       }
-      Event::SoftBreak => self.spans.push(Span::raw(" ")),
+      // Space between soft-wrapped source lines; dropped at line start.
+      Event::SoftBreak if !self.spans.is_empty() => self.spans.push(Span::raw(" ")),
+      Event::SoftBreak => {}
       Event::HardBreak => self.flush_line(),
       Event::Rule => {
-        self.start_block();
+        self.gap();
         self
           .lines
           .push(Line::styled("─".repeat(self.width), self.styles.quote()));
@@ -207,8 +245,9 @@ impl Renderer {
       }
       Tag::Item => {
         self.flush_line();
+        // Outer hangs indent nested items; the explicit depth prefix is
+        // covered by the accumulated hang widths.
         self.ensure_prefix();
-        let depth = self.list_stack.len().saturating_sub(1);
         let marker = match self.list_stack.last_mut() {
           Some(Some(i)) => {
             let m = format!("{}. ", i);
@@ -217,9 +256,9 @@ impl Renderer {
           }
           _ => "• ".to_string(),
         };
-        self
-          .spans
-          .push(Span::raw(format!("{}{}", "  ".repeat(depth), marker)));
+        self.item_hangs.push(display_width(&marker));
+        self.spans.push(Span::raw(marker));
+        self.fresh_item = true;
       }
       Tag::Emphasis => self.italic += 1,
       Tag::Strong => self.bold += 1,
@@ -231,7 +270,7 @@ impl Renderer {
         self.image = Some((dest_url.into_string(), String::new()));
       }
       Tag::Table(aligns) => {
-        self.break_with_gap();
+        self.gap();
         self.table = Some(TableBuild {
           aligns,
           rows: Vec::new(),
@@ -268,23 +307,19 @@ impl Renderer {
         self.flush_line();
         self.list_stack.pop();
       }
-      TagEnd::Item => self.flush_line(),
+      TagEnd::Item => {
+        self.flush_line();
+        self.item_hangs.pop();
+      }
       TagEnd::Emphasis => self.italic = self.italic.saturating_sub(1),
       TagEnd::Strong => self.bold = self.bold.saturating_sub(1),
       TagEnd::Strikethrough => self.strike = self.strike.saturating_sub(1),
-      TagEnd::Link => {
-        if let Some((span_count, dest)) = self.links.pop() {
-          // Autolink-style: no visible text was produced, show the URL itself.
-          if self.spans.len() == span_count {
-            self.ensure_prefix();
-            self.spans.push(Span::styled(dest, self.styles.link()));
-          }
-        }
-      }
+      TagEnd::Link => self.end_link(),
       TagEnd::Image => {
         if let Some((src, alt)) = self.image.take() {
           if src.starts_with("http") {
-            self.break_with_gap();
+            self.gap();
+            self.end_text_block();
             self.blocks.push(MdBlock::Image { src, alt });
           } else {
             // Unresolvable image: keep a textual placeholder inline.
@@ -314,12 +349,37 @@ impl Renderer {
       }
       TagEnd::Table => {
         if let Some(t) = self.table.take() {
-          let mut lines = layout_table(&t.rows, &t.aligns, self.width);
-          lines.push(Line::default());
-          self.blocks.push(MdBlock::Table(lines));
+          self
+            .lines
+            .extend(layout_table(&t.rows, &t.aligns, self.width));
         }
       }
       _ => {}
+    }
+  }
+
+  fn end_link(&mut self) {
+    let Some((span_count, dest)) = self.links.pop() else {
+      return;
+    };
+    // Autolink-style: no visible text was produced, show the URL itself.
+    if self.spans.len() <= span_count {
+      self.ensure_prefix();
+      self.spans.push(Span::styled(dest, self.styles.link()));
+      return;
+    }
+    // Number the link to match the links popup, unless the visible
+    // text is already the URL itself.
+    let text: String = self.spans[span_count..]
+      .iter()
+      .map(|s| s.content.as_ref())
+      .collect();
+    if text != dest {
+      if let Some(&n) = self.link_numbers.get(&dest) {
+        self
+          .spans
+          .push(Span::styled(format!("[{}]", n), self.styles.link_number()));
+      }
     }
   }
 
@@ -352,14 +412,25 @@ impl Renderer {
 
   fn code_text(&mut self, t: &str) {
     let style = self.styles.code();
+    let prefix = self.cont_prefix();
+    let prefix_w: usize = prefix.iter().map(Span::width).sum();
+    let avail = self.width.saturating_sub(prefix_w).max(1);
+
     for (i, part) in t.split('\n').enumerate() {
       if i > 0 {
         // Preserve blank lines inside code blocks.
-        self.lines.push(Line::from(std::mem::take(&mut self.spans)));
+        self.push_raw_line();
       }
-      if !part.is_empty() {
+      if part.is_empty() {
+        continue;
+      }
+      // Code is hard-split by columns to keep indentation intact.
+      for (j, chunk) in char_chunks(part, avail).into_iter().enumerate() {
+        if j > 0 {
+          self.push_raw_line();
+        }
         self.ensure_prefix();
-        self.spans.push(Span::styled(part.to_string(), style));
+        self.spans.push(Span::styled(chunk, style));
       }
     }
     // `split` leaves a trailing empty part when the text ends with '\n';
@@ -396,36 +467,62 @@ impl Renderer {
     s
   }
 
-  /// Prepend the blockquote gutter when starting a fresh line inside a quote.
+  /// Spans that begin every fresh line at the current nesting: blockquote
+  /// gutter plus hanging indent of open list items.
+  fn cont_prefix(&self) -> Vec<Span<'static>> {
+    let mut p = Vec::new();
+    if self.quote > 0 {
+      p.push(Span::styled("│ ".repeat(self.quote), self.styles.quote()));
+    }
+    let hang: usize = self.item_hangs.iter().sum();
+    if hang > 0 {
+      p.push(Span::raw(" ".repeat(hang)));
+    }
+    p
+  }
+
+  /// Prepend gutter/indent when starting a fresh line.
   fn ensure_prefix(&mut self) {
-    if self.spans.is_empty() && self.quote > 0 {
-      self
-        .spans
-        .push(Span::styled("│ ".repeat(self.quote), self.styles.quote()));
+    if self.spans.is_empty() {
+      self.spans = self.cont_prefix();
     }
   }
 
+  /// Word-wrap and emit the pending spans as one or more visual lines.
   fn flush_line(&mut self) {
-    if !self.spans.is_empty() {
-      self.lines.push(Line::from(std::mem::take(&mut self.spans)));
+    self.fresh_item = false;
+    if self.spans.is_empty() {
+      return;
     }
+    let spans = std::mem::take(&mut self.spans);
+    let cont = self.cont_prefix();
+    self.lines.extend(wrap_styled(spans, self.width, &cont));
+  }
+
+  /// Emit the pending spans as a single pre-fitted line (code chunks).
+  fn push_raw_line(&mut self) {
+    self.fresh_item = false;
+    self.lines.push(Line::from(std::mem::take(&mut self.spans)));
   }
 
   /// Begin a new block element: blank-line separation within the text block.
   fn start_block(&mut self) {
-    self.flush_line();
-    if !self.lines.is_empty() {
-      self.lines.push(Line::default());
+    // The first paragraph of a list item continues on the marker's line.
+    if self.fresh_item {
+      self.fresh_item = false;
+      return;
     }
+    self.gap();
   }
 
-  /// Close the current text block before a table or image, leaving a gap.
-  fn break_with_gap(&mut self) {
+  /// Flush pending spans and ensure the block ends with one blank line.
+  fn gap(&mut self) {
     self.flush_line();
-    if !self.lines.is_empty() {
-      self.lines.push(Line::default());
+    if let Some(last) = self.lines.last() {
+      if !last.spans.is_empty() {
+        self.lines.push(Line::default());
+      }
     }
-    self.end_text_block();
   }
 
   fn end_text_block(&mut self) {
@@ -447,6 +544,162 @@ fn heading_level(level: HeadingLevel) -> u8 {
     HeadingLevel::H5 => 5,
     HeadingLevel::H6 => 6,
   }
+}
+
+// ─── Word wrapping ────────────────────────────────────────────────────────────
+
+enum Tok {
+  Word(Vec<Span<'static>>),
+  Space,
+}
+
+/// Split spans into whitespace-separated word tokens, preserving styles.
+/// Words spanning style boundaries stay together as one token.
+fn tokenize(spans: Vec<Span<'static>>) -> Vec<Tok> {
+  let mut toks: Vec<Tok> = Vec::new();
+  let mut word: Vec<Span<'static>> = Vec::new();
+  for span in spans {
+    let style = span.style;
+    let mut chunk = String::new();
+    for ch in span.content.chars() {
+      if ch.is_whitespace() {
+        if !chunk.is_empty() {
+          word.push(Span::styled(std::mem::take(&mut chunk), style));
+        }
+        if !word.is_empty() {
+          toks.push(Tok::Word(std::mem::take(&mut word)));
+        }
+        if matches!(toks.last(), Some(Tok::Word(_))) {
+          toks.push(Tok::Space);
+        }
+      } else {
+        chunk.push(ch);
+      }
+    }
+    if !chunk.is_empty() {
+      word.push(Span::styled(chunk, style));
+    }
+  }
+  if !word.is_empty() {
+    toks.push(Tok::Word(word));
+  }
+  toks
+}
+
+/// Greedy word-wrap of styled spans into lines no wider than `width` columns.
+/// `cont_prefix` is prepended to every line after the first. Words wider than
+/// a full line are hard-split.
+fn wrap_styled(
+  spans: Vec<Span<'static>>,
+  width: usize,
+  cont_prefix: &[Span<'static>],
+) -> Vec<Line<'static>> {
+  let width = width.max(2);
+  let total: usize = spans.iter().map(Span::width).sum();
+  if total <= width {
+    return vec![Line::from(spans)];
+  }
+
+  // Cap the prefix width so every line keeps at least one content column.
+  let prefix_w = cont_prefix
+    .iter()
+    .map(Span::width)
+    .sum::<usize>()
+    .min(width - 1);
+
+  let mut lines: Vec<Line<'static>> = Vec::new();
+  let mut cur: Vec<Span<'static>> = Vec::new();
+  let mut cur_w = 0usize;
+  let mut line_has_word = false;
+  let mut pending_space = false;
+
+  macro_rules! newline {
+    () => {{
+      lines.push(Line::from(std::mem::take(&mut cur)));
+      cur.extend(cont_prefix.iter().cloned());
+      cur_w = prefix_w;
+    }};
+  }
+
+  for tok in tokenize(spans) {
+    match tok {
+      Tok::Space => {
+        if line_has_word {
+          pending_space = true;
+        }
+      }
+      Tok::Word(parts) => {
+        let word_w: usize = parts.iter().map(Span::width).sum();
+        let space = usize::from(pending_space);
+        if cur_w + space + word_w <= width {
+          if pending_space {
+            cur.push(Span::raw(" "));
+            cur_w += 1;
+          }
+          cur.extend(parts);
+          cur_w += word_w;
+        } else if prefix_w + word_w <= width {
+          newline!();
+          cur.extend(parts);
+          cur_w += word_w;
+        } else {
+          // Word wider than a full line: hard-split by columns.
+          if pending_space && cur_w < width {
+            cur.push(Span::raw(" "));
+            cur_w += 1;
+          }
+          for part in parts {
+            let style = part.style;
+            let mut chunk = String::new();
+            for ch in part.content.chars() {
+              let cw = display_width(ch.encode_utf8(&mut [0u8; 4]));
+              if cur_w + cw > width {
+                if !chunk.is_empty() {
+                  cur.push(Span::styled(std::mem::take(&mut chunk), style));
+                }
+                newline!();
+              }
+              chunk.push(ch);
+              cur_w += cw;
+            }
+            if !chunk.is_empty() {
+              cur.push(Span::styled(chunk, style));
+            }
+          }
+        }
+        pending_space = false;
+        line_has_word = true;
+      }
+    }
+  }
+  if line_has_word {
+    lines.push(Line::from(cur));
+  }
+  lines
+}
+
+/// Hard-split a string into chunks of at most `width` display columns.
+fn char_chunks(s: &str, width: usize) -> Vec<String> {
+  let width = width.max(1);
+  let mut out: Vec<String> = Vec::new();
+  let mut cur = String::new();
+  let mut cur_w = 0usize;
+  for ch in s.chars() {
+    let cw = display_width(ch.encode_utf8(&mut [0u8; 4]));
+    if cur_w + cw > width && !cur.is_empty() {
+      out.push(std::mem::take(&mut cur));
+      cur_w = 0;
+    }
+    cur.push(ch);
+    cur_w += cw;
+  }
+  if !cur.is_empty() {
+    out.push(cur);
+  }
+  if out.is_empty() {
+    out.push(String::new());
+  }
+  out
 }
 
 // ─── Table layout ─────────────────────────────────────────────────────────────
@@ -547,38 +800,18 @@ fn wrap_cell(s: &str, width: usize) -> Vec<String> {
   let mut cur_w = 0;
 
   for word in s.split_whitespace() {
-    let mut word = word;
-    let mut word_w = display_width(word);
+    let word_w = display_width(word);
 
     // Hard-split words that can't fit on a line of their own.
-    while word_w > width {
+    if word_w > width {
       if cur_w > 0 {
         out.push(std::mem::take(&mut cur));
-        cur_w = 0;
       }
-      let mut take_bytes = 0;
-      let mut take_w = 0;
-      for ch in word.chars() {
-        let cw = display_width(ch.encode_utf8(&mut [0u8; 4]));
-        if take_w + cw > width {
-          break;
-        }
-        take_bytes += ch.len_utf8();
-        take_w += cw;
-      }
-      // Always consume at least one char to guarantee progress.
-      if take_bytes == 0 {
-        take_bytes = word
-          .chars()
-          .next()
-          .map(char::len_utf8)
-          .unwrap_or(word.len());
-      }
-      out.push(word[..take_bytes].to_string());
-      word = &word[take_bytes..];
-      word_w = display_width(word);
-    }
-    if word.is_empty() {
+      let mut chunks = char_chunks(word, width);
+      let last = chunks.pop().unwrap_or_default();
+      out.extend(chunks);
+      cur_w = display_width(&last);
+      cur = last;
       continue;
     }
 
@@ -625,11 +858,15 @@ mod tests {
     MarkdownStyles::from_theme(&Theme::default())
   }
 
+  fn render(md: &str, width: u16) -> Vec<MdBlock> {
+    render_markdown(md, width, &styles(), &HashMap::new())
+  }
+
   fn text_of(blocks: &[MdBlock]) -> String {
     blocks
       .iter()
       .map(|b| match b {
-        MdBlock::Text(lines) | MdBlock::Table(lines) => lines
+        MdBlock::Text(lines) => lines
           .iter()
           .map(|l| l.to_string())
           .collect::<Vec<_>>()
@@ -640,25 +877,54 @@ mod tests {
       .join("\n")
   }
 
+  fn lines_of(block: &MdBlock) -> Vec<String> {
+    match block {
+      MdBlock::Text(lines) => lines.iter().map(|l| l.to_string()).collect(),
+      MdBlock::Image { .. } => panic!("expected text block"),
+    }
+  }
+
   #[test]
   fn paragraphs_render_with_blank_separator() {
-    let blocks = render_markdown("First para.\n\nSecond para.", 80, &styles());
+    let blocks = render("First para.\n\nSecond para.", 80);
     assert_eq!(blocks.len(), 1);
-    let MdBlock::Text(lines) = &blocks[0] else {
-      panic!("expected text block")
-    };
-    assert_eq!(lines.len(), 3);
-    assert_eq!(lines[0].to_string(), "First para.");
-    assert_eq!(lines[1].to_string(), "");
-    assert_eq!(lines[2].to_string(), "Second para.");
+    assert_eq!(
+      lines_of(&blocks[0]),
+      vec!["First para.", "", "Second para."]
+    );
+  }
+
+  #[test]
+  fn long_paragraphs_wrap_at_word_boundaries() {
+    let blocks = render("alpha beta gamma delta epsilon", 12);
+    let lines = lines_of(&blocks[0]);
+    assert_eq!(lines, vec!["alpha beta", "gamma delta", "epsilon"]);
+    // Exact-height invariant: every line fits the width.
+    for l in &lines {
+      assert!(l.len() <= 12);
+    }
+  }
+
+  #[test]
+  fn long_words_hard_split() {
+    let blocks = render("see https://example.com/a/very/long/url/segment/path", 20);
+    let lines = lines_of(&blocks[0]);
+    for l in &lines {
+      assert!(l.chars().count() <= 20, "too wide: {l:?}");
+    }
+    assert!(lines.len() > 1);
+    // No content lost.
+    assert_eq!(
+      lines.join(""),
+      "see https://example.com/a/very/long/url/segment/path"
+    );
   }
 
   #[test]
   fn images_become_separate_blocks() {
-    let blocks = render_markdown(
+    let blocks = render(
       "Before\n\n![cat pic](https://example.com/cat.png)\n\nAfter",
       80,
-      &styles(),
     );
     assert_eq!(blocks.len(), 3);
     assert!(matches!(&blocks[0], MdBlock::Text(_)));
@@ -670,7 +936,7 @@ mod tests {
 
   #[test]
   fn non_http_images_render_placeholder_text() {
-    let blocks = render_markdown("![local](./pic.png)", 80, &styles());
+    let blocks = render("![local](./pic.png)", 80);
     assert_eq!(blocks.len(), 1);
     assert!(text_of(&blocks).contains("[image: local]"));
   }
@@ -678,12 +944,9 @@ mod tests {
   #[test]
   fn tables_render_aligned_columns() {
     let md = "| Name | Value |\n| --- | --- |\n| alpha | 1 |\n| b | 22 |";
-    let blocks = render_markdown(md, 80, &styles());
+    let blocks = render(md, 80);
     assert_eq!(blocks.len(), 1);
-    let MdBlock::Table(lines) = &blocks[0] else {
-      panic!("expected table block")
-    };
-    let rendered: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    let rendered = lines_of(&blocks[0]);
     assert_eq!(rendered[0], "Name  │ Value");
     assert_eq!(rendered[1], "──────┼──────");
     assert_eq!(rendered[2], "alpha │ 1    ");
@@ -691,11 +954,25 @@ mod tests {
   }
 
   #[test]
+  fn tables_are_separated_from_text() {
+    let md = "Intro text.\n\n| A |\n| --- |\n| 1 |\n\nOutro.";
+    let blocks = render(md, 80);
+    assert_eq!(blocks.len(), 1);
+    let lines = lines_of(&blocks[0]);
+    assert_eq!(lines[0], "Intro text.");
+    assert_eq!(lines[1], "");
+    assert!(lines[2].starts_with("A"));
+    // Blank before outro paragraph too.
+    assert_eq!(lines[lines.len() - 2], "");
+    assert_eq!(lines[lines.len() - 1], "Outro.");
+  }
+
+  #[test]
   fn wide_tables_wrap_cells_to_fit() {
     let md = "| A | B |\n| --- | --- |\n| this is a rather long cell | short |";
-    let blocks = render_markdown(md, 24, &styles());
-    let MdBlock::Table(lines) = &blocks[0] else {
-      panic!("expected table block")
+    let blocks = render(md, 24);
+    let MdBlock::Text(lines) = &blocks[0] else {
+      panic!("expected text block")
     };
     // Every rendered line must fit in the viewport.
     for line in lines {
@@ -714,7 +991,7 @@ mod tests {
 
   #[test]
   fn lists_render_markers() {
-    let blocks = render_markdown("- one\n- two\n\n1. first\n2. second", 80, &styles());
+    let blocks = render("- one\n- two\n\n1. first\n2. second", 80);
     let out = text_of(&blocks);
     assert!(out.contains("• one"));
     assert!(out.contains("• two"));
@@ -724,33 +1001,113 @@ mod tests {
 
   #[test]
   fn nested_lists_indent() {
-    let blocks = render_markdown("- a\n  - a1\n- b", 80, &styles());
+    let blocks = render("- a\n  - a1\n- b", 80);
     let out = text_of(&blocks);
     assert!(out.contains("• a"));
-    assert!(out.contains("  • a1"));
+    assert!(out.contains("  • a1"), "got:\n{out}");
+  }
+
+  #[test]
+  fn wrapped_list_items_keep_hanging_indent() {
+    let blocks = render("- alpha beta gamma delta epsilon zeta", 14);
+    let lines = lines_of(&blocks[0]);
+    assert_eq!(lines[0], "• alpha beta");
+    // Continuation lines are indented under the item text, not the marker.
+    for cont in &lines[1..] {
+      assert!(cont.starts_with("  "), "missing hang: {cont:?}");
+      assert!(!cont.starts_with("• "));
+    }
+  }
+
+  #[test]
+  fn loose_list_items_keep_marker_on_first_line() {
+    // Blank line between items makes pulldown-cmark wrap contents in
+    // paragraphs; the marker must still share the line with the text.
+    let blocks = render("- first item\n\n- second item", 80);
+    let out = text_of(&blocks);
+    assert!(out.contains("• first item"), "got:\n{out}");
+    assert!(out.contains("• second item"), "got:\n{out}");
   }
 
   #[test]
   fn blockquotes_get_gutter() {
-    let blocks = render_markdown("> quoted text", 80, &styles());
+    let blocks = render("> quoted text", 80);
     let out = text_of(&blocks);
     assert!(out.starts_with("│ quoted text"), "got: {out}");
   }
 
   #[test]
+  fn wrapped_blockquotes_keep_gutter() {
+    let blocks = render("> alpha beta gamma delta epsilon", 14);
+    let lines = lines_of(&blocks[0]);
+    assert!(lines.len() > 1);
+    for l in &lines {
+      assert!(l.starts_with("│ "), "missing gutter: {l:?}");
+    }
+  }
+
+  #[test]
   fn code_blocks_preserve_lines() {
-    let blocks = render_markdown("```\nfn main() {\n\n  body();\n}\n```", 80, &styles());
-    let MdBlock::Text(lines) = &blocks[0] else {
-      panic!("expected text block")
-    };
-    let rendered: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    let blocks = render("```\nfn main() {\n\n  body();\n}\n```", 80);
+    let rendered = lines_of(&blocks[0]);
     assert_eq!(rendered, vec!["fn main() {", "", "  body();", "}"]);
   }
 
   #[test]
+  fn long_code_lines_split_by_columns() {
+    let blocks = render(
+      "```\n    let indented = very_long_identifier_name;\n```",
+      20,
+    );
+    let lines = lines_of(&blocks[0]);
+    assert!(lines.len() > 1);
+    // Leading indentation preserved on the first chunk.
+    assert!(lines[0].starts_with("    let"));
+    for l in &lines {
+      assert!(l.chars().count() <= 20);
+    }
+  }
+
+  #[test]
   fn bare_link_shows_url() {
-    let blocks = render_markdown("[](https://example.com/x)", 80, &styles());
+    let blocks = render("[](https://example.com/x)", 80);
     assert!(text_of(&blocks).contains("https://example.com/x"));
+  }
+
+  #[test]
+  fn links_get_footnote_numbers() {
+    let numbers: HashMap<String, usize> = [("https://example.com/a".to_string(), 2)]
+      .into_iter()
+      .collect();
+    let blocks = render_markdown(
+      "See [the docs](https://example.com/a) and [unknown](https://other.com/b).",
+      80,
+      &styles(),
+      &numbers,
+    );
+    let out = text_of(&blocks);
+    assert!(out.contains("the docs[2]"), "got: {out}");
+    // Links not present in the entry's link list get no number.
+    assert!(
+      out.contains("unknown and") || out.contains("unknown."),
+      "got: {out}"
+    );
+    assert!(!out.contains("unknown["), "got: {out}");
+  }
+
+  #[test]
+  fn url_text_links_get_no_number() {
+    let numbers: HashMap<String, usize> = [("https://example.com/a".to_string(), 2)]
+      .into_iter()
+      .collect();
+    let blocks = render_markdown(
+      "[https://example.com/a](https://example.com/a)",
+      80,
+      &styles(),
+      &numbers,
+    );
+    let out = text_of(&blocks);
+    assert_eq!(out, "https://example.com/a");
   }
 
   #[test]
@@ -766,17 +1123,27 @@ mod tests {
 
   #[test]
   fn hard_break_starts_new_line() {
-    let blocks = render_markdown("line one\\\nline two", 80, &styles());
-    let MdBlock::Text(lines) = &blocks[0] else {
-      panic!("expected text block")
-    };
+    let blocks = render("line one\\\nline two", 80);
+    let lines = lines_of(&blocks[0]);
     assert_eq!(lines.len(), 2);
   }
 
   #[test]
   fn escaped_metacharacters_render_literally() {
-    let blocks = render_markdown("5 \\* 3 and \\[brackets\\]", 80, &styles());
+    let blocks = render("5 \\* 3 and \\[brackets\\]", 80);
     let out = text_of(&blocks);
     assert!(out.contains("5 * 3 and [brackets]"));
+  }
+
+  #[test]
+  fn wrap_line_wraps_plain_lines() {
+    let wrapped = wrap_line(
+      Line::from("Link: https://example.com/extremely/long/path"),
+      20,
+    );
+    assert!(wrapped.len() > 1);
+    for l in &wrapped {
+      assert!(l.width() <= 20);
+    }
   }
 }

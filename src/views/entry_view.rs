@@ -1,4 +1,4 @@
-use crate::content::markdown::{render_markdown, MarkdownStyles, MdBlock};
+use crate::content::markdown::{render_markdown, wrap_line, MarkdownStyles, MdBlock};
 use crate::feeds::FeedEntry;
 use crate::theme::Theme;
 use ratatui::{
@@ -7,12 +7,13 @@ use ratatui::{
   symbols::border,
   widgets::{
     Block, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    StatefulWidget, Widget, Wrap,
+    StatefulWidget, Widget,
   },
   Frame,
 };
 use ratatui_image::{protocol::StatefulProtocol, StatefulImage};
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// Fixed cell-row height reserved for each image segment.
 const IMAGE_RENDER_ROWS: usize = 15;
@@ -20,12 +21,22 @@ const IMAGE_RENDER_ROWS: usize = 15;
 /// A piece of entry content laid out for the viewport.
 #[derive(Debug)]
 enum ContentSegment {
-  /// Styled lines soft-wrapped by the renderer (paragraphs, metadata, footer).
-  Wrapped(Vec<Line<'static>>),
-  /// Pre-formatted lines already fitted to the width (tables) — never wrapped.
-  Fixed(Vec<Line<'static>>),
+  /// Pre-wrapped styled lines; each `Line` is exactly one screen row.
+  Lines(Vec<Line<'static>>),
   /// Inline image: fetched asynchronously and stored in the App's image_cache.
   Image { src: String, alt: String },
+}
+
+/// Cached segment layout for the entry view.
+///
+/// Building segments parses the entry's Markdown and lays out tables, so it
+/// is done once per (entry, width) and reused across frames — scrolling then
+/// costs only the visible-slice clone. The theme is fixed for the lifetime of
+/// the process, so it is not part of the key.
+#[derive(Default)]
+pub struct EntryRenderCache {
+  key: u64,
+  segments: Vec<ContentSegment>,
 }
 
 /// Configuration passed to [`render`] to avoid too many individual parameters.
@@ -36,22 +47,8 @@ pub struct EntryViewConfig<'a> {
   pub theme: &'a Theme,
   /// Cache of decoded images keyed by URL; mutated as images are rendered.
   pub image_cache: &'a mut HashMap<String, StatefulProtocol>,
-}
-
-/// Calculate the wrapped height of text lines given a content width.
-fn calculate_wrapped_height(lines: &[Line], content_width: u16) -> usize {
-  let width = content_width.max(1) as usize;
-  lines
-    .iter()
-    .map(|line| {
-      let raw_width = line.width();
-      if raw_width == 0 {
-        1
-      } else {
-        raw_width.div_ceil(width)
-      }
-    })
-    .sum::<usize>()
+  /// Cached segment layout, reused while the entry, width and links match.
+  pub render_cache: &'a mut EntryRenderCache,
 }
 
 /// Build the full ordered list of content segments for the entry view.
@@ -63,11 +60,11 @@ fn build_all_segments(
 ) -> Vec<ContentSegment> {
   let mut segs = Vec::new();
 
-  // Metadata header (theme-colored pre-styled lines)
-  let mut meta: Vec<Line<'static>> = Vec::new();
-  meta.push(Line::from(format!("Title: {}", entry.title)).fg(theme.meta_title));
-  meta.push(Line::from(format!("Feed: {}", feed_title)).fg(theme.meta_feed));
-  meta.push(
+  // Metadata header (theme-colored, wrapped to the viewport width).
+  let mut meta_src: Vec<Line<'static>> = Vec::new();
+  meta_src.push(Line::from(format!("Title: {}", entry.title)).fg(theme.meta_title));
+  meta_src.push(Line::from(format!("Feed: {}", feed_title)).fg(theme.meta_feed));
+  meta_src.push(
     Line::from(format!(
       "Published: {}",
       entry.published.as_deref().unwrap_or("Unknown")
@@ -75,48 +72,43 @@ fn build_all_segments(
     .fg(theme.meta_published),
   );
   if !entry.links.is_empty() {
-    meta.push(Line::from(format!("Link: {}", entry.links[0])).fg(theme.meta_link));
+    meta_src.push(Line::from(format!("Link: {}", entry.links[0])).fg(theme.meta_link));
   }
   if let Some(ref url) = entry.media {
-    meta.push(Line::from(format!("Media: {}", url)).fg(theme.meta_link));
+    meta_src.push(Line::from(format!("Media: {}", url)).fg(theme.meta_link));
   }
-  meta.push(Line::from(""));
-  segs.push(ContentSegment::Wrapped(meta));
+  meta_src.push(Line::from(""));
+  let mut meta = Vec::new();
+  for line in meta_src {
+    meta.extend(wrap_line(line, content_width));
+  }
+  segs.push(ContentSegment::Lines(meta));
 
-  // Body: render markdown into text/table/image blocks fitted to the width.
+  // Body: render markdown into text/image blocks fitted to the width.
+  // Inline links are numbered by their 1-based position in the entry's link
+  // list, matching the links popup ('L' keybind).
   let styles = MarkdownStyles::from_theme(theme);
-  for block in render_markdown(&entry.text, content_width, &styles) {
+  let link_numbers: HashMap<String, usize> = entry
+    .links
+    .iter()
+    .enumerate()
+    .map(|(i, url)| (url.clone(), i + 1))
+    .collect();
+  for block in render_markdown(&entry.text, content_width, &styles, &link_numbers) {
     segs.push(match block {
-      MdBlock::Text(lines) => ContentSegment::Wrapped(lines),
-      MdBlock::Table(lines) => ContentSegment::Fixed(lines),
+      MdBlock::Text(lines) => ContentSegment::Lines(lines),
       MdBlock::Image { src, alt } => ContentSegment::Image { src, alt },
     });
-  }
-
-  // Footer: additional links beyond the first
-  if entry.links.len() > 1 {
-    let mut footer: Vec<Line<'static>> = Vec::new();
-    footer.push(Line::from(""));
-    footer.push(Line::from("Links:").bold());
-    footer.extend(
-      entry
-        .links
-        .iter()
-        .skip(1)
-        .enumerate()
-        .map(|(i, link)| Line::from(format!("[{}]: {}", i + 1, link)).fg(theme.meta_link)),
-    );
-    segs.push(ContentSegment::Wrapped(footer));
   }
 
   segs
 }
 
-/// Return the virtual height of a single segment given the available width.
-fn seg_height(seg: &ContentSegment, content_width: u16, show_images: bool) -> usize {
+/// Return the virtual height of a single segment. All text lines are
+/// pre-wrapped to the content width, so heights are exact.
+fn seg_height(seg: &ContentSegment, show_images: bool) -> usize {
   match seg {
-    ContentSegment::Wrapped(lines) => calculate_wrapped_height(lines, content_width),
-    ContentSegment::Fixed(lines) => lines.len(),
+    ContentSegment::Lines(lines) => lines.len(),
     // 1 blank + alt text + 1 blank when images are off; full reserved rows otherwise.
     ContentSegment::Image { .. } => {
       if show_images {
@@ -175,16 +167,11 @@ fn render_segments(
     };
 
     match seg {
-      ContentSegment::Wrapped(lines) => {
-        Paragraph::new(lines.clone())
-          .scroll((inner_skip as u16, 0))
-          .wrap(Wrap { trim: false })
-          .render(seg_area, frame.buffer_mut());
-      }
-      ContentSegment::Fixed(lines) => {
-        Paragraph::new(lines.clone())
-          .scroll((inner_skip as u16, 0))
-          .render(seg_area, frame.buffer_mut());
+      ContentSegment::Lines(lines) => {
+        // Lines are pre-wrapped: clone only the visible slice.
+        let start = inner_skip.min(lines.len());
+        let end = (inner_skip + render_h).min(lines.len());
+        Paragraph::new(lines[start..end].to_vec()).render(seg_area, frame.buffer_mut());
       }
       ContentSegment::Image { src, alt } => {
         let ph = if alt.is_empty() {
@@ -227,6 +214,19 @@ fn render_segments(
 
     virtual_row = seg_end;
   }
+}
+
+/// Fingerprint of everything the segment layout depends on.
+fn cache_key(feed_title: &str, entry: &FeedEntry, content_width: u16) -> u64 {
+  let mut h = DefaultHasher::new();
+  feed_title.hash(&mut h);
+  entry.title.hash(&mut h);
+  entry.published.hash(&mut h);
+  entry.text.hash(&mut h);
+  entry.links.hash(&mut h);
+  entry.media.hash(&mut h);
+  content_width.hash(&mut h);
+  h.finish()
 }
 
 /// Render the entry view with scrolling support.
@@ -285,12 +285,18 @@ pub fn render(
   let content_width = text_area.width;
   let visible_height = text_area.height as usize;
 
-  // Build segments and compute layout heights.
-  let segments = build_all_segments(feed_title, entry, theme, content_width);
+  // Build (or reuse) segments and compute layout heights.
+  let key = cache_key(feed_title, entry, content_width);
+  if cfg.render_cache.key != key || cfg.render_cache.segments.is_empty() {
+    cfg.render_cache.segments = build_all_segments(feed_title, entry, theme, content_width);
+    cfg.render_cache.key = key;
+  }
+  let segments: &[ContentSegment] = &cfg.render_cache.segments;
+
   let show_images = cfg.show_images;
   let heights: Vec<usize> = segments
     .iter()
-    .map(|seg| seg_height(seg, content_width, show_images))
+    .map(|seg| seg_height(seg, show_images))
     .collect();
   let content_length: usize = heights.iter().sum();
 
@@ -325,12 +331,12 @@ pub fn render(
   render_segments(
     frame,
     text_area,
-    &segments,
+    segments,
     &heights,
     cur_scroll,
     theme,
     cfg.image_cache,
-    cfg.show_images,
+    show_images,
   );
 
   // Scrollbar.
@@ -359,57 +365,6 @@ mod tests {
     Theme::default()
   }
 
-  #[test]
-  fn test_calculate_wrapped_height_single_line() {
-    let lines = vec![Line::from("Hello world")];
-    // "Hello world" is 11 chars, width 80 → 1 line
-    let height = calculate_wrapped_height(&lines, 80);
-    assert_eq!(height, 1);
-  }
-
-  #[test]
-  fn test_calculate_wrapped_height_wrapping() {
-    // 20 char line in 10-wide viewport → ceil(20/10) = 2 lines
-    let lines = vec![Line::from("12345678901234567890")];
-    let height = calculate_wrapped_height(&lines, 10);
-    assert_eq!(height, 2);
-  }
-
-  #[test]
-  fn test_calculate_wrapped_height_empty_line() {
-    let lines = vec![Line::from("")];
-    let height = calculate_wrapped_height(&lines, 80);
-    assert_eq!(height, 1); // empty line counts as 1
-  }
-
-  #[test]
-  fn test_calculate_wrapped_height_zero_width() {
-    // Width 0 should be clamped to 1
-    let lines = vec![Line::from("Hello")];
-    let height = calculate_wrapped_height(&lines, 0);
-    // "Hello" is 5 chars, width clamped to 1 → ceil(5/1) = 5
-    assert_eq!(height, 5);
-  }
-
-  #[test]
-  fn test_calculate_wrapped_height_multiple_lines() {
-    let lines = vec![
-      Line::from("Short"),           // 5 chars, width 10 → 1 line
-      Line::from(""),                // empty → 1 line
-      Line::from("1234567890abcde"), // 15 chars, width 10 → 2 lines
-    ];
-    let height = calculate_wrapped_height(&lines, 10);
-    assert_eq!(height, 1 + 1 + 2); // 4 lines
-  }
-
-  #[test]
-  fn test_calculate_wrapped_height_exact_fit() {
-    // Exactly 10 chars in 10-wide viewport → 1 line
-    let lines = vec![Line::from("1234567890")];
-    let height = calculate_wrapped_height(&lines, 10);
-    assert_eq!(height, 1);
-  }
-
   fn make_entry(text: &str, links: Vec<String>) -> FeedEntry {
     FeedEntry {
       title: "Test Entry".to_string(),
@@ -431,9 +386,9 @@ mod tests {
     );
 
     let segs = build_all_segments("My Feed", &entry, &test_theme(), 80);
-    // First segment should be wrapped metadata lines
-    assert!(matches!(&segs[0], ContentSegment::Wrapped(_)));
-    if let ContentSegment::Wrapped(lines) = &segs[0] {
+    // First segment should be the metadata lines
+    assert!(matches!(&segs[0], ContentSegment::Lines(_)));
+    if let ContentSegment::Lines(lines) = &segs[0] {
       let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
       assert!(text.iter().any(|l| l.contains("Test Entry")));
       assert!(text.iter().any(|l| l.contains("My Feed")));
@@ -452,28 +407,120 @@ mod tests {
     assert!(segs.iter().any(
       |s| matches!(s, ContentSegment::Image { src, alt } if src == "https://example.com/img.png" && alt == "alt text")
     ));
-    assert!(segs.iter().any(|s| matches!(s, ContentSegment::Fixed(_))));
+    // Table lines are laid out with column separators.
+    let all: String = segs
+      .iter()
+      .filter_map(|s| match s {
+        ContentSegment::Lines(lines) => Some(
+          lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        ),
+        _ => None,
+      })
+      .collect::<Vec<_>>()
+      .join("\n");
+    assert!(all.contains("─┼─"), "missing table separator in:\n{all}");
   }
 
   #[test]
-  fn test_build_all_segments_footer_links() {
+  fn test_build_all_segments_exact_heights() {
+    // A long single-line paragraph must be pre-wrapped: every line fits.
+    let long = "word ".repeat(60);
+    let entry = make_entry(&long, vec![]);
+    let segs = build_all_segments("Feed", &entry, &test_theme(), 40);
+    for seg in &segs {
+      if let ContentSegment::Lines(lines) = seg {
+        for line in lines {
+          assert!(line.width() <= 40, "line too wide: {:?}", line.to_string());
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn test_no_footer_links_section() {
+    // Links are not repeated below the body — the links popup ('L') covers
+    // them; inline [n] markers reference its numbering.
     let entry = make_entry(
       "Content",
       vec![
         "https://example.com/main".to_string(),
         "https://example.com/ref1".to_string(),
-        "https://example.com/ref2".to_string(),
       ],
     );
 
     let segs = build_all_segments("Feed", &entry, &test_theme(), 80);
-    let last = segs.last().unwrap();
-    assert!(matches!(last, ContentSegment::Wrapped(_)));
-    if let ContentSegment::Wrapped(lines) = last {
-      let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-      assert!(text.iter().any(|l| l.contains("Links:")));
-      assert!(text.iter().any(|l| l.contains("ref1")));
-      assert!(text.iter().any(|l| l.contains("ref2")));
+    for seg in &segs {
+      if let ContentSegment::Lines(lines) = seg {
+        for line in lines {
+          assert!(!line.to_string().contains("Links:"));
+        }
+      }
     }
+  }
+
+  #[test]
+  fn test_metadata_lines_keep_line_style() {
+    let entry = make_entry("body", vec!["https://example.com/post".to_string()]);
+    let segs = build_all_segments("Feed", &entry, &test_theme(), 80);
+    let ContentSegment::Lines(lines) = &segs[0] else {
+      panic!("expected metadata lines")
+    };
+    let theme = test_theme();
+    let title_line = lines
+      .iter()
+      .find(|l| l.to_string().starts_with("Title:"))
+      .unwrap();
+    assert_eq!(title_line.style.fg, Some(theme.meta_title));
+    let link_line = lines
+      .iter()
+      .find(|l| l.to_string().starts_with("Link:"))
+      .unwrap();
+    assert_eq!(link_line.style.fg, Some(theme.meta_link));
+  }
+
+  #[test]
+  fn test_inline_links_numbered_to_match_popup() {
+    let entry = make_entry(
+      "See [the reference](https://example.com/ref1) for details.",
+      vec![
+        "https://example.com/main".to_string(),
+        "https://example.com/ref1".to_string(),
+      ],
+    );
+
+    let segs = build_all_segments("Feed", &entry, &test_theme(), 80);
+    let all: String = segs
+      .iter()
+      .filter_map(|s| match s {
+        ContentSegment::Lines(lines) => Some(
+          lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        ),
+        _ => None,
+      })
+      .collect::<Vec<_>>()
+      .join("\n");
+    assert!(
+      all.contains("the reference[2]"),
+      "inline number missing in:\n{all}"
+    );
+  }
+
+  #[test]
+  fn test_cache_key_changes_with_content_and_width() {
+    let entry_a = make_entry("body a", vec![]);
+    let entry_b = make_entry("body b", vec![]);
+    let k1 = cache_key("Feed", &entry_a, 80);
+    assert_eq!(k1, cache_key("Feed", &entry_a, 80));
+    assert_ne!(k1, cache_key("Feed", &entry_b, 80));
+    assert_ne!(k1, cache_key("Feed", &entry_a, 60));
+    assert_ne!(k1, cache_key("Other", &entry_a, 80));
   }
 }
