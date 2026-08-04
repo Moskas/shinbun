@@ -90,6 +90,16 @@ pub struct UiConfig {
   /// Render inline images in the entry view (default: true)
   #[serde(default = "default_show_images")]
   pub show_images: bool,
+
+  /// Maximum width (in columns) of entry body text; wider terminals get the
+  /// content centered with extra padding. `None` (default) means unbounded —
+  /// use the full available width.
+  #[serde(default)]
+  pub entry_max_width: Option<u16>,
+
+  /// Horizontal padding (columns) applied on each side of entry text (default: 4).
+  #[serde(default = "default_entry_padding")]
+  pub entry_padding: u16,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -119,6 +129,10 @@ fn default_show_scrollbar() -> bool {
 
 fn default_show_images() -> bool {
   true
+}
+
+fn default_entry_padding() -> u16 {
+  4
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -162,12 +176,12 @@ fn parse_config_file(config_dir: &Path) -> (GeneralConfig, UiConfig, Vec<QueryFe
   let config_path = config_dir.join("config.toml");
 
   if !config_path.exists() {
-    return (GeneralConfig::default(), UiConfig::default(), Vec::new());
+    return (default_general_config(), default_ui_config(), Vec::new());
   }
 
   let content = match fs::read_to_string(&config_path) {
     Ok(c) => c,
-    Err(_) => return (GeneralConfig::default(), UiConfig::default(), Vec::new()),
+    Err(_) => return (default_general_config(), default_ui_config(), Vec::new()),
   };
 
   match toml::from_str::<ConfigFile>(&content) {
@@ -175,9 +189,24 @@ fn parse_config_file(config_dir: &Path) -> (GeneralConfig, UiConfig, Vec<QueryFe
     Err(err) => {
       eprintln!("Warning: Failed to parse config.toml: {}", err);
       eprintln!("Using default configuration");
-      (GeneralConfig::default(), UiConfig::default(), Vec::new())
+      (default_general_config(), default_ui_config(), Vec::new())
     }
   }
+}
+
+/// `GeneralConfig` with all serde field defaults actually applied (unlike the
+/// derived `Default`, whose fields happen to coincide since they're all `Option`).
+fn default_general_config() -> GeneralConfig {
+  toml::from_str("").unwrap_or_default()
+}
+
+/// `UiConfig` with all serde field defaults actually applied. The derived
+/// `Default` gives `false`/`0` for every field, bypassing the
+/// `#[serde(default = "...")]` functions used when a config file is present
+/// but omits a field — this keeps "no config file" and "empty config file"
+/// behaving the same.
+fn default_ui_config() -> UiConfig {
+  toml::from_str("").unwrap_or_default()
 }
 
 /// Parse feeds from feeds.toml
@@ -343,9 +372,12 @@ link = "https://other.com/rss"
     // Should return defaults when file is missing
     assert!(general.browser.is_none());
     assert!(general.media_player.is_none());
-    // UiConfig::default() gives false for both fields (Rust Default, not serde defaults)
-    assert!(!ui.show_borders);
-    assert!(!ui.show_read_entries);
+    // Falls back to serde defaults (true), not the derived Default (false).
+    assert!(ui.show_borders);
+    assert!(ui.show_read_entries);
+    assert!(ui.show_images);
+    assert_eq!(ui.entry_padding, 4);
+    assert_eq!(ui.entry_max_width, None);
     assert!(queries.is_empty());
   }
 
@@ -389,7 +421,7 @@ query = "tags:blog"
 
     let (general, ui, queries) = parse_config_file(dir.path());
     assert!(general.browser.is_none());
-    assert!(!ui.show_borders); // Default derive gives false, not the serde default of true
+    assert!(ui.show_borders); // Falls back to serde defaults, not the derived Default
     assert!(queries.is_empty());
   }
 

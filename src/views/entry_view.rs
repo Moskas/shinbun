@@ -44,6 +44,10 @@ pub struct EntryViewConfig<'a> {
   pub show_borders: bool,
   pub show_scrollbar: bool,
   pub show_images: bool,
+  /// Horizontal padding (columns) applied on each side of entry text.
+  pub horizontal_padding: u16,
+  /// Maximum content width; `None` means use the full available width.
+  pub max_width: Option<u16>,
   pub theme: &'a Theme,
   /// Cache of decoded images keyed by URL; mutated as images are rendered.
   pub image_cache: &'a mut HashMap<String, StatefulProtocol>,
@@ -100,6 +104,9 @@ fn build_all_segments(
       MdBlock::Image { src, alt } => ContentSegment::Image { src, alt },
     });
   }
+
+  // Bottom padding, mirroring the blank line placed after the metadata header.
+  segs.push(ContentSegment::Lines(vec![Line::from("")]));
 
   segs
 }
@@ -229,6 +236,22 @@ fn cache_key(feed_title: &str, entry: &FeedEntry, content_width: u16) -> u64 {
   h.finish()
 }
 
+/// Clamp `area` to `max_width` columns (if set and narrower than `area`),
+/// centering the result horizontally within `area`.
+fn clamp_content_area(area: Rect, max_width: Option<u16>) -> Rect {
+  match max_width {
+    Some(max) if area.width > max => {
+      let extra = area.width - max;
+      Rect {
+        x: area.x + extra / 2,
+        width: max,
+        ..area
+      }
+    }
+    _ => area,
+  }
+}
+
 /// Render the entry view with scrolling support.
 pub fn render(
   frame: &mut Frame,
@@ -271,17 +294,22 @@ pub fn render(
       ))
       .borders(Borders::ALL)
       .border_style(theme.border_style())
-      .padding(Padding::symmetric(4, 1))
+      .padding(Padding::symmetric(cfg.horizontal_padding, 1))
   } else {
     Block::default()
       .title(Span::styled(
         format!(" Entry - {}", entry.title),
         Style::default().fg(theme.entry_title_plain),
       ))
-      .padding(Padding::new(4, 4, 0, 1))
+      .padding(Padding::new(
+        cfg.horizontal_padding,
+        cfg.horizontal_padding,
+        0,
+        1,
+      ))
   };
 
-  let text_area = entry_block.inner(inner_area);
+  let text_area = clamp_content_area(entry_block.inner(inner_area), cfg.max_width);
   let content_width = text_area.width;
   let visible_height = text_area.height as usize;
 
@@ -522,5 +550,38 @@ mod tests {
     assert_ne!(k1, cache_key("Feed", &entry_b, 80));
     assert_ne!(k1, cache_key("Feed", &entry_a, 60));
     assert_ne!(k1, cache_key("Other", &entry_a, 80));
+  }
+
+  #[test]
+  fn test_clamp_content_area_no_cap_returns_unchanged() {
+    let area = Rect::new(0, 0, 120, 40);
+    assert_eq!(clamp_content_area(area, None), area);
+  }
+
+  #[test]
+  fn test_clamp_content_area_narrower_than_max_returns_unchanged() {
+    let area = Rect::new(0, 0, 60, 40);
+    assert_eq!(clamp_content_area(area, Some(80)), area);
+  }
+
+  #[test]
+  fn test_clamp_content_area_caps_and_centers() {
+    let area = Rect::new(10, 0, 120, 40);
+    let clamped = clamp_content_area(area, Some(80));
+    assert_eq!(clamped.width, 80);
+    assert_eq!(clamped.x, 10 + (120 - 80) / 2);
+    assert_eq!(clamped.height, area.height);
+    assert_eq!(clamped.y, area.y);
+  }
+
+  #[test]
+  fn test_body_has_trailing_blank_line() {
+    let entry = make_entry("body", vec![]);
+    let segs = build_all_segments("Feed", &entry, &test_theme(), 80);
+    let ContentSegment::Lines(lines) = segs.last().expect("expected a trailing segment") else {
+      panic!("expected trailing blank-line segment")
+    };
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].to_string(), "");
   }
 }

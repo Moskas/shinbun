@@ -354,6 +354,8 @@ impl App {
                 &mut entry_view::EntryViewConfig {
                   show_borders: self.ui_config.show_borders,
                   show_scrollbar: self.ui_config.show_scrollbar,
+                  horizontal_padding: self.ui_config.entry_padding,
+                  max_width: self.ui_config.entry_max_width,
                   theme: &self.theme,
                   image_cache: &mut self.image_cache,
                   render_cache: &mut self.entry_render_cache,
