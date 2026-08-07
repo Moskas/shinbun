@@ -12,18 +12,20 @@ pub use loading::LoadingState;
 pub use types::*;
 
 use crate::cache::FeedCache;
-use crate::config::{Feed as FeedConfig, GeneralConfig, QueryFeed, UiConfig};
+use crate::config::{self, Feed as FeedConfig, GeneralConfig, QueryFeed, UiConfig};
 use crate::feeds::{self, Feed};
+use crate::image_cache::DiskImageCache;
 use crate::query;
 use crate::theme::Theme;
 use crate::views::{entry_view, feeds_list_view, help_view, links_view};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use image::DynamicImage;
 use ratatui::prelude::*;
 use ratatui::widgets::TableState;
-use image::DynamicImage;
 use ratatui_image::picker::Picker;
-use std::collections::HashMap;
-use tokio::sync::mpsc;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use tokio::sync::{mpsc, Semaphore};
 
 pub struct App {
   pub(crate) feeds: Vec<Feed>,
@@ -76,6 +78,17 @@ pub struct App {
   pub(crate) picker: Picker,
   /// Cache of decoded images keyed by URL.
   pub(crate) image_cache: HashMap<String, DynamicImage>,
+  /// On-disk cache of raw image bytes, so images are not re-downloaded on
+  /// every run.
+  pub(crate) image_disk_cache: DiskImageCache,
+  /// URLs with an in-flight image fetch, so an entry is not re-queued while
+  /// its images are still downloading.
+  pub(crate) image_pending: HashSet<String>,
+  /// URLs whose fetch failed; they are not retried this session to avoid
+  /// hammering slow or broken links, and only reported once.
+  pub(crate) image_failed: HashSet<String>,
+  /// Limits concurrent image downloads/decodes to keep slow hardware usable.
+  pub(crate) image_semaphore: Arc<Semaphore>,
   /// Cached entry-view segment layout; rebuilt when entry/width change.
   pub(crate) entry_render_cache: entry_view::EntryRenderCache,
   /// Runtime toggle for image rendering; initialized from ui_config.show_images.
@@ -97,6 +110,7 @@ impl App {
     let display_feeds = Self::build_display_feeds(&feeds, &query_config);
     let hide_read = !ui_config.show_read_entries;
     let show_images = ui_config.show_images;
+    let image_fetch_concurrency = ui_config.image_fetch_concurrency.max(1);
     let theme = Theme::from_config(&ui_config.theme);
 
     let tag_list = Self::build_tag_list(&feeds);
@@ -145,6 +159,10 @@ impl App {
       dirty: true,
       picker,
       image_cache: HashMap::new(),
+      image_disk_cache: DiskImageCache::new(config::get_image_cache_path()),
+      image_pending: HashSet::new(),
+      image_failed: HashSet::new(),
+      image_semaphore: Arc::new(Semaphore::new(image_fetch_concurrency)),
       entry_render_cache: entry_view::EntryRenderCache::default(),
       show_images,
     }
@@ -243,11 +261,17 @@ impl App {
       }
 
       FeedUpdate::ImageReady { url, image } => {
+        self.image_pending.remove(&url);
         self.image_cache.insert(url, image);
       }
 
       FeedUpdate::ImageError { url, error } => {
-        self.push_error("Image", format!("{}: {}", url, error));
+        self.image_pending.remove(&url);
+        // Report each failing image once; slow or flaky links are normal and
+        // should not re-trigger the error popup on every scroll.
+        if self.image_failed.insert(url.clone()) {
+          self.push_error("Image", format!("{}: {}", url, error));
+        }
       }
     }
   }
@@ -358,6 +382,7 @@ impl App {
                   theme: &self.theme,
                   picker: &self.picker,
                   image_cache: &self.image_cache,
+                  image_pending: &self.image_pending,
                   render_cache: &mut self.entry_render_cache,
                   show_images: self.show_images,
                 },

@@ -14,6 +14,7 @@ mod cache;
 mod config;
 mod content;
 mod feeds;
+mod image_cache;
 mod opml;
 mod query;
 mod theme;

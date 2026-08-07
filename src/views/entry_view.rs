@@ -17,7 +17,7 @@ use ratatui_image::{
   sliced::{SignedPosition, SlicedImage, SlicedProtocol},
   Resize,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// Fixed cell-row height reserved for each image segment.
@@ -62,6 +62,9 @@ pub struct EntryViewConfig<'a> {
   pub picker: &'a Picker,
   /// Cache of decoded images keyed by URL.
   pub image_cache: &'a HashMap<String, DynamicImage>,
+  /// URLs currently being downloaded/decoded, so the placeholder can show a
+  /// distinct "loading" state instead of looking identical to a not-yet-queued image.
+  pub image_pending: &'a HashSet<String>,
   /// Cached segment layout, reused while the entry, width and links match.
   pub render_cache: &'a mut EntryRenderCache,
 }
@@ -149,6 +152,7 @@ fn render_segments(
   theme: &Theme,
   picker: &Picker,
   image_cache: &HashMap<String, DynamicImage>,
+  image_pending: &HashSet<String>,
   sliced_cache: &mut HashMap<String, SlicedProtocol>,
   show_images: bool,
 ) {
@@ -194,7 +198,13 @@ fn render_segments(
         Paragraph::new(lines[start..end].to_vec()).render(seg_area, frame.buffer_mut());
       }
       ContentSegment::Image { src, alt } => {
-        let ph = if alt.is_empty() {
+        let ph = if image_pending.contains(src.as_str()) {
+          if alt.is_empty() {
+            " [image: loading…] ".to_string()
+          } else {
+            format!(" [image: loading… {}] ", alt)
+          }
+        } else if alt.is_empty() {
           " [image] ".to_string()
         } else {
           format!(" [image: {}] ", alt)
@@ -219,8 +229,8 @@ fn render_segments(
             // top; negative when scrolled past its start. SlicedImage crops
             // to whatever's visible per-protocol instead of requiring the
             // whole image to be in view.
-            let y = (virtual_row as i64 - scroll as i64)
-              .clamp(i16::MIN as i64, i16::MAX as i64) as i16;
+            let y =
+              (virtual_row as i64 - scroll as i64).clamp(i16::MIN as i64, i16::MAX as i64) as i16;
             SlicedImage::new(sliced, SignedPosition::from((0, y))).render(area, frame.buffer_mut());
           } else {
             // Not decoded yet — placeholder in the segment's own sub-area.
@@ -380,6 +390,7 @@ pub fn render(
     theme,
     cfg.picker,
     cfg.image_cache,
+    cfg.image_pending,
     &mut cfg.render_cache.sliced,
     show_images,
   );
@@ -600,5 +611,60 @@ mod tests {
     };
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0].to_string(), "");
+  }
+
+  #[test]
+  fn test_pending_image_shows_loading_placeholder() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let entry = make_entry("![alt text](https://example.com/img.png)", vec![]);
+    let theme = test_theme();
+    let picker = Picker::halfblocks();
+    let image_cache = HashMap::new();
+    let mut image_pending = HashSet::new();
+    image_pending.insert("https://example.com/img.png".to_string());
+    let mut render_cache = EntryRenderCache::default();
+    let mut scroll = 0usize;
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal
+      .draw(|frame| {
+        render(
+          frame,
+          frame.area(),
+          "Feed",
+          &entry,
+          &mut scroll,
+          &mut EntryViewConfig {
+            show_borders: false,
+            show_scrollbar: false,
+            show_images: true,
+            horizontal_padding: 0,
+            max_width: None,
+            theme: &theme,
+            picker: &picker,
+            image_cache: &image_cache,
+            image_pending: &image_pending,
+            render_cache: &mut render_cache,
+          },
+        );
+      })
+      .unwrap();
+
+    let content =
+      terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .fold(String::new(), |mut acc, cell| {
+          acc.push_str(cell.symbol());
+          acc
+        });
+    assert!(
+      content.contains("loading"),
+      "expected loading placeholder in:\n{content}"
+    );
   }
 }

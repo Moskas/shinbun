@@ -1,5 +1,5 @@
 use crate::theme::ThemeConfig;
-use dirs::config_dir;
+use dirs::{cache_dir, config_dir};
 use serde::{Deserialize, Serialize};
 use std::{
   fmt, fs,
@@ -100,6 +100,11 @@ pub struct UiConfig {
   /// Horizontal padding (columns) applied on each side of entry text (default: 4).
   #[serde(default = "default_entry_padding")]
   pub entry_padding: u16,
+
+  /// Maximum number of image downloads/decodes in flight at once (default: 4).
+  /// Lower this on slow hardware or slow connections to keep the UI responsive.
+  #[serde(default = "default_image_fetch_concurrency")]
+  pub image_fetch_concurrency: usize,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -132,6 +137,10 @@ fn default_show_images() -> bool {
 }
 
 fn default_entry_padding() -> u16 {
+  4
+}
+
+fn default_image_fetch_concurrency() -> usize {
   4
 }
 
@@ -244,6 +253,17 @@ pub fn get_feeds_path() -> PathBuf {
 /// Get the cache database path
 pub fn get_cache_path() -> PathBuf {
   get_config_dir().join("cache.db")
+}
+
+/// Get the on-disk image cache directory (raw bytes of fetched images).
+///
+/// Falls back to the config directory on platforms where `dirs::cache_dir()`
+/// is unavailable, mixing cache files in with `config.toml`/`feeds.toml`;
+/// that's an acceptable rare-case tradeoff over failing to cache at all.
+pub fn get_image_cache_path() -> PathBuf {
+  cache_dir()
+    .map(|dir| dir.join("shinbun").join("images"))
+    .unwrap_or_else(get_config_dir)
 }
 
 /// Overwrite feeds.toml with the given feed list.
@@ -378,6 +398,7 @@ link = "https://other.com/rss"
     assert!(ui.show_images);
     assert_eq!(ui.entry_padding, 4);
     assert_eq!(ui.entry_max_width, None);
+    assert_eq!(ui.image_fetch_concurrency, 4);
     assert!(queries.is_empty());
   }
 

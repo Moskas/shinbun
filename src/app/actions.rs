@@ -2,8 +2,11 @@ use super::types::FeedUpdate;
 use super::App;
 use crate::config::{parse_refresh_interval, write_feeds, Feed as FeedConfig};
 use crate::feeds;
+use crate::image_cache::{decode_image, DiskImageCache};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::process::Command;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 impl App {
   // Browser / player helpers
@@ -124,8 +127,9 @@ impl App {
   }
 
   /// Queue background HTTP fetches for every image URL found in the current entry's text.
-  /// Already-cached images are skipped. Each successful fetch sends `ImageReady` over
-  /// the feed channel so `handle_feed_update` can encode and store the protocol image.
+  /// Already-cached or in-flight images are skipped, and failed URLs are not
+  /// retried within a session. Each successful fetch sends `ImageReady` over
+  /// the feed channel so `handle_feed_update` can store the decoded image.
   pub(super) fn queue_entry_images(&mut self) {
     let Some(real_idx) = self.input.current_entry_relative_index else {
       return;
@@ -139,13 +143,18 @@ impl App {
     let referer = entry.links.first().cloned();
     let urls = crate::content::markdown::extract_image_urls(&entry.text);
     for url in urls {
-      if self.image_cache.contains_key(&url) {
+      if self.image_cache.contains_key(&url)
+        || self.image_failed.contains(&url)
+        || !self.image_pending.insert(url.clone())
+      {
         continue;
       }
       let tx = self.feed_tx.clone();
       let referer = referer.clone();
+      let disk = self.image_disk_cache.clone();
+      let semaphore = self.image_semaphore.clone();
       tokio::spawn(async move {
-        match fetch_image_bytes(url.clone(), referer).await {
+        match fetch_and_decode(semaphore, disk, url.clone(), referer).await {
           Ok(img) => {
             let _ = tx.send(FeedUpdate::ImageReady { url, image: img });
           }
@@ -286,25 +295,69 @@ impl App {
   }
 }
 
-async fn fetch_image_bytes(
+async fn fetch_and_decode(
+  semaphore: Arc<Semaphore>,
+  disk: DiskImageCache,
   url: String,
   referer: Option<String>,
 ) -> Result<image::DynamicImage, String> {
+  let _permit = semaphore
+    .acquire()
+    .await
+    .map_err(|e| format!("Image queue closed: {}", e))?;
+
+  // Prefer cached bytes; download only on a miss. Disk reads/writes are
+  // blocking I/O, so run them off the async runtime like the decode step.
+  let cached = {
+    let disk = disk.clone();
+    let url = url.clone();
+    tokio::task::spawn_blocking(move || disk.get(&url))
+      .await
+      .map_err(|e| format!("Image cache read task panicked: {}", e))?
+  };
+  let bytes = if let Some(bytes) = cached {
+    bytes
+  } else {
+    let bytes = fetch_image_bytes(&url, referer).await?;
+    let disk = disk.clone();
+    let put_url = url.clone();
+    let put_bytes = bytes.clone();
+    let _ = tokio::task::spawn_blocking(move || disk.put(&put_url, &put_bytes)).await;
+    bytes
+  };
+
+  // Decoding (and downscaling) is CPU-bound; run it off the async runtime so
+  // a large image does not stall other feed work on slow hardware.
+  let decoded = tokio::task::spawn_blocking(move || decode_image(&bytes))
+    .await
+    .map_err(|e| format!("Image decode task panicked: {}", e))?;
+
+  if decoded.is_err() {
+    // Bad bytes on disk would fail identically forever; drop them so the
+    // next attempt re-downloads instead of replaying the same corruption.
+    let disk = disk.clone();
+    let url = url.clone();
+    let _ = tokio::task::spawn_blocking(move || disk.remove(&url)).await;
+  }
+  decoded
+}
+
+async fn fetch_image_bytes(url: &str, referer: Option<String>) -> Result<Vec<u8>, String> {
   let client = reqwest::Client::builder()
     .user_agent(feeds::USER_AGENT)
     .timeout(std::time::Duration::from_secs(30))
     .build()
     .map_err(|e| e.to_string())?;
-  let mut req = client.get(&url);
+  let mut req = client.get(url);
   if let Some(referer) = referer {
     req = req.header(reqwest::header::REFERER, referer);
   }
-  let bytes = req
+  req
     .send()
     .await
     .map_err(|e| e.to_string())?
     .bytes()
     .await
-    .map_err(|e| e.to_string())?;
-  image::load_from_memory(&bytes).map_err(|e| e.to_string())
+    .map(|b| b.to_vec())
+    .map_err(|e| e.to_string())
 }
