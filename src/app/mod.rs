@@ -246,8 +246,8 @@ impl App {
         self.image_cache.insert(url, image);
       }
 
-      FeedUpdate::ImageError => {
-        // Silently ignore — placeholder will continue showing
+      FeedUpdate::ImageError { url, error } => {
+        self.push_error("Image", format!("{}: {}", url, error));
       }
     }
   }

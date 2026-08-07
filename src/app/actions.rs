@@ -136,19 +136,21 @@ impl App {
     let Some(entry) = df.entries(&self.feeds).get(real_idx) else {
       return;
     };
+    let referer = entry.links.first().cloned();
     let urls = crate::content::markdown::extract_image_urls(&entry.text);
     for url in urls {
       if self.image_cache.contains_key(&url) {
         continue;
       }
       let tx = self.feed_tx.clone();
+      let referer = referer.clone();
       tokio::spawn(async move {
-        match fetch_image_bytes(url.clone()).await {
+        match fetch_image_bytes(url.clone(), referer).await {
           Ok(img) => {
             let _ = tx.send(FeedUpdate::ImageReady { url, image: img });
           }
-          Err(_) => {
-            let _ = tx.send(FeedUpdate::ImageError);
+          Err(error) => {
+            let _ = tx.send(FeedUpdate::ImageError { url, error });
           }
         }
       });
@@ -284,14 +286,20 @@ impl App {
   }
 }
 
-async fn fetch_image_bytes(url: String) -> Result<image::DynamicImage, String> {
+async fn fetch_image_bytes(
+  url: String,
+  referer: Option<String>,
+) -> Result<image::DynamicImage, String> {
   let client = reqwest::Client::builder()
     .user_agent(feeds::USER_AGENT)
     .timeout(std::time::Duration::from_secs(30))
     .build()
     .map_err(|e| e.to_string())?;
-  let bytes = client
-    .get(&url)
+  let mut req = client.get(&url);
+  if let Some(referer) = referer {
+    req = req.header(reqwest::header::REFERER, referer);
+  }
+  let bytes = req
     .send()
     .await
     .map_err(|e| e.to_string())?
