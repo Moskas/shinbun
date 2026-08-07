@@ -1,8 +1,9 @@
 use crate::content::markdown::{render_markdown, wrap_line, MarkdownStyles, MdBlock};
 use crate::feeds::FeedEntry;
 use crate::theme::Theme;
+use image::DynamicImage;
 use ratatui::{
-  layout::Rect,
+  layout::{Rect, Size},
   prelude::{Alignment, Line, Span, Style, Stylize},
   symbols::border,
   widgets::{
@@ -11,7 +12,11 @@ use ratatui::{
   },
   Frame,
 };
-use ratatui_image::{protocol::StatefulProtocol, StatefulImage};
+use ratatui_image::{
+  picker::Picker,
+  sliced::{SignedPosition, SlicedImage, SlicedProtocol},
+  Resize,
+};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -37,6 +42,10 @@ enum ContentSegment {
 pub struct EntryRenderCache {
   key: u64,
   segments: Vec<ContentSegment>,
+  /// Per-URL sliced image protocols, built lazily at render time and
+  /// cleared whenever `key` changes (a new width invalidates existing
+  /// slices, since they're encoded at a fixed target size).
+  sliced: HashMap<String, SlicedProtocol>,
 }
 
 /// Configuration passed to [`render`] to avoid too many individual parameters.
@@ -49,8 +58,10 @@ pub struct EntryViewConfig<'a> {
   /// Maximum content width; `None` means use the full available width.
   pub max_width: Option<u16>,
   pub theme: &'a Theme,
-  /// Cache of decoded images keyed by URL; mutated as images are rendered.
-  pub image_cache: &'a mut HashMap<String, StatefulProtocol>,
+  /// Protocol picker, needed to encode images into sliced protocols.
+  pub picker: &'a Picker,
+  /// Cache of decoded images keyed by URL.
+  pub image_cache: &'a HashMap<String, DynamicImage>,
   /// Cached segment layout, reused while the entry, width and links match.
   pub render_cache: &'a mut EntryRenderCache,
 }
@@ -121,7 +132,7 @@ fn seg_height(seg: &ContentSegment, show_images: bool) -> usize {
       if show_images {
         IMAGE_RENDER_ROWS
       } else {
-        3
+        1
       }
     }
   }
@@ -136,7 +147,9 @@ fn render_segments(
   heights: &[usize],
   scroll: usize,
   theme: &Theme,
-  image_cache: &mut HashMap<String, StatefulProtocol>,
+  picker: &Picker,
+  image_cache: &HashMap<String, DynamicImage>,
+  sliced_cache: &mut HashMap<String, SlicedProtocol>,
   show_images: bool,
 ) {
   let visible_height = area.height as usize;
@@ -187,34 +200,35 @@ fn render_segments(
           format!(" [image: {}] ", alt)
         };
         if show_images {
-          if inner_skip == 0 && avail >= IMAGE_RENDER_ROWS {
-            // Only render when the image is fully visible. Passing a variable-height
-            // area to StatefulImage causes it to re-encode on every scroll step, which
-            // is extremely expensive. A fixed IMAGE_RENDER_ROWS area means it encodes
-            // once and caches thereafter.
-            let full_area = Rect {
-              height: IMAGE_RENDER_ROWS as u16,
-              ..seg_area
-            };
-            if let Some(protocol) = image_cache.get_mut(src.as_str()) {
-              frame.render_stateful_widget(StatefulImage::default(), full_area, protocol);
-            } else {
-              Paragraph::new(Line::from(ph).fg(theme.meta_link))
-                .render(full_area, frame.buffer_mut());
+          // Build (and cache) the sliced protocol once the raw image has been
+          // decoded. Slices are sized for this render's content width, so
+          // they're cleared by the caller whenever that width changes.
+          if !sliced_cache.contains_key(src.as_str()) {
+            if let Some(img) = image_cache.get(src.as_str()) {
+              let target = Size::new(area.width, IMAGE_RENDER_ROWS as u16);
+              if let Ok(sp) =
+                SlicedProtocol::new_with_resize(picker, img.clone(), target, Resize::Fit(None))
+              {
+                sliced_cache.insert(src.clone(), sp);
+              }
             }
+          }
+
+          if let Some(sliced) = sliced_cache.get(src.as_str()) {
+            // Position is the image's row offset relative to the viewport
+            // top; negative when scrolled past its start. SlicedImage crops
+            // to whatever's visible per-protocol instead of requiring the
+            // whole image to be in view.
+            let y = (virtual_row as i64 - scroll as i64)
+              .clamp(i16::MIN as i64, i16::MAX as i64) as i16;
+            SlicedImage::new(sliced, SignedPosition::from((0, y))).render(area, frame.buffer_mut());
           } else {
+            // Not decoded yet — placeholder in the segment's own sub-area.
             Paragraph::new(Line::from(ph).fg(theme.meta_link)).render(seg_area, frame.buffer_mut());
           }
         } else {
-          // Images disabled: compact 3-row layout (blank / alt text / blank).
-          let lines = vec![
-            Line::from(""),
-            Line::from(ph).fg(theme.meta_link),
-            Line::from(""),
-          ];
-          Paragraph::new(lines)
-            .scroll((inner_skip as u16, 0))
-            .render(seg_area, frame.buffer_mut());
+          // Images disabled: compact single-line placeholder, no padding.
+          Paragraph::new(Line::from(ph).fg(theme.meta_link)).render(seg_area, frame.buffer_mut());
         }
       }
     }
@@ -318,6 +332,7 @@ pub fn render(
   if cfg.render_cache.key != key || cfg.render_cache.segments.is_empty() {
     cfg.render_cache.segments = build_all_segments(feed_title, entry, theme, content_width);
     cfg.render_cache.key = key;
+    cfg.render_cache.sliced.clear();
   }
   let segments: &[ContentSegment] = &cfg.render_cache.segments;
 
@@ -363,7 +378,9 @@ pub fn render(
     &heights,
     cur_scroll,
     theme,
+    cfg.picker,
     cfg.image_cache,
+    &mut cfg.render_cache.sliced,
     show_images,
   );
 

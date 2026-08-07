@@ -20,8 +20,8 @@ use crate::views::{entry_view, feeds_list_view, help_view, links_view};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::widgets::TableState;
+use image::DynamicImage;
 use ratatui_image::picker::Picker;
-use ratatui_image::protocol::StatefulProtocol;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
@@ -74,8 +74,8 @@ pub struct App {
   pub(crate) dirty: bool,
   /// Protocol picker for terminal image rendering (Kitty, Sixel, halfblocks fallback).
   pub(crate) picker: Picker,
-  /// Cache of decoded + protocol-encoded images keyed by URL.
-  pub(crate) image_cache: HashMap<String, StatefulProtocol>,
+  /// Cache of decoded images keyed by URL.
+  pub(crate) image_cache: HashMap<String, DynamicImage>,
   /// Cached entry-view segment layout; rebuilt when entry/width change.
   pub(crate) entry_render_cache: entry_view::EntryRenderCache,
   /// Runtime toggle for image rendering; initialized from ui_config.show_images.
@@ -243,8 +243,7 @@ impl App {
       }
 
       FeedUpdate::ImageReady { url, image } => {
-        let protocol = self.picker.new_resize_protocol(image);
-        self.image_cache.insert(url, protocol);
+        self.image_cache.insert(url, image);
       }
 
       FeedUpdate::ImageError => {
@@ -357,7 +356,8 @@ impl App {
                   horizontal_padding: self.ui_config.entry_padding,
                   max_width: self.ui_config.entry_max_width,
                   theme: &self.theme,
-                  image_cache: &mut self.image_cache,
+                  picker: &self.picker,
+                  image_cache: &self.image_cache,
                   render_cache: &mut self.entry_render_cache,
                   show_images: self.show_images,
                 },
