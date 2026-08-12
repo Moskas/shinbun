@@ -635,6 +635,9 @@ impl App {
       }
       KeyCode::Char('i') | KeyCode::Char('I') => {
         self.show_images = !self.show_images;
+        if self.show_images && self.state == AppState::ViewingEntry {
+          self.queue_entry_images();
+        }
       }
       KeyCode::Char('m') | KeyCode::Char('M') => match self.state {
         AppState::BrowsingEntries => {

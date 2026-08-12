@@ -208,7 +208,9 @@ impl App {
         self.state = AppState::ViewingEntry;
         self.entry_scroll = 0;
         // Kick off background fetches for any inline images in this entry.
-        self.queue_entry_images();
+        if self.show_images {
+          self.queue_entry_images();
+        }
       }
       AppState::ViewingEntry => {}
     }
