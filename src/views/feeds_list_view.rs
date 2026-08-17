@@ -558,14 +558,16 @@ const DATE_COL_WIDTH: u16 = 6;
 /// The cap ensures the title column keeps at least ⅔ of the space that remains
 /// after the fixed date column and column spacings are subtracted.  The
 /// horizontal padding (1 cell each side) of the entry block is also accounted
-/// for so the arithmetic is anchored to actual terminal columns.
+/// for so the arithmetic is anchored to actual terminal columns. The column is
+/// also hard-capped at 15 chars so a single long feed name doesn't stretch the
+/// column past what's jarring next to short ones.
 ///
 /// * `area_width`   – full width of the area rect passed to the entries table
 /// * `raw_max`      – actual maximum feed-title length across visible entries
 fn compute_source_cap(area_width: u16, raw_max: u16) -> u16 {
   // Subtract: 2 (block padding) + DATE_COL_WIDTH + 4 (two column_spacing(2) gaps)
   let avail = area_width.saturating_sub(2 + DATE_COL_WIDTH + 4);
-  let cap = (avail / 3).max(8); // source ≤ ⅓ of remaining, minimum 8
+  let cap = (avail / 3).clamp(8, 15); // source ≤ ⅓ of remaining, clamped to [8, 15]
   raw_max.min(cap)
 }
 
@@ -1152,6 +1154,14 @@ mod tests {
     // Very narrow terminal: minimum 8
     let cap = compute_source_cap(10, 20);
     assert_eq!(cap, 8);
+  }
+
+  #[test]
+  fn test_compute_source_cap_hard_max() {
+    // Wide terminal, long feed name: hard-capped at 15 even though
+    // avail/3 and raw_max would both allow more.
+    let cap = compute_source_cap(200, 30);
+    assert_eq!(cap, 15);
   }
 
   // ─── build_entry_rows tests ──────────────────────────────────────────────
