@@ -211,6 +211,8 @@ async fn main() -> io::Result<()> {
     config.queries,
     feed_tx,
     cache,
+    config::get_feeds_path(),
+    config::get_image_cache_path(),
     picker,
   );
   let result = run_app(&mut terminal, &mut app, feed_rx);
@@ -307,7 +309,7 @@ fn cmd_import(file: PathBuf, force: bool, dry_run: bool) -> io::Result<()> {
   // Fast path: --force without dry-run just overwrites.
   if force && !dry_run {
     println!("Imported {} feed(s).", imported.len());
-    return config::write_feeds(&imported);
+    return config::write_feeds(&config::get_feeds_path(), &imported);
   }
 
   let existing = config::parse_config().map(|c| c.feeds).unwrap_or_default();
@@ -396,7 +398,7 @@ fn cmd_import(file: PathBuf, force: bool, dry_run: bool) -> io::Result<()> {
   let mut merged = existing;
   merged.extend(to_add);
   println!("Added {} feed(s), skipped {} duplicate(s).", added, skipped);
-  config::write_feeds(&merged)
+  config::write_feeds(&config::get_feeds_path(), &merged)
 }
 
 async fn cmd_refresh(quiet: bool) -> io::Result<()> {

@@ -12,7 +12,7 @@ pub use loading::LoadingState;
 pub use types::*;
 
 use crate::cache::FeedCache;
-use crate::config::{self, Feed as FeedConfig, GeneralConfig, QueryFeed, UiConfig};
+use crate::config::{Feed as FeedConfig, GeneralConfig, QueryFeed, UiConfig};
 use crate::feeds::{self, Feed};
 use crate::image_cache::DiskImageCache;
 use crate::query;
@@ -32,6 +32,10 @@ pub struct App {
   pub(crate) display_feeds: Vec<DisplayFeed>,
   pub(crate) feed_config: Vec<FeedConfig>,
   pub(crate) query_config: Vec<QueryFeed>,
+  /// Path `feeds.toml` is written to when feeds are added/removed. Injected
+  /// rather than resolved internally so tests can point it at a temp dir
+  /// instead of the real user config directory.
+  pub(crate) feeds_path: std::path::PathBuf,
   pub(crate) feed_index: usize,
   pub(crate) feed_list_state: TableState,
   pub(crate) entry_list_state: TableState,
@@ -105,6 +109,8 @@ impl App {
     query_config: Vec<QueryFeed>,
     feed_tx: mpsc::UnboundedSender<FeedUpdate>,
     cache: FeedCache,
+    feeds_path: std::path::PathBuf,
+    image_cache_dir: std::path::PathBuf,
     picker: Picker,
   ) -> Self {
     let display_feeds = Self::build_display_feeds(&feeds, &query_config);
@@ -120,6 +126,7 @@ impl App {
       display_feeds,
       feed_config,
       query_config,
+      feeds_path,
       feed_index: 0,
       feed_list_state: TableState::default().with_selected(Some(0)),
       entry_list_state: TableState::default(),
@@ -159,7 +166,7 @@ impl App {
       dirty: true,
       picker,
       image_cache: HashMap::new(),
-      image_disk_cache: DiskImageCache::new(config::get_image_cache_path()),
+      image_disk_cache: DiskImageCache::new(image_cache_dir),
       image_pending: HashSet::new(),
       image_failed: HashSet::new(),
       image_semaphore: Arc::new(Semaphore::new(image_fetch_concurrency)),
@@ -789,9 +796,19 @@ mod tests {
     Picker::halfblocks()
   }
 
+  /// Fresh scratch directory for `feeds_path`/`image_cache_dir` in tests, so
+  /// `App::new` never resolves to the real `~/.config/shinbun`. A new dir per
+  /// call keeps concurrently-run tests from racing on the same file; the
+  /// `TempDir` guard is intentionally leaked so the path stays valid for the
+  /// life of the `App` under test.
+  fn test_scratch_dir() -> std::path::PathBuf {
+    tempfile::tempdir().unwrap().keep()
+  }
+
   fn make_test_app() -> App {
     let (tx, _rx) = mpsc::unbounded_channel();
     let cache = crate::cache::FeedCache::new_in_memory().unwrap();
+    let scratch = test_scratch_dir();
     App::new(
       vec![],
       GeneralConfig::default(),
@@ -805,6 +822,8 @@ mod tests {
       vec![],
       tx,
       cache,
+      scratch.join("feeds.toml"),
+      scratch.join("images"),
       test_picker(),
     )
   }
@@ -812,6 +831,7 @@ mod tests {
   fn make_app_with_feeds(feeds: Vec<Feed>) -> App {
     let (tx, _rx) = mpsc::unbounded_channel();
     let cache = crate::cache::FeedCache::new_in_memory().unwrap();
+    let scratch = test_scratch_dir();
     App::new(
       feeds,
       GeneralConfig::default(),
@@ -825,6 +845,8 @@ mod tests {
       vec![],
       tx,
       cache,
+      scratch.join("feeds.toml"),
+      scratch.join("images"),
       test_picker(),
     )
   }
@@ -1134,6 +1156,7 @@ mod tests {
     // Save the feed to the cache so mark_feed_read works
     cache.save_feed(&feeds[0], 0, None).unwrap();
 
+    let scratch = test_scratch_dir();
     let mut app = App::new(
       feeds,
       GeneralConfig::default(),
@@ -1147,6 +1170,8 @@ mod tests {
       vec![],
       tx,
       cache,
+      scratch.join("feeds.toml"),
+      scratch.join("images"),
       test_picker(),
     );
 
@@ -1232,6 +1257,7 @@ mod tests {
     let cache = crate::cache::FeedCache::new_in_memory().unwrap();
     cache.save_feed(&feeds[0], 0, None).unwrap();
 
+    let scratch = test_scratch_dir();
     let mut app = App::new(
       feeds,
       GeneralConfig::default(),
@@ -1245,6 +1271,8 @@ mod tests {
       vec![],
       tx,
       cache,
+      scratch.join("feeds.toml"),
+      scratch.join("images"),
       test_picker(),
     );
 
@@ -1277,6 +1305,7 @@ mod tests {
     let cache = crate::cache::FeedCache::new_in_memory().unwrap();
     cache.save_feed(&feeds[0], 0, None).unwrap();
 
+    let scratch = test_scratch_dir();
     let mut app = App::new(
       feeds,
       GeneralConfig::default(),
@@ -1290,6 +1319,8 @@ mod tests {
       vec![],
       tx,
       cache,
+      scratch.join("feeds.toml"),
+      scratch.join("images"),
       test_picker(),
     );
 
@@ -1773,6 +1804,17 @@ mod tests {
     assert!(tags.contains(&"tech".to_string()));
     assert!(tags.contains(&"rust".to_string()));
     assert_eq!(app.feed_config[0].refresh.as_deref(), Some("1d"));
+
+    // The write must land in the isolated scratch dir, never the real
+    // ~/.config/shinbun.
+    assert_ne!(app.feeds_path, crate::config::get_feeds_path());
+    assert_eq!(app.feeds_path.file_name().unwrap(), "feeds.toml");
+    let written = std::fs::read_to_string(&app.feeds_path).unwrap();
+    let parsed: toml::Value = toml::from_str(&written).unwrap();
+    assert_eq!(
+      parsed["feeds"][0]["link"].as_str(),
+      Some("https://example.com/feed.xml")
+    );
   }
 
   #[tokio::test]
@@ -1788,5 +1830,16 @@ mod tests {
     assert!(app.feed_config[0].name.is_none());
     assert!(app.feed_config[0].tags.is_none());
     assert!(app.feed_config[0].refresh.is_none());
+
+    // The write must land in the isolated scratch dir, never the real
+    // ~/.config/shinbun.
+    assert_ne!(app.feeds_path, crate::config::get_feeds_path());
+    assert_eq!(app.feeds_path.file_name().unwrap(), "feeds.toml");
+    let written = std::fs::read_to_string(&app.feeds_path).unwrap();
+    let parsed: toml::Value = toml::from_str(&written).unwrap();
+    assert_eq!(
+      parsed["feeds"][0]["link"].as_str(),
+      Some("https://example.com/rss")
+    );
   }
 }

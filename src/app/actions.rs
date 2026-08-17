@@ -249,7 +249,7 @@ impl App {
           return;
         }
 
-        if let Err(e) = write_feeds(&self.feed_config) {
+        if let Err(e) = write_feeds(&self.feeds_path, &self.feed_config) {
           self.push_error("Add Feed", format!("Failed to save feeds.toml: {}", e));
         }
 

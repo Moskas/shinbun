@@ -266,9 +266,8 @@ pub fn get_image_cache_path() -> PathBuf {
     .unwrap_or_else(get_config_dir)
 }
 
-/// Overwrite feeds.toml with the given feed list.
-pub fn write_feeds(feeds: &[Feed]) -> std::io::Result<()> {
-  let path = get_feeds_path();
+/// Overwrite feeds.toml at `path` with the given feed list.
+pub fn write_feeds(path: &Path, feeds: &[Feed]) -> std::io::Result<()> {
   if let Some(parent) = path.parent() {
     fs::create_dir_all(parent)?;
   }
