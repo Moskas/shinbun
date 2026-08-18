@@ -98,7 +98,9 @@ impl App {
     let mut child = Command::new("termux-clipboard-set")
       .stdin(Stdio::piped())
       .spawn()
-      .map_err(|e| format!("termux-clipboard-set not found (install the termux-api package): {e}"))?;
+      .map_err(|e| {
+        format!("termux-clipboard-set not found (install the termux-api package): {e}")
+      })?;
     child
       .stdin
       .take()
@@ -109,7 +111,9 @@ impl App {
     if status.success() {
       Ok(())
     } else {
-      Err("termux-clipboard-set exited with an error (is the Termux:API app installed?)".to_string())
+      Err(
+        "termux-clipboard-set exited with an error (is the Termux:API app installed?)".to_string(),
+      )
     }
   }
 
