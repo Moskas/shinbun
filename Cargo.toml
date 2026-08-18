@@ -14,18 +14,29 @@ dirs = "6.0.0"
 feed-rs = "2.1.0"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
-arboard = "3.6.1"
 open = "5.3.3"
 ratatui = "0.30.0"
-reqwest = "0.13.2"
 rusqlite = "0.38.0"
 serde = { version = "1.0.204", features = ["derive"] }
 serde_json = "1.0.149"
-tokio = { version = "1.40.0", features = ["rt", "rt-multi-thread", "process", "macros"] }
+tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "process", "macros"] }
 toml = "0.9.8"
 pulldown-cmark = { version = "0.13.4", default-features = false, features = ["simd"] }
 scraper = "0.27.0"
 ego-tree = "0.11.0"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+arboard = { version = "3.6.1", features = ["wayland-data-control"] }
+reqwest = "0.13.4"
+
+# reqwest's default rustls backend calls into rustls-platform-verifier, which
+# needs a JavaVM to initialize on Android and panics ("Expect
+# rustls-platform-verifier to be initialized") in a headless Termux binary.
+# Build with our own rustls config backed by Mozilla's root store instead.
+[target.'cfg(target_os = "android")'.dependencies]
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls-no-provider", "charset", "http2", "system-proxy"] }
+rustls = { version = "0.23.43", default-features = false, features = ["std", "tls12", "aws-lc-rs"] }
+webpki-roots = "0.26"
 
 [dev-dependencies]
 tempfile = "3"

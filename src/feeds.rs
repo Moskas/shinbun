@@ -9,12 +9,33 @@ use tokio::sync::mpsc;
 /// `reqwest::Client` is cheaply cloneable (it wraps an `Arc` internally).
 pub const USER_AGENT: &str = concat!("shinbun/", env!("CARGO_PKG_VERSION"), " (RSS reader)");
 
-fn build_client() -> Client {
+#[cfg(not(target_os = "android"))]
+pub fn build_client() -> Client {
   Client::builder()
     .user_agent(USER_AGENT)
     .timeout(Duration::from_secs(30))
     .build()
     .unwrap_or_default()
+}
+
+/// reqwest's default rustls backend defers certificate verification to
+/// rustls-platform-verifier, which requires a JavaVM to initialize and
+/// panics in a headless Termux process. Supply our own rustls config backed
+/// by Mozilla's root store so reqwest never touches the platform verifier.
+#[cfg(target_os = "android")]
+pub fn build_client() -> Client {
+  let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+  let mut roots = rustls::RootCertStore::empty();
+  roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+  let tls_config = rustls::ClientConfig::builder()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+  Client::builder()
+    .user_agent(USER_AGENT)
+    .timeout(Duration::from_secs(30))
+    .use_preconfigured_tls(tls_config)
+    .build()
+    .expect("failed to build HTTP client with preconfigured TLS")
 }
 
 #[derive(Debug, Clone)]

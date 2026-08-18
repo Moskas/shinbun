@@ -77,14 +77,40 @@ impl App {
   }
 
   /// Write text to the system clipboard, suppressing arboard's Drop warning.
-  pub(super) fn copy_to_clipboard(text: &str) -> Result<(), arboard::Error> {
-    let mut cb = arboard::Clipboard::new()?;
-    cb.set_text(text)?;
+  #[cfg(not(target_os = "android"))]
+  pub(super) fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    cb.set_text(text).map_err(|e| e.to_string())?;
     // Forget the clipboard to prevent its Drop impl from printing to stderr
     // on X11 when dropped within 100ms of writing (arboard warns about
     // clipboard managers potentially missing the content).
     std::mem::forget(cb);
     Ok(())
+  }
+
+  /// Write text to the system clipboard via the Termux:API `termux-clipboard-set`
+  /// helper, since arboard has no Android backend.
+  #[cfg(target_os = "android")]
+  pub(super) fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("termux-clipboard-set")
+      .stdin(Stdio::piped())
+      .spawn()
+      .map_err(|e| format!("termux-clipboard-set not found (install the termux-api package): {e}"))?;
+    child
+      .stdin
+      .take()
+      .expect("stdin was piped")
+      .write_all(text.as_bytes())
+      .map_err(|e| e.to_string())?;
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if status.success() {
+      Ok(())
+    } else {
+      Err("termux-clipboard-set exited with an error (is the Termux:API app installed?)".to_string())
+    }
   }
 
   /// Yank the current entry's first link to the clipboard.
@@ -343,11 +369,7 @@ async fn fetch_and_decode(
 }
 
 async fn fetch_image_bytes(url: &str, referer: Option<String>) -> Result<Vec<u8>, String> {
-  let client = reqwest::Client::builder()
-    .user_agent(feeds::USER_AGENT)
-    .timeout(std::time::Duration::from_secs(30))
-    .build()
-    .map_err(|e| e.to_string())?;
+  let client = feeds::build_client();
   let mut req = client.get(url);
   if let Some(referer) = referer {
     req = req.header(reqwest::header::REFERER, referer);
