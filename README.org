@@ -70,6 +70,7 @@ If =name= is set, it overrides the title provided by the feed itself.
 [general]
 browser = "firefox"           # optional, defaults to system default
 media_player = "mpv"          # optional, defaults to system default
+entry_save_dir = "~/Documents/shinbun"  # optional, defaults to home directory
 
 [ui]
 show_borders = true           # default: true
@@ -183,6 +184,7 @@ A complete example Solarized Dark theme is available in [[./examples/solarized_d
 | =u=                           | Toggle hide read entries   |
 | =o=                           | Open entry in browser      |
 | =L=                           | Show article links         |
+| =s=                           | Save entry to markdown file |
 | =p=                           | Play media attachment      |
 | =e=                           | Show feed errors           |
 | =?=                           | Toggle help                |

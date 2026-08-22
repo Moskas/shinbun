@@ -118,6 +118,12 @@ pub struct GeneralConfig {
   /// Falls back to the OS default when not set.
   #[serde(default)]
   pub media_player: Option<String>,
+
+  /// Default directory offered when saving an entry to a markdown file
+  /// (the "Save Entry" popup). Supports a leading `~`. Falls back to the
+  /// home directory when not set.
+  #[serde(default)]
+  pub entry_save_dir: Option<String>,
 }
 
 fn default_show_borders() -> bool {
@@ -391,6 +397,7 @@ link = "https://other.com/rss"
     // Should return defaults when file is missing
     assert!(general.browser.is_none());
     assert!(general.media_player.is_none());
+    assert!(general.entry_save_dir.is_none());
     // Falls back to serde defaults (true), not the derived Default (false).
     assert!(ui.show_borders);
     assert!(ui.show_read_entries);
@@ -411,6 +418,7 @@ link = "https://other.com/rss"
 [general]
 browser = "firefox"
 media_player = "mpv"
+entry_save_dir = "~/Documents/shinbun"
 
 [ui]
 show_borders = false
@@ -426,6 +434,10 @@ query = "tags:blog"
     let (general, ui, queries) = parse_config_file(dir.path());
     assert_eq!(general.browser.as_deref(), Some("firefox"));
     assert_eq!(general.media_player.as_deref(), Some("mpv"));
+    assert_eq!(
+      general.entry_save_dir.as_deref(),
+      Some("~/Documents/shinbun")
+    );
     assert!(!ui.show_borders);
     assert!(!ui.show_read_entries);
     assert_eq!(queries.len(), 1);

@@ -323,6 +323,155 @@ impl App {
       self.push_error("Media player", e);
     }
   }
+
+  /// Expand a leading `~` (or `~/...`) in `path` to the user's home directory.
+  fn expand_tilde(path: &str) -> std::path::PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+      if let Some(home) = dirs::home_dir() {
+        return home.join(rest);
+      }
+    } else if path == "~" {
+      if let Some(home) = dirs::home_dir() {
+        return home;
+      }
+    }
+    std::path::PathBuf::from(path)
+  }
+
+  /// Replace path separators and other filesystem-unfriendly characters in a
+  /// title so it's safe to use as a single path segment.
+  fn sanitize_filename_part(s: &str) -> String {
+    s.chars()
+      .map(|c| if c == '/' || c == '\\' { '-' } else { c })
+      .collect()
+  }
+
+  fn escape_yaml_string(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+  }
+
+  /// Build the YAML frontmatter + markdown body written when saving an entry.
+  fn build_entry_markdown(entry: &feeds::FeedEntry, feed_name: &str) -> String {
+    let mut out = String::new();
+    out.push_str("---\n");
+    out.push_str(&format!(
+      "title: \"{}\"\n",
+      Self::escape_yaml_string(&entry.title)
+    ));
+    out.push_str(&format!(
+      "feed: \"{}\"\n",
+      Self::escape_yaml_string(feed_name)
+    ));
+    if let Some(published) = &entry.published {
+      out.push_str(&format!(
+        "published: \"{}\"\n",
+        Self::escape_yaml_string(published)
+      ));
+    }
+    if let Some(link) = entry.links.first() {
+      out.push_str(&format!("link: \"{}\"\n", Self::escape_yaml_string(link)));
+    }
+    out.push_str("---\n\n");
+    out.push_str(&entry.text);
+    out
+  }
+
+  /// Open the save-entry popup, pre-filled with a default `~/<Feed> - <Title>.md` path.
+  pub(super) fn open_save_popup(&mut self) {
+    let Some(real_idx) = self.resolve_current_entry_idx() else {
+      return;
+    };
+    let Some(df) = self.display_feeds.get(self.feed_index) else {
+      return;
+    };
+    let Some(entry) = df.entries(&self.feeds).get(real_idx) else {
+      return;
+    };
+
+    let feed_name = entry
+      .feed_title
+      .clone()
+      .unwrap_or_else(|| df.title(&self.feeds).to_string());
+
+    let default_name = format!(
+      "{} - {}.md",
+      Self::sanitize_filename_part(&feed_name),
+      Self::sanitize_filename_part(&entry.title)
+    );
+
+    let save_dir = self.general_config.entry_save_dir.as_deref().unwrap_or("~");
+    let save_dir = save_dir.trim_end_matches('/');
+
+    self.save_entry_form.clear();
+    self
+      .save_entry_form
+      .set_path(format!("{}/{}", save_dir, default_name));
+    self.show_save_popup = true;
+  }
+
+  pub(super) fn handle_save_entry_key(&mut self, key: KeyEvent) {
+    match key.code {
+      KeyCode::Esc => {
+        self.show_save_popup = false;
+        self.save_entry_form.clear();
+      }
+      KeyCode::Left => {
+        self.save_entry_form.move_left();
+      }
+      KeyCode::Right => {
+        self.save_entry_form.move_right();
+      }
+      KeyCode::Backspace => {
+        self.save_entry_form.backspace();
+        self.save_entry_form.error = None;
+      }
+      KeyCode::Enter => {
+        let path = self.save_entry_form.path.trim().to_string();
+        if path.is_empty() {
+          self.save_entry_form.error = Some("Path is required".to_string());
+          return;
+        }
+
+        let Some(real_idx) = self.resolve_current_entry_idx() else {
+          self.show_save_popup = false;
+          self.save_entry_form.clear();
+          return;
+        };
+        let Some(df) = self.display_feeds.get(self.feed_index) else {
+          self.show_save_popup = false;
+          self.save_entry_form.clear();
+          return;
+        };
+        let Some(entry) = df.entries(&self.feeds).get(real_idx) else {
+          self.show_save_popup = false;
+          self.save_entry_form.clear();
+          return;
+        };
+
+        let feed_name = entry
+          .feed_title
+          .clone()
+          .unwrap_or_else(|| df.title(&self.feeds).to_string());
+        let contents = Self::build_entry_markdown(entry, &feed_name);
+        let expanded = Self::expand_tilde(&path);
+
+        self.show_save_popup = false;
+        self.save_entry_form.clear();
+
+        if let Err(e) = std::fs::write(&expanded, contents.as_bytes()) {
+          self.push_error(
+            "Save",
+            format!("Failed to write {}: {}", expanded.display(), e),
+          );
+        }
+      }
+      KeyCode::Char(c) => {
+        self.save_entry_form.insert_char(c);
+        self.save_entry_form.error = None;
+      }
+      _ => {}
+    }
+  }
 }
 
 async fn fetch_and_decode(

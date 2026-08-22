@@ -1,5 +1,6 @@
 use crate::app::{
   AddFeedField, AddFeedForm, AppState, DisplayFeed, FeedError, ListPane, LoadingState,
+  SaveEntryForm,
 };
 use crate::feeds::{Feed, FeedEntry};
 use crate::theme::Theme;
@@ -996,6 +997,77 @@ pub fn render_add_feed_popup(frame: &mut Frame, area: Rect, form: &AddFeedForm, 
 
   let popup = Paragraph::new(lines).block(block);
   popup.render(popup_area, frame.buffer_mut());
+}
+
+pub fn render_save_popup(frame: &mut Frame, area: Rect, form: &mut SaveEntryForm, theme: &Theme) {
+  let popup_width = 72u16.min(area.width.saturating_sub(4));
+  let popup_height = 6u16;
+  let horizontal_padding = 2u16;
+
+  let popup_area = Rect {
+    x: area.x + (area.width.saturating_sub(popup_width)) / 2,
+    y: area.y + (area.height.saturating_sub(popup_height)) / 2,
+    width: popup_width,
+    height: popup_height,
+  };
+
+  Clear.render(popup_area, frame.buffer_mut());
+
+  let input_style = Style::default().bg(theme.highlight_bg);
+
+  let block = Block::default()
+    .title(Span::styled(" Save Entry ", theme.title_style()))
+    .title_bottom(Span::styled(
+      " <Enter> save  <Esc> cancel ",
+      Style::default(),
+    ))
+    .borders(Borders::ALL)
+    .border_style(Style::default().fg(theme.confirm))
+    .border_set(border::PLAIN)
+    .padding(Padding::new(horizontal_padding, horizontal_padding, 1, 0));
+
+  // Ask the block itself where its content area starts, rather than
+  // re-deriving border/padding offsets by hand — that duplication is what
+  // let the cursor position drift out of sync with the actual layout.
+  let inner_area = block.inner(popup_area);
+
+  // Clamp the input to the field's width, scrolling just enough to keep the
+  // cursor visible (accounting for double-width characters like CJK, which
+  // is what threw off a fixed char-count cursor position before). Then pad
+  // with spaces so the alt background fills the whole line, making it read
+  // as an input field rather than plain rendered text.
+  let (visible, cursor_col) = form.visible_window(inner_area.width as usize);
+  let visible_width = unicode_width::UnicodeWidthStr::width(visible.as_str());
+  let input_padded = format!(
+    "{}{}",
+    visible,
+    " ".repeat((inner_area.width as usize).saturating_sub(visible_width))
+  );
+
+  let third_line = match &form.error {
+    Some(err) => Line::from(Span::styled(
+      format!("✗ {}", err),
+      Style::default().fg(theme.error_title),
+    )),
+    None => Line::from(""),
+  };
+
+  let lines = vec![
+    Line::from("Where would you like to save the entry?"),
+    Line::from(Span::styled(input_padded, input_style)),
+    third_line,
+  ];
+
+  let popup = Paragraph::new(lines).block(block);
+  popup.render(popup_area, frame.buffer_mut());
+
+  // Position the real terminal cursor over the input field (the second
+  // content line, after the label) so it moves with the left/right keys and
+  // blinks using the terminal's own cursor blink — no manual animation timer
+  // needed.
+  let cursor_x = inner_area.x + cursor_col;
+  let cursor_y = inner_area.y + 1;
+  frame.set_cursor_position((cursor_x, cursor_y));
 }
 
 #[cfg(test)]

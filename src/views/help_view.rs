@@ -109,6 +109,10 @@ fn build_help_content(theme: &Theme) -> Vec<Line<'static>> {
       description: "Show article links",
     },
     Keybind {
+      key: "s",
+      description: "Save entry to markdown file",
+    },
+    Keybind {
       key: "y",
       description: "Yank link to clipboard",
     },

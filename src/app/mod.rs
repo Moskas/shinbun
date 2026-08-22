@@ -7,7 +7,7 @@ pub mod read_state;
 pub mod search;
 pub mod types;
 
-pub use input::{AddFeedField, AddFeedForm, InputState};
+pub use input::{AddFeedField, AddFeedForm, InputState, SaveEntryForm};
 pub use loading::LoadingState;
 pub use types::*;
 
@@ -64,6 +64,8 @@ pub struct App {
   pub(crate) confirm_feed_name: String,
   pub(crate) show_add_feed_popup: bool,
   pub(crate) add_feed_form: AddFeedForm,
+  pub(crate) show_save_popup: bool,
+  pub(crate) save_entry_form: SaveEntryForm,
   pub(crate) input: InputState,
   pub(crate) cache: FeedCache,
   pub(crate) theme: Theme,
@@ -155,6 +157,8 @@ impl App {
       confirm_feed_name: String::new(),
       show_add_feed_popup: false,
       add_feed_form: AddFeedForm::default(),
+      show_save_popup: false,
+      save_entry_form: SaveEntryForm::default(),
       input: InputState {
         hide_read,
         ..InputState::default()
@@ -464,6 +468,10 @@ impl App {
     if self.show_add_feed_popup {
       feeds_list_view::render_add_feed_popup(frame, area, &self.add_feed_form, &self.theme);
     }
+
+    if self.show_save_popup {
+      feeds_list_view::render_save_popup(frame, area, &mut self.save_entry_form, &self.theme);
+    }
   }
 
   pub fn handle_key(&mut self, key: KeyEvent) {
@@ -580,6 +588,11 @@ impl App {
       return;
     }
 
+    if self.show_save_popup {
+      self.handle_save_entry_key(key);
+      return;
+    }
+
     // ── Fuzzy search input mode ──────────────────────────────────────────
     if self.input.search_active {
       match key.code {
@@ -686,6 +699,11 @@ impl App {
           self.show_links_popup = !self.show_links_popup;
           self.links_scroll = 0;
           self.links_selected = 0;
+        }
+      }
+      KeyCode::Char('s') | KeyCode::Char('S') => {
+        if self.state == AppState::ViewingEntry {
+          self.open_save_popup();
         }
       }
       KeyCode::Char('y') => match self.state {
@@ -1841,5 +1859,170 @@ mod tests {
       parsed["feeds"][0]["link"].as_str(),
       Some("https://example.com/rss")
     );
+  }
+
+  fn enter_first_entry(app: &mut App) {
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.state, AppState::BrowsingEntries);
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.state, AppState::ViewingEntry);
+  }
+
+  #[test]
+  fn test_save_popup_opens_with_default_path() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let mut app = make_app_with_feeds(feeds);
+    enter_first_entry(&mut app);
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert!(app.show_save_popup);
+    assert_eq!(app.save_entry_form.path, "~/Feed A - Post 1.md");
+  }
+
+  #[test]
+  fn test_save_popup_uses_configured_entry_save_dir() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let cache = crate::cache::FeedCache::new_in_memory().unwrap();
+    let scratch = test_scratch_dir();
+    let mut app = App::new(
+      feeds,
+      GeneralConfig {
+        entry_save_dir: Some("~/Documents/shinbun/".to_string()),
+        ..Default::default()
+      },
+      UiConfig {
+        show_borders: true,
+        show_read_entries: true,
+        show_scrollbar: true,
+        ..Default::default()
+      },
+      vec![],
+      vec![],
+      tx,
+      cache,
+      scratch.join("feeds.toml"),
+      scratch.join("images"),
+      test_picker(),
+    );
+    enter_first_entry(&mut app);
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    assert_eq!(
+      app.save_entry_form.path,
+      "~/Documents/shinbun/Feed A - Post 1.md"
+    );
+  }
+
+  #[test]
+  fn test_save_popup_left_right_moves_cursor() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let mut app = make_app_with_feeds(feeds);
+    enter_first_entry(&mut app);
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    let len = app.save_entry_form.path.chars().count();
+    assert_eq!(app.save_entry_form.cursor, len);
+
+    app.handle_key(KeyEvent::from(KeyCode::Left));
+    app.handle_key(KeyEvent::from(KeyCode::Left));
+    assert_eq!(app.save_entry_form.cursor, len - 2);
+
+    // Typing inserts at the cursor, not at the end.
+    app.handle_key(KeyEvent::from(KeyCode::Char('X')));
+    assert_eq!(app.save_entry_form.cursor, len - 1);
+    assert!(app.save_entry_form.path.contains("X"));
+    assert!(!app.save_entry_form.path.ends_with('X'));
+
+    // Moving right past the end clamps at the string length.
+    for _ in 0..(len + 5) {
+      app.handle_key(KeyEvent::from(KeyCode::Right));
+    }
+    assert_eq!(
+      app.save_entry_form.cursor,
+      app.save_entry_form.path.chars().count()
+    );
+
+    // Moving left past the start clamps at zero.
+    for _ in 0..(len + 5) {
+      app.handle_key(KeyEvent::from(KeyCode::Left));
+    }
+    assert_eq!(app.save_entry_form.cursor, 0);
+  }
+
+  #[test]
+  fn test_save_popup_backspace_deletes_before_cursor() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let mut app = make_app_with_feeds(feeds);
+    enter_first_entry(&mut app);
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    app.save_entry_form.path = "abc".to_string();
+    app.save_entry_form.cursor = 2; // between 'b' and 'c'
+
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.save_entry_form.path, "ac");
+    assert_eq!(app.save_entry_form.cursor, 1);
+  }
+
+  #[test]
+  fn test_save_popup_escape_cancels() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let mut app = make_app_with_feeds(feeds);
+    enter_first_entry(&mut app);
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+    app.handle_key(KeyEvent::from(KeyCode::Esc));
+    assert!(!app.show_save_popup);
+    assert!(app.save_entry_form.path.is_empty());
+  }
+
+  #[test]
+  fn test_save_popup_writes_frontmatter_and_content() {
+    let mut entry = make_entry("Post 1", Some("2024-01-01T00:00:00Z"), false);
+    entry.text = "Body text".to_string();
+    entry.links = vec!["https://example.com/post-1".to_string()];
+    let feeds = vec![make_feed("http://a.com", "Feed A", vec![entry])];
+    let mut app = make_app_with_feeds(feeds);
+    enter_first_entry(&mut app);
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("out.md");
+    app.save_entry_form.path.clear();
+    for c in target.to_str().unwrap().chars() {
+      app.handle_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+
+    assert!(!app.show_save_popup);
+    let written = std::fs::read_to_string(&target).unwrap();
+    assert!(written.starts_with("---\n"));
+    assert!(written.contains("title: \"Post 1\"\n"));
+    assert!(written.contains("feed: \"Feed A\"\n"));
+    assert!(written.contains("published: \"2024-01-01T00:00:00Z\"\n"));
+    assert!(written.contains("link: \"https://example.com/post-1\"\n"));
+    assert!(written.ends_with("---\n\nBody text"));
   }
 }
