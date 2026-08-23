@@ -21,7 +21,7 @@ fn build_help_content(theme: &Theme) -> Vec<Line<'static>> {
   let section_style = Style::default().bold().fg(theme.help_section);
 
   // ── Navigation ──
-  lines.push(Line::from(Span::styled(" Navigation", section_style)));
+  lines.push(section_line("Navigation", section_style));
   lines.push(Line::from(""));
 
   let nav_binds = [
@@ -72,7 +72,7 @@ fn build_help_content(theme: &Theme) -> Vec<Line<'static>> {
 
   // ── Actions ──
   lines.push(Line::from(""));
-  lines.push(Line::from(Span::styled(" Actions", section_style)));
+  lines.push(section_line("Actions", section_style));
   lines.push(Line::from(""));
 
   let action_binds = [
@@ -139,7 +139,7 @@ fn build_help_content(theme: &Theme) -> Vec<Line<'static>> {
 
   // ── General ──
   lines.push(Line::from(""));
-  lines.push(Line::from(Span::styled(" General", section_style)));
+  lines.push(section_line("General", section_style));
   lines.push(Line::from(""));
 
   let general_binds = [
@@ -159,11 +159,20 @@ fn build_help_content(theme: &Theme) -> Vec<Line<'static>> {
   lines
 }
 
+/// Build a centered section header line.
+fn section_line(title: &'static str, style: Style) -> Line<'static> {
+  Line::from(Span::styled(title, style)).alignment(Alignment::Center)
+}
+
+/// Width of the key column; right-aligned so short keys (e.g. single chars)
+/// sit flush against the description instead of floating on the left.
+const KEY_COL_WIDTH: usize = 20;
+
 /// Format a single keybind as a styled Line.
 fn keybind_line(bind: &Keybind, theme: &Theme) -> Line<'static> {
   Line::from(vec![
     Span::styled(
-      format!("  {:24}", bind.key),
+      format!("  {:>KEY_COL_WIDTH$}  ", bind.key),
       Style::default().bold().fg(theme.help_key),
     ),
     Span::raw(bind.description.to_string()),
@@ -285,8 +294,9 @@ mod tests {
       description: "Quit",
     };
     let line = keybind_line(&bind, &test_theme());
-    // The key should be padded to 24 chars
     let spans: Vec<String> = line.spans.iter().map(|s| s.content.to_string()).collect();
-    assert_eq!(spans[0].len(), 26); // "  " prefix + 24 padded key
+    // "  " prefix + 20-wide right-aligned key + "  " gap
+    assert_eq!(spans[0].len(), 24);
+    assert!(spans[0].ends_with("q  "));
   }
 }
