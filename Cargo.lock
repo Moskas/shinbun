@@ -3065,8 +3065,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
- "webpki-roots 0.26.11",
  "unicode-width",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

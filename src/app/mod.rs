@@ -99,6 +99,8 @@ pub struct App {
   pub(crate) entry_render_cache: entry_view::EntryRenderCache,
   /// Runtime toggle for image rendering; initialized from ui_config.show_images.
   pub(crate) show_images: bool,
+  /// Runtime toggle for compact mode; initialized from ui_config.compact_mode.
+  pub(crate) compact_mode: bool,
 }
 
 impl App {
@@ -118,6 +120,7 @@ impl App {
     let display_feeds = Self::build_display_feeds(&feeds, &query_config);
     let hide_read = !ui_config.show_read_entries;
     let show_images = ui_config.show_images;
+    let compact_mode = ui_config.compact_mode;
     let image_fetch_concurrency = ui_config.image_fetch_concurrency.max(1);
     let theme = Theme::from_config(&ui_config.theme);
 
@@ -176,6 +179,7 @@ impl App {
       image_semaphore: Arc::new(Semaphore::new(image_fetch_concurrency)),
       entry_render_cache: entry_view::EntryRenderCache::default(),
       show_images,
+      compact_mode,
     }
   }
 
@@ -423,6 +427,7 @@ impl App {
             show_error_popup: self.show_error_popup,
             error_scroll: &mut self.error_scroll,
             hide_read: self.input.hide_read,
+            compact_mode: self.compact_mode,
             search_active: self.input.search_active,
             search_query: &self.input.search_query,
             search_matches: &self.input.search_matches,
@@ -658,6 +663,9 @@ impl App {
         if self.show_images && self.state == AppState::ViewingEntry {
           self.queue_entry_images();
         }
+      }
+      KeyCode::Char('c') | KeyCode::Char('C') => {
+        self.compact_mode = !self.compact_mode;
       }
       KeyCode::Char('m') | KeyCode::Char('M') => match self.state {
         AppState::BrowsingEntries => {
@@ -1017,6 +1025,16 @@ mod tests {
     assert!(app.input.hide_read);
     app.handle_key(KeyEvent::from(KeyCode::Char('u')));
     assert!(!app.input.hide_read);
+  }
+
+  #[test]
+  fn test_app_toggle_compact_mode() {
+    let mut app = make_test_app();
+    assert!(!app.compact_mode);
+    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    assert!(app.compact_mode);
+    app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+    assert!(!app.compact_mode);
   }
 
   #[test]

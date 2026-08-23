@@ -128,6 +128,10 @@ fn build_help_content(theme: &Theme) -> Vec<Line<'static>> {
       key: "i",
       description: "Toggle image rendering",
     },
+    Keybind {
+      key: "c",
+      description: "Toggle compact mode",
+    },
   ];
   for bind in &action_binds {
     lines.push(keybind_line(bind, theme));

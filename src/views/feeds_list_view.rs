@@ -209,6 +209,7 @@ pub struct FeedsViewState<'a> {
   pub show_error_popup: bool,
   pub error_scroll: &'a mut usize,
   pub hide_read: bool,
+  pub compact_mode: bool,
   pub search_active: bool,
   pub search_query: &'a str,
   pub search_matches: &'a [usize],
@@ -310,6 +311,7 @@ pub fn render(frame: &mut Frame, area: Rect, s: &mut FeedsViewState) {
         s.show_borders,
         s.loading_state,
         s.hide_read,
+        s.compact_mode,
         s.search_active,
         s.search_query,
         s.search_matches,
@@ -371,6 +373,7 @@ fn render_main_pane(
   show_borders: bool,
   loading_state: &LoadingState,
   hide_read: bool,
+  compact_mode: bool,
   search_active: bool,
   search_query: &str,
   search_matches: &[usize],
@@ -436,6 +439,7 @@ fn render_main_pane(
         raw_feeds,
         selected_feed_idx,
         hide_read,
+        compact_mode,
         search_active,
         search_query,
         search_matches,
@@ -574,6 +578,7 @@ fn compute_source_cap(area_width: u16, raw_max: u16) -> u16 {
 
 /// Build entry rows for the selected feed, returning (rows, is_query, effective_source_col_width).
 /// When `hide_read` is true, entries marked as read are excluded from the result.
+/// When `compact_mode` is true, the feed-source column is dropped for query feeds.
 /// `area_width` is used to cap the feed-source column so the title column is never starved.
 #[allow(clippy::too_many_arguments)]
 fn build_entry_rows(
@@ -581,6 +586,7 @@ fn build_entry_rows(
   raw_feeds: &[Feed],
   selected_feed_idx: usize,
   hide_read: bool,
+  compact_mode: bool,
   search_active: bool,
   search_query: &str,
   search_matches: &[usize],
@@ -607,7 +613,7 @@ fn build_entry_rows(
       );
     }
 
-    let is_query = feed.is_query();
+    let is_query = feed.is_query() && !compact_mode;
 
     // Raw maximum width of all feed-title strings in this view.
     let raw_source_width: u16 = if is_query {
@@ -1256,6 +1262,7 @@ mod tests {
       0,
       false,
       false,
+      false,
       "",
       &[],
       80,
@@ -1278,8 +1285,18 @@ mod tests {
     )];
     let display = vec![DisplayFeed::Regular(0)];
 
-    let (rows, _, _) =
-      build_entry_rows(&display, &feeds, 0, true, false, "", &[], 80, &test_theme());
+    let (rows, _, _) = build_entry_rows(
+      &display,
+      &feeds,
+      0,
+      true,
+      false,
+      false,
+      "",
+      &[],
+      80,
+      &test_theme(),
+    );
     assert_eq!(rows.len(), 1); // Only unread entry
   }
 
@@ -1292,6 +1309,7 @@ mod tests {
       &display,
       &feeds,
       0,
+      false,
       false,
       false,
       "",
@@ -1324,6 +1342,7 @@ mod tests {
       0,
       false,
       false,
+      false,
       "",
       &[],
       80,
@@ -1332,6 +1351,39 @@ mod tests {
     assert_eq!(rows.len(), 1);
     assert!(is_query);
     assert!(source_width > 0);
+  }
+
+  #[test]
+  fn test_build_entry_rows_query_feed_compact_mode() {
+    let feeds = vec![make_feed(
+      "https://example.com/rss",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+
+    let mut query_entry = make_entry("Post 1", None, false);
+    query_entry.feed_title = Some("Feed A".to_string());
+    let display = vec![DisplayFeed::Query {
+      name: "All Blogs".to_string(),
+      entries: vec![query_entry],
+    }];
+
+    let (rows, is_query, source_width) = build_entry_rows(
+      &display,
+      &feeds,
+      0,
+      false,
+      true,
+      false,
+      "",
+      &[],
+      80,
+      &test_theme(),
+    );
+    assert_eq!(rows.len(), 1);
+    assert!(!is_query); // compact mode drops the source column even for query feeds
+    assert_eq!(source_width, 0);
+    assert_eq!(entry_column_widths(is_query, source_width).len(), 2);
   }
 
   #[test]
@@ -1352,6 +1404,7 @@ mod tests {
       0,
       false,
       false,
+      false,
       "",
       &[],
       40,
@@ -1370,6 +1423,7 @@ mod tests {
       &display,
       &feeds,
       5,
+      false,
       false,
       false,
       "",
@@ -1393,8 +1447,18 @@ mod tests {
     )];
     let display = vec![DisplayFeed::Regular(0)];
 
-    let (rows, _, _) =
-      build_entry_rows(&display, &feeds, 0, true, false, "", &[], 80, &test_theme());
+    let (rows, _, _) = build_entry_rows(
+      &display,
+      &feeds,
+      0,
+      true,
+      false,
+      false,
+      "",
+      &[],
+      80,
+      &test_theme(),
+    );
     // When all entries are read and hide_read is on, should show "No entries"
     assert_eq!(rows.len(), 1);
   }

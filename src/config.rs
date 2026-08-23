@@ -91,6 +91,11 @@ pub struct UiConfig {
   #[serde(default = "default_show_images")]
   pub show_images: bool,
 
+  /// Compact mode: hide the source-feed column in query-feed entry lists to
+  /// leave more room for titles on narrow terminals (default: false)
+  #[serde(default = "default_compact_mode")]
+  pub compact_mode: bool,
+
   /// Maximum width (in columns) of entry body text; wider terminals get the
   /// content centered with extra padding. `None` (default) means unbounded —
   /// use the full available width.
@@ -140,6 +145,10 @@ fn default_show_scrollbar() -> bool {
 
 fn default_show_images() -> bool {
   true
+}
+
+fn default_compact_mode() -> bool {
+  false
 }
 
 fn default_entry_padding() -> u16 {
@@ -402,6 +411,7 @@ link = "https://other.com/rss"
     assert!(ui.show_borders);
     assert!(ui.show_read_entries);
     assert!(ui.show_images);
+    assert!(!ui.compact_mode);
     assert_eq!(ui.entry_padding, 4);
     assert_eq!(ui.entry_max_width, None);
     assert_eq!(ui.image_fetch_concurrency, 4);
