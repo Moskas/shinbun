@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.2.2] - 2026-08-23
+
+### Features
+
+- add save entry to markdown with configurable default location
+- cache images to disk and show a loading placeholder
+- crop-scroll partial images, compact disabled placeholder
+- configurable entry padding/width, bottom body padding
+- add compact mode toggle for query-feed entry lists
+- right-align help menu keys and center section headers
+
+### Bug Fixes
+
+- fix clipboard and networking on Wayland and Termux/Android
+- cap query-feed source column at 15 characters
+- skip image fetch/cache when rendering is disabled
+- send Referer on image fetches, surface fetch/decode errors
+
+### Chores
+
+- cargo fmt
+- deps & flake bump
+
+## [0.2.1] - 2026-07-03
+
+### Features
+
+- exact entry layout, render cache, link numbers
+
+### Refactoring
+
+- rewire feed content pipeline via content module
+
 ## [0.2.0] - 2026-06-23
 
 ### Features
