@@ -125,6 +125,7 @@ impl App {
     let theme = Theme::from_config(&ui_config.theme);
 
     let tag_list = Self::build_tag_list(&feeds);
+    let cached_feed_count = feeds.len();
 
     Self {
       feeds,
@@ -146,7 +147,7 @@ impl App {
       ui_config,
       exit: false,
       feed_tx,
-      loading_state: LoadingState::idle(),
+      loading_state: LoadingState::idle(cached_feed_count),
       current_feed: None,
       feed_errors: Vec::new(),
       show_error_popup: false,
@@ -1626,14 +1627,15 @@ mod tests {
 
   #[test]
   fn test_loading_state_idle() {
-    let state = LoadingState::idle();
+    let state = LoadingState::idle(5);
     assert!(!state.is_loading);
     assert!(state.finish_time.is_some());
+    assert_eq!(state.cached_feed_count, 5);
   }
 
   #[test]
   fn test_loading_state_start_stop() {
-    let mut state = LoadingState::idle();
+    let mut state = LoadingState::idle(0);
     state.start();
     assert!(state.is_loading);
     assert!(!state.is_initial_load);
@@ -1667,7 +1669,7 @@ mod tests {
 
   #[test]
   fn test_loading_state_spinner_frame_when_not_loading() {
-    let state = LoadingState::idle();
+    let state = LoadingState::idle(0);
     assert_eq!(state.spinner_frame(), "");
   }
 

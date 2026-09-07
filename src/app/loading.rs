@@ -8,6 +8,10 @@ pub struct LoadingState {
   pub finish_time: Option<Instant>,
   pub updated_feeds: Vec<String>,
   pub skipped_feeds: Vec<String>,
+  /// Number of feeds loaded from the local cache at startup. Used by the
+  /// initial-load popup instead of `updated_feeds`, since a startup with
+  /// nothing due for a network refresh never populates `updated_feeds`.
+  pub cached_feed_count: usize,
 }
 
 impl LoadingState {
@@ -19,13 +23,16 @@ impl LoadingState {
       finish_time: None,
       updated_feeds: Vec::new(),
       skipped_feeds: Vec::new(),
+      cached_feed_count: 0,
     }
   }
 
-  /// Create a loading state that starts in the idle (not loading) position.
-  pub fn idle() -> Self {
+  /// Create a loading state that starts in the idle (not loading) position,
+  /// reporting `cached_feed_count` feeds already loaded from cache.
+  pub fn idle(cached_feed_count: usize) -> Self {
     let mut state = Self::new();
     state.stop();
+    state.cached_feed_count = cached_feed_count;
     state
   }
 

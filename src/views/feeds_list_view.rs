@@ -826,7 +826,7 @@ fn render_loading_popup(
     let n_skipped = loading_state.skipped_feeds.len();
 
     let main_text = if loading_state.is_initial_load {
-      format!(" ✓ {} feeds loaded", loading_state.updated_feeds.len())
+      format!(" ✓ {} feeds loaded", loading_state.cached_feed_count)
     } else {
       match loading_state.updated_feeds.len() {
         0 => " ✓ Updated".to_string(),
