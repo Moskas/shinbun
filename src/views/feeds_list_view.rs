@@ -760,7 +760,7 @@ fn render_error_popup(
       " Feed Errors ",
       Style::default().bold().fg(theme.error_title),
     ))
-    .title_bottom(" <e> or <Esc> to close ".dim())
+    .title_bottom(" <e>/<Esc> close, <d> dismiss ".dim())
     .borders(Borders::ALL)
     .border_style(Style::new().fg(theme.error_border))
     .border_set(border::PLAIN);

@@ -516,6 +516,12 @@ impl App {
           self.error_scroll = 0;
           return;
         }
+        KeyCode::Char('d') | KeyCode::Char('D') => {
+          self.feed_errors.clear();
+          self.show_error_popup = false;
+          self.error_scroll = 0;
+          return;
+        }
         KeyCode::Down | KeyCode::Char('j') => {
           self.error_scroll = self.error_scroll.saturating_add(1);
           return;

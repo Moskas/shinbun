@@ -125,6 +125,10 @@ fn build_help_content(theme: &Theme) -> Vec<Line<'static>> {
       description: "Show feed errors",
     },
     Keybind {
+      key: "d",
+      description: "Dismiss feed errors (while shown)",
+    },
+    Keybind {
       key: "i",
       description: "Toggle image rendering",
     },
