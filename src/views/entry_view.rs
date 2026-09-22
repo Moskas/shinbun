@@ -277,6 +277,10 @@ fn clamp_content_area(area: Rect, max_width: Option<u16>) -> Rect {
 }
 
 /// Render the entry view with scrolling support.
+///
+/// Returns `max_scroll` for this frame, so the caller can detect when the
+/// user has scrolled to the bottom (`*scroll >= max_scroll`) and clamp a
+/// scroll position before persisting it.
 pub fn render(
   frame: &mut Frame,
   area: Rect,
@@ -284,7 +288,7 @@ pub fn render(
   entry: &FeedEntry,
   scroll: &mut usize,
   cfg: &mut EntryViewConfig,
-) {
+) -> usize {
   let theme = cfg.theme;
   let show_borders = cfg.show_borders;
   let show_scrollbar = cfg.show_scrollbar;
@@ -298,14 +302,11 @@ pub fn render(
   let outer_block = if show_borders {
     Block::default()
       .title(title)
-      .title_bottom(instructions.alignment(Alignment::Left))
       .borders(Borders::ALL)
       .border_style(theme.border_style())
       .border_set(border::PLAIN)
   } else {
-    Block::default()
-      .title(title)
-      .title_bottom(instructions.alignment(Alignment::Left))
+    Block::default().title(title)
   };
 
   let inner_area = outer_block.inner(area);
@@ -372,13 +373,13 @@ pub fn render(
   );
 
   // Render outer and entry blocks.
-  outer_block.render(area, frame.buffer_mut());
-  entry_block
-    .title_bottom(Span::styled(
-      line_info,
-      Style::default().fg(theme.line_info),
-    ))
-    .render(inner_area, frame.buffer_mut());
+  outer_block
+    .title_bottom(
+      Line::styled(line_info, Style::default().fg(theme.line_info)).alignment(Alignment::Left),
+    )
+    .title_bottom(instructions.alignment(Alignment::Right))
+    .render(area, frame.buffer_mut());
+  entry_block.render(inner_area, frame.buffer_mut());
 
   // Render content segments.
   render_segments(
@@ -411,6 +412,8 @@ pub fn render(
     let mut scrollbar_state = ScrollbarState::new(max_scroll + 1).position(cur_scroll);
     scrollbar.render(scrollbar_area, frame.buffer_mut(), &mut scrollbar_state);
   }
+
+  max_scroll
 }
 
 #[cfg(test)]
@@ -431,6 +434,7 @@ mod tests {
       feed_title: None,
       feed_url: None,
       read: false,
+      scroll_position: 0,
     }
   }
 

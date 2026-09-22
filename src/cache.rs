@@ -49,6 +49,7 @@ impl FeedCache {
         links TEXT NOT NULL,
         media TEXT NOT NULL,
         read INTEGER NOT NULL DEFAULT 0,
+        scroll_position INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY(feed_id) REFERENCES feeds(id) ON DELETE CASCADE
       )",
       [],
@@ -67,6 +68,23 @@ impl FeedCache {
     if !has_read_col {
       conn.execute(
         "ALTER TABLE entries ADD COLUMN read INTEGER NOT NULL DEFAULT 0",
+        [],
+      )?;
+    }
+
+    // Migrate existing databases that may lack the scroll_position column
+    let has_scroll_col: bool = conn
+      .query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('entries') WHERE name = 'scroll_position'",
+        [],
+        |row| row.get::<_, i64>(0),
+      )
+      .unwrap_or(0)
+      > 0;
+
+    if !has_scroll_col {
+      conn.execute(
+        "ALTER TABLE entries ADD COLUMN scroll_position INTEGER NOT NULL DEFAULT 0",
         [],
       )?;
     }
@@ -157,13 +175,13 @@ impl FeedCache {
     let tx = self.conn.unchecked_transaction()?;
 
     let mut stmt = tx.prepare_cached(
-      "INSERT INTO entries (feed_id, title, published, text, links, media, read)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)
+      "INSERT INTO entries (feed_id, title, published, text, links, media, read, scroll_position)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0)
        ON CONFLICT(feed_id, title, COALESCE(published, '')) DO UPDATE SET
          text  = excluded.text,
          links = excluded.links,
          media = excluded.media
-         -- `read` is intentionally omitted: never reset on re-fetch",
+         -- `read` and `scroll_position` are intentionally omitted: never reset on re-fetch",
     )?;
 
     for entry in &feed.entries {
@@ -229,6 +247,24 @@ impl FeedCache {
     self.set_entry_read(feed_url, entry_title, published, false)
   }
 
+  /// Persist the scroll position (in rows) for a specific entry.
+  pub fn set_entry_scroll_position(
+    &self,
+    feed_url: &str,
+    entry_title: &str,
+    published: Option<&str>,
+    position: usize,
+  ) -> Result<()> {
+    self.conn.execute(
+      "UPDATE entries SET scroll_position = ?4
+       WHERE feed_id = (SELECT id FROM feeds WHERE url = ?1)
+         AND title = ?2
+         AND (published = ?3 OR (published IS NULL AND ?3 IS NULL))",
+      params![feed_url, entry_title, published, position as i64],
+    )?;
+    Ok(())
+  }
+
   /// Load all cached feeds ordered by position.
   ///
   /// The entry statement is prepared once outside the per-feed loop so the
@@ -240,7 +276,7 @@ impl FeedCache {
 
     // Prepare the entry query once — reused for every feed in the loop below.
     let mut entry_stmt = self.conn.prepare(
-      "SELECT title, published, text, links, media, read
+      "SELECT title, published, text, links, media, read, scroll_position
        FROM entries
        WHERE feed_id = ?1
        ORDER BY published DESC",
@@ -270,6 +306,7 @@ impl FeedCache {
           let links_json: String = row.get(3)?;
           let media_str: String = row.get(4)?;
           let read: i64 = row.get(5)?;
+          let scroll_position: i64 = row.get(6)?;
 
           let links: Vec<String> = serde_json::from_str(&links_json).unwrap_or_default();
           let media = if media_str.is_empty() {
@@ -287,6 +324,7 @@ impl FeedCache {
             feed_title: None,
             feed_url: None,
             read: read != 0,
+            scroll_position: scroll_position.max(0) as usize,
           })
         })?
         .collect::<Result<Vec<_>>>()?;
@@ -327,7 +365,7 @@ impl FeedCache {
     let tags = tags_json.and_then(|json| serde_json::from_str(&json).ok());
 
     let mut entry_stmt = self.conn.prepare(
-      "SELECT title, published, text, links, media, read
+      "SELECT title, published, text, links, media, read, scroll_position
        FROM entries
        WHERE feed_id = ?1
        ORDER BY published DESC",
@@ -341,6 +379,7 @@ impl FeedCache {
         let links_json: String = row.get(3)?;
         let media_str: String = row.get(4)?;
         let read: i64 = row.get(5)?;
+        let scroll_position: i64 = row.get(6)?;
 
         let links: Vec<String> = serde_json::from_str(&links_json).unwrap_or_default();
         let media = if media_str.is_empty() {
@@ -358,6 +397,7 @@ impl FeedCache {
           feed_title: None,
           feed_url: None,
           read: read != 0,
+          scroll_position: scroll_position.max(0) as usize,
         })
       })?
       .collect::<Result<Vec<_>>>()?;
@@ -496,6 +536,7 @@ mod tests {
       feed_title: None,
       feed_url: None,
       read: false,
+      scroll_position: 0,
     }
   }
 
@@ -626,6 +667,58 @@ mod tests {
       .unwrap();
     let feeds = cache.load_all_feeds().unwrap();
     assert!(!feeds[0].entries[0].read);
+  }
+
+  #[test]
+  fn test_set_entry_scroll_position_roundtrip() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let feed = make_feed(
+      "https://example.com/rss",
+      "Feed",
+      vec![make_entry("Post 1", Some("2024-01-01T00:00:00Z"))],
+    );
+    cache.save_feed(&feed, 0, None).unwrap();
+
+    // Defaults to 0
+    let feeds = cache.load_all_feeds().unwrap();
+    assert_eq!(feeds[0].entries[0].scroll_position, 0);
+
+    cache
+      .set_entry_scroll_position(
+        "https://example.com/rss",
+        "Post 1",
+        Some("2024-01-01T00:00:00Z"),
+        42,
+      )
+      .unwrap();
+    let feeds = cache.load_all_feeds().unwrap();
+    assert_eq!(feeds[0].entries[0].scroll_position, 42);
+  }
+
+  #[test]
+  fn test_entry_upsert_preserves_scroll_position() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let feed = make_feed(
+      "https://example.com/rss",
+      "Feed",
+      vec![make_entry("Post 1", Some("2024-01-01T00:00:00Z"))],
+    );
+    cache.save_feed(&feed, 0, None).unwrap();
+
+    cache
+      .set_entry_scroll_position(
+        "https://example.com/rss",
+        "Post 1",
+        Some("2024-01-01T00:00:00Z"),
+        17,
+      )
+      .unwrap();
+
+    // Re-save the feed (simulating a refresh)
+    cache.save_feed(&feed, 0, None).unwrap();
+
+    let feeds = cache.load_all_feeds().unwrap();
+    assert_eq!(feeds[0].entries[0].scroll_position, 17);
   }
 
   #[test]

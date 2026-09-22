@@ -135,6 +135,28 @@ impl App {
     }
 
     self.sync_read_state(feed_vec_idx, entry_vec_idx, new_read);
+
+    // Manually marking an entry unread means "I haven't read this" — clear
+    // any saved reading progress too, otherwise reopening it would resume
+    // at/past the bottom and the next render's bottom-detection would
+    // immediately flip it back to read.
+    if !new_read {
+      if let Err(e) = self.cache.set_entry_scroll_position(
+        &self.feeds[feed_vec_idx].url,
+        &self.feeds[feed_vec_idx].entries[entry_vec_idx].title,
+        self.feeds[feed_vec_idx].entries[entry_vec_idx]
+          .published
+          .as_deref(),
+        0,
+      ) {
+        self.push_error("Cache", format!("Failed to reset scroll position: {}", e));
+      }
+      self.sync_scroll_position(feed_vec_idx, entry_vec_idx, 0);
+      if self.input.current_entry_relative_index == Some(entry_idx) {
+        self.entry_scroll = 0;
+      }
+    }
+
     self.invalidate_visible_indices();
   }
 
@@ -163,6 +185,80 @@ impl App {
 
     self.sync_read_state(feed_vec_idx, entry_vec_idx, true);
     self.invalidate_visible_indices();
+  }
+
+  /// Update `scroll_position` on the canonical entry and mirror the change
+  /// into any query `DisplayFeed`s that reference the same entry.
+  ///
+  /// Mirrors `sync_read_state` but never calls `invalidate_visible_indices` —
+  /// scroll position doesn't affect the hide-read filter.
+  pub(super) fn sync_scroll_position(
+    &mut self,
+    feed_vec_idx: usize,
+    entry_vec_idx: usize,
+    position: usize,
+  ) {
+    // 1. Update the one canonical copy in self.feeds.
+    if let Some(entry) = self
+      .feeds
+      .get_mut(feed_vec_idx)
+      .and_then(|f| f.entries.get_mut(entry_vec_idx))
+    {
+      entry.scroll_position = position;
+    }
+
+    // 2. Borrow url/title/published from self.feeds for query-entry matching.
+    let Some(feed) = self.feeds.get(feed_vec_idx) else {
+      return;
+    };
+    let Some(entry) = feed.entries.get(entry_vec_idx) else {
+      return;
+    };
+    let feed_url = feed.url.as_str();
+    let entry_title = entry.title.as_str();
+    let entry_published = entry.published.as_deref();
+
+    // 3. Mirror into query DisplayFeeds (different field from self.feeds).
+    for df in self.display_feeds.iter_mut() {
+      if let DisplayFeed::Query { entries, .. } = df {
+        for qe in entries.iter_mut() {
+          if qe.feed_url.as_deref() == Some(feed_url)
+            && qe.title == entry_title
+            && qe.published.as_deref() == entry_published
+          {
+            qe.scroll_position = position;
+          }
+        }
+      }
+    }
+  }
+
+  /// Persist the currently open entry's live scroll position to the cache
+  /// and sync it into in-memory state. Called on leaving the entry (back or
+  /// quit), not on every scroll tick, to avoid hitting SQLite per keypress.
+  pub(super) fn persist_current_entry_scroll(&mut self) {
+    let Some(real_idx) = self.input.current_entry_relative_index else {
+      return;
+    };
+    let Some((feed_vec_idx, entry_vec_idx, _)) = self.resolve_entry(self.feed_index, real_idx)
+    else {
+      return;
+    };
+
+    let position = self.entry_scroll.min(self.entry_max_scroll);
+
+    if let Err(e) = self.cache.set_entry_scroll_position(
+      &self.feeds[feed_vec_idx].url,
+      &self.feeds[feed_vec_idx].entries[entry_vec_idx].title,
+      self.feeds[feed_vec_idx].entries[entry_vec_idx]
+        .published
+        .as_deref(),
+      position,
+    ) {
+      self.push_error("Cache", format!("Failed to persist scroll position: {}", e));
+    }
+
+    self.sync_scroll_position(feed_vec_idx, entry_vec_idx, position);
   }
 
   /// Show the confirmation popup for marking the currently focused feed as read.

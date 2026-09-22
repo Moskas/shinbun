@@ -200,13 +200,24 @@ impl App {
           let real_idx = self
             .visible_to_real_entry_idx(visible_idx)
             .unwrap_or(visible_idx);
-          // Store the real index BEFORE marking as read — once read, this entry
-          // may vanish from the visible list and the mapping would shift.
           self.input.current_entry_relative_index = Some(real_idx);
-          self.mark_selected_entry_read(real_idx);
         }
         self.state = AppState::ViewingEntry;
-        self.entry_scroll = 0;
+        // Resume at the entry's persisted scroll position rather than the top.
+        self.entry_scroll = self
+          .input
+          .current_entry_relative_index
+          .and_then(|idx| {
+            self
+              .display_feeds
+              .get(self.feed_index)?
+              .entries(&self.feeds)
+              .get(idx)
+          })
+          .map(|e| e.scroll_position)
+          .unwrap_or(0);
+        // Recomputed by the next render before any bottom-of-entry check runs.
+        self.entry_max_scroll = 0;
         // Kick off background fetches for any inline images in this entry.
         if self.show_images {
           self.queue_entry_images();
@@ -219,11 +230,26 @@ impl App {
   pub(super) fn handle_back(&mut self) {
     match self.state {
       AppState::ViewingEntry => {
+        // Must run before clearing current_entry_relative_index — it's
+        // needed to resolve which entry to persist the scroll position for.
+        self.persist_current_entry_scroll();
         self.input.current_entry_relative_index = None;
         self.show_links_popup = false;
         self.links_scroll = 0;
         self.links_selected = 0;
         self.state = AppState::BrowsingEntries;
+        // Entries are no longer marked read on open — bottom-detection while
+        // viewing may have just marked one read, which can shrink the
+        // visible list under hide_read. Re-clamp the selection.
+        self.invalidate_visible_indices();
+        let len = self.visible_entry_indices().len();
+        if let Some(sel) = self.entry_list_state.selected() {
+          if len == 0 {
+            self.entry_list_state.select(None);
+          } else if sel >= len {
+            self.entry_list_state.select(Some(len - 1));
+          }
+        }
       }
       AppState::BrowsingEntries => {
         self.input.clear_search();

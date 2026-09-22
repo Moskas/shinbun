@@ -145,6 +145,7 @@ mod tests {
       feed_title: None,
       feed_url: None,
       read,
+      scroll_position: 0,
     }
   }
 

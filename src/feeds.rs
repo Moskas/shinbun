@@ -58,6 +58,7 @@ pub struct FeedEntry {
   pub feed_title: Option<String>, // Source feed title (for query feeds — display only)
   pub feed_url: Option<String>,   // Source feed URL (for query feeds — used for reliable lookup)
   pub read: bool,                 // Whether this entry has been read
+  pub scroll_position: usize,     // Last-read scroll offset (rows), for resuming
 }
 
 // ─── Fetching ─────────────────────────────────────────────────────────────────
@@ -245,6 +246,7 @@ pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {
         feed_title: None,
         feed_url: None,
         read: false,
+        scroll_position: 0,
       }
     })
     .collect();

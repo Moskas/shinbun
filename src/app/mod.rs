@@ -46,6 +46,9 @@ pub struct App {
   pub(crate) tag_index: usize,
   pub(crate) tag_list_state: TableState,
   pub(crate) entry_scroll: usize,
+  /// `max_scroll` computed by the most recent entry-view render, used to
+  /// detect "reached the bottom" and to clamp a persisted scroll position.
+  pub(crate) entry_max_scroll: usize,
   pub(crate) general_config: GeneralConfig,
   pub(crate) ui_config: UiConfig,
   pub(crate) exit: bool,
@@ -143,6 +146,7 @@ impl App {
       tag_index: 0,
       tag_list_state: TableState::default().with_selected(Some(0)),
       entry_scroll: 0,
+      entry_max_scroll: 0,
       general_config,
       ui_config,
       exit: false,
@@ -381,10 +385,16 @@ impl App {
 
     match self.state {
       AppState::ViewingEntry => {
+        // `rendered` distinguishes "the entry was drawn and max_scroll==0
+        // because it's short" from "nothing was drawn this frame" (e.g. a
+        // stale index after a background refresh) — only the former should
+        // ever trigger bottom-detection's mark-as-read.
+        let mut max_scroll = 0usize;
+        let mut rendered = false;
         if let Some(real_idx) = self.input.current_entry_relative_index {
           if let Some(display_feed) = self.display_feeds.get(self.feed_index) {
             if let Some(entry) = display_feed.entries(&self.feeds).get(real_idx) {
-              entry_view::render(
+              max_scroll = entry_view::render(
                 frame,
                 area,
                 display_feed.title(&self.feeds),
@@ -403,7 +413,14 @@ impl App {
                   show_images: self.show_images,
                 },
               );
+              rendered = true;
             }
+          }
+        }
+        self.entry_max_scroll = max_scroll;
+        if rendered && self.entry_scroll >= max_scroll {
+          if let Some(real_idx) = self.input.current_entry_relative_index {
+            self.mark_selected_entry_read(real_idx);
           }
         }
       }
@@ -644,7 +661,12 @@ impl App {
     }
 
     match key.code {
-      KeyCode::Char('q') | KeyCode::Char('Q') => self.exit = true,
+      KeyCode::Char('q') | KeyCode::Char('Q') => {
+        if self.state == AppState::ViewingEntry {
+          self.persist_current_entry_scroll();
+        }
+        self.exit = true;
+      }
       KeyCode::Char('?') => {
         self.show_help_popup = !self.show_help_popup;
         self.help_scroll = 0;
@@ -813,6 +835,7 @@ mod tests {
       feed_title: None,
       feed_url: None,
       read,
+      scroll_position: 0,
     }
   }
 
@@ -1022,6 +1045,163 @@ mod tests {
     app.handle_key(KeyEvent::from(KeyCode::Backspace));
     assert_eq!(app.state, AppState::BrowsingEntries);
     assert!(app.input.current_entry_relative_index.is_none());
+  }
+
+  #[test]
+  fn test_app_opening_entry_no_longer_marks_it_read() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let mut app = make_app_with_feeds(feeds);
+
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // BrowsingEntries
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // ViewingEntry
+    assert_eq!(app.state, AppState::ViewingEntry);
+    assert!(!app.feeds[0].entries[0].read);
+  }
+
+  #[test]
+  fn test_app_reaching_bottom_of_entry_marks_it_read() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut long_entry = make_entry("Post 1", None, false);
+    // Enough paragraphs to exceed a 24-row viewport many times over, so the
+    // entry starts far from its bottom.
+    long_entry.text = (0..80)
+      .map(|i| format!("Paragraph {i} with enough words to wrap across lines.\n"))
+      .collect();
+    let feeds = vec![make_feed("http://a.com", "Feed A", vec![long_entry])];
+    let mut app = make_app_with_feeds(feeds);
+
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // BrowsingEntries
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // ViewingEntry
+    assert!(!app.feeds[0].entries[0].read);
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    // Content is much taller than the viewport, so scrolled to the top
+    // should leave it unread and report a non-trivial max_scroll.
+    assert!(app.entry_max_scroll > 0);
+    assert!(!app.feeds[0].entries[0].read);
+
+    // Jump to the bottom and render again — should now be marked read.
+    app.entry_scroll = app.entry_max_scroll;
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(app.feeds[0].entries[0].read);
+  }
+
+  #[test]
+  fn test_app_short_entry_marked_read_on_first_render() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let mut app = make_app_with_feeds(feeds);
+
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // BrowsingEntries
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // ViewingEntry
+    assert!(!app.feeds[0].entries[0].read);
+
+    // A short, empty-text entry is fully visible the instant it's rendered,
+    // so the very first render should detect scroll >= max_scroll.
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+
+    assert!(app.feeds[0].entries[0].read);
+  }
+
+  #[test]
+  fn test_app_marking_unread_resets_progress_and_does_not_reread() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut long_entry = make_entry("Post 1", None, false);
+    long_entry.text = (0..80)
+      .map(|i| format!("Paragraph {i} with enough words to wrap across lines.\n"))
+      .collect();
+    let feeds = vec![make_feed("http://a.com", "Feed A", vec![long_entry])];
+    let mut app = make_app_with_feeds(feeds);
+
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // BrowsingEntries
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // ViewingEntry
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    app.entry_scroll = app.entry_max_scroll;
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(app.feeds[0].entries[0].read);
+
+    // Manually mark it unread while still sitting at the bottom.
+    app.handle_key(KeyEvent::from(KeyCode::Char('m')));
+    assert!(!app.feeds[0].entries[0].read);
+    assert_eq!(app.entry_scroll, 0);
+    assert_eq!(app.feeds[0].entries[0].scroll_position, 0);
+
+    // The next render must not immediately re-mark it read.
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(!app.feeds[0].entries[0].read);
+  }
+
+  #[test]
+  fn test_app_resumes_scroll_position_on_reopen() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let mut app = make_app_with_feeds(feeds);
+
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // BrowsingEntries
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // ViewingEntry
+    app.entry_scroll = 5;
+    app.entry_max_scroll = 10;
+
+    // Leaving persists the scroll position onto the in-memory entry.
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.feeds[0].entries[0].scroll_position, 5);
+
+    // Reopening resumes from it instead of resetting to 0.
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.entry_scroll, 5);
+  }
+
+  #[test]
+  fn test_app_back_after_bottom_read_clamps_selection_when_hiding_read() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let mut app = make_app_with_feeds(feeds);
+    app.input.hide_read = true;
+
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // BrowsingEntries
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // ViewingEntry
+
+    // Short entry is fully visible on first render, so it's marked read
+    // while still sitting in ViewingEntry — this is the new path that
+    // didn't previously run before returning to a hide_read list.
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(app.feeds[0].entries[0].read);
+
+    // Leaving must not panic or leave a selection pointing past an
+    // now-empty (all-read, hidden) visible list.
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.state, AppState::BrowsingEntries);
+    assert!(app.visible_entry_indices().is_empty());
+    assert_eq!(app.entry_list_state.selected(), None);
   }
 
   #[test]

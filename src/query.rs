@@ -261,6 +261,7 @@ mod tests {
             feed_title: None,
             feed_url: None,
             read: false,
+            scroll_position: 0,
           },
           FeedEntry {
             title: "Entry 3".to_string(),
@@ -271,6 +272,7 @@ mod tests {
             feed_title: None,
             feed_url: None,
             read: false,
+            scroll_position: 0,
           },
         ],
         tags: Some(vec!["blog".to_string()]),
@@ -287,6 +289,7 @@ mod tests {
           feed_title: None,
           feed_url: None,
           read: false,
+          scroll_position: 0,
         }],
         tags: Some(vec!["tech".to_string()]),
       },
@@ -324,6 +327,7 @@ mod tests {
         feed_title: None,
         feed_url: None,
         read: false,
+        scroll_position: 0,
       }],
       tags: Some(vec!["blog".to_string()]),
     }];
@@ -347,6 +351,7 @@ mod tests {
           feed_title: None,
           feed_url: None,
           read: false,
+          scroll_position: 0,
         },
         FeedEntry {
           title: "Undated".to_string(),
@@ -357,6 +362,7 @@ mod tests {
           feed_title: None,
           feed_url: None,
           read: false,
+          scroll_position: 0,
         },
       ],
       tags: None,
