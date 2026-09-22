@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.3] - 2026-09-22
+
+### Features
+
+- track reading progress and mark entries read on scroll-to-bottom
+- add key to dismiss feed error notifications
+
+### Bug Fixes
+
+- show cached feed count on startup popup
+
 ## [0.2.2] - 2026-08-23
 
 ### Features
