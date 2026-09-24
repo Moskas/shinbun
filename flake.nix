@@ -15,7 +15,7 @@
       nixpkgs,
       fenix,
     }:
-    flake-utils.lib.eachDefaultSystem (
+    (flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = (import nixpkgs) {
@@ -33,6 +33,8 @@
           ];
           buildInputs = with pkgs; [ openssl ];
         };
+
+        packages.default = defaultPackage;
 
         devShell = pkgs.mkShell {
           buildInputs = with pkgs; [
@@ -54,6 +56,11 @@
             export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:${pkgs.lib.makeLibraryPath [ pkgs.sqlite ]}"
           '';
         };
+
+        devShells.default = devShell;
       }
-    );
+    ))
+    // {
+      homeManagerModules.default = import ./modules/home-manager.nix { inherit self; };
+    };
 }
