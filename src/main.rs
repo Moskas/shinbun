@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use crossterm::event::{self, poll, Event, KeyEventKind};
+use crossterm::event::{self, Event, KeyEventKind, poll};
 use crossterm::{
   execute,
   style::{Color, Print, ResetColor, SetForegroundColor},
@@ -23,7 +23,7 @@ mod views;
 
 use app::{App, FeedUpdate};
 use cache::FeedCache;
-use ratatui_image::picker::Picker;
+use ratatui_image::picker::{Picker, ProtocolType};
 
 #[derive(Parser)]
 #[command(name = "shinbun", about = "Terminal RSS reader")]
@@ -227,10 +227,16 @@ fn run_app(
   app: &mut App,
   mut feed_rx: mpsc::UnboundedReceiver<FeedUpdate>,
 ) -> io::Result<()> {
-  // Tracks whether the previous iteration showed the loading popup, so we can
+  // Tracks whether the previous iteration showed a popup, so we can
   // force one final render after the 3-second linger expires — otherwise the
   // popup would remain visible on screen forever.
   let mut prev_popup_showing = true;
+
+  // Kitty/Sixel/iTerm2 protocols render images by marking most of their cells
+  // as diff-skipped (out-of-band terminal graphics), so a popup drawn over an
+  // image leaves stale glyphs behind that ratatui's normal diff never clears.
+  // Halfblocks draws real glyphs and isn't affected.
+  let image_protocol_needs_clear = app.picker.protocol_type() != ProtocolType::Halfblocks;
 
   while !app.should_exit() {
     // Process pending feed updates first (may set app.dirty)
@@ -238,7 +244,8 @@ fn run_app(
       app.handle_feed_update(update);
     }
 
-    let popup_showing = app.loading_state.should_show_popup();
+    let popup_showing =
+      app.loading_state.should_show_popup() || app.show_help_popup || app.show_links_popup;
 
     // Only render when:
     //   - state changed (keypress, feed update, resize)
@@ -246,6 +253,11 @@ fn run_app(
     //   - the linger popup just expired and needs a cleanup frame
     let needs_render = app.dirty || popup_showing || prev_popup_showing;
     if needs_render {
+      // A popup just closed: force a full terminal repaint so any image left
+      // behind it redraws cleanly instead of showing leftover popup glyphs.
+      if image_protocol_needs_clear && prev_popup_showing && !popup_showing {
+        terminal.clear()?;
+      }
       terminal.draw(|frame| app.render(frame))?;
       app.dirty = false;
     }
