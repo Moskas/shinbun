@@ -196,7 +196,9 @@ impl Renderer<'_> {
           .push(Span::styled(t.into_string(), self.styles.code()));
       }
       // Space between soft-wrapped source lines; dropped at line start.
-      Event::SoftBreak if !self.spans.is_empty() => self.spans.push(Span::raw(" ")),
+      Event::SoftBreak if !self.spans.is_empty() => {
+        self.spans.push(Span::styled(" ", self.style()))
+      }
       Event::SoftBreak => {}
       Event::HardBreak => self.flush_line(),
       Event::Rule => {
@@ -550,11 +552,13 @@ fn heading_level(level: HeadingLevel) -> u8 {
 
 enum Tok {
   Word(Vec<Span<'static>>),
-  Space,
+  Space(Style),
 }
 
 /// Split spans into whitespace-separated word tokens, preserving styles.
-/// Words spanning style boundaries stay together as one token.
+/// Words spanning style boundaries stay together as one token. Each space
+/// keeps the style of the span it came from, so e.g. spaces inside a
+/// multiword link stay underlined like the surrounding words.
 fn tokenize(spans: Vec<Span<'static>>) -> Vec<Tok> {
   let mut toks: Vec<Tok> = Vec::new();
   let mut word: Vec<Span<'static>> = Vec::new();
@@ -570,7 +574,7 @@ fn tokenize(spans: Vec<Span<'static>>) -> Vec<Tok> {
           toks.push(Tok::Word(std::mem::take(&mut word)));
         }
         if matches!(toks.last(), Some(Tok::Word(_))) {
-          toks.push(Tok::Space);
+          toks.push(Tok::Space(style));
         }
       } else {
         chunk.push(ch);
@@ -611,7 +615,7 @@ fn wrap_styled(
   let mut cur: Vec<Span<'static>> = Vec::new();
   let mut cur_w = 0usize;
   let mut line_has_word = false;
-  let mut pending_space = false;
+  let mut pending_space: Option<Style> = None;
 
   macro_rules! newline {
     () => {{
@@ -623,17 +627,17 @@ fn wrap_styled(
 
   for tok in tokenize(spans) {
     match tok {
-      Tok::Space => {
+      Tok::Space(style) => {
         if line_has_word {
-          pending_space = true;
+          pending_space = Some(style);
         }
       }
       Tok::Word(parts) => {
         let word_w: usize = parts.iter().map(Span::width).sum();
-        let space = usize::from(pending_space);
+        let space = usize::from(pending_space.is_some());
         if cur_w + space + word_w <= width {
-          if pending_space {
-            cur.push(Span::raw(" "));
+          if let Some(style) = pending_space {
+            cur.push(Span::styled(" ", style));
             cur_w += 1;
           }
           cur.extend(parts);
@@ -644,9 +648,11 @@ fn wrap_styled(
           cur_w += word_w;
         } else {
           // Word wider than a full line: hard-split by columns.
-          if pending_space && cur_w < width {
-            cur.push(Span::raw(" "));
-            cur_w += 1;
+          if let Some(style) = pending_space {
+            if cur_w < width {
+              cur.push(Span::styled(" ", style));
+              cur_w += 1;
+            }
           }
           for part in parts {
             let style = part.style;
@@ -667,7 +673,7 @@ fn wrap_styled(
             }
           }
         }
-        pending_space = false;
+        pending_space = None;
         line_has_word = true;
       }
     }
@@ -903,6 +909,48 @@ mod tests {
     for l in &lines {
       assert!(l.len() <= 12);
     }
+  }
+
+  #[test]
+  fn multiword_link_text_styles_interior_spaces() {
+    // Narrow enough that wrap_styled's word-wrap (and thus tokenize()) runs,
+    // rather than taking the "fits on one line" early return.
+    let blocks = render(
+      "intro word [the quick fox](https://example.com) trailing word here",
+      20,
+    );
+    let MdBlock::Text(lines) = &blocks[0] else {
+      panic!("expected text block")
+    };
+    let spans: Vec<&Span> = lines.iter().flat_map(|l| l.spans.iter()).collect();
+    let link_style = styles().link();
+
+    // Every space inside the link text ("the quick fox") is styled like the
+    // link, not left as a plain, unstyled gap.
+    let mut in_link_text = false;
+    for span in &spans {
+      if span.content.as_ref() == "the" {
+        in_link_text = true;
+      }
+      if in_link_text && span.content.as_ref() == " " {
+        assert_eq!(
+          span.style, link_style,
+          "space inside link text must be styled"
+        );
+      }
+      if span.content.as_ref() == "fox" {
+        in_link_text = false;
+      }
+    }
+
+    // The space between the link and the following plain word is not styled.
+    let trailing_idx = spans
+      .iter()
+      .position(|s| s.content.as_ref() == "trailing")
+      .expect("plain word after link");
+    let space_before_trailing = &spans[trailing_idx - 1];
+    assert_eq!(space_before_trailing.content.as_ref(), " ");
+    assert_ne!(space_before_trailing.style, link_style);
   }
 
   #[test]
