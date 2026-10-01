@@ -871,8 +871,7 @@ fn render_loading_popup(
   popup.render(popup_area, frame.buffer_mut());
 }
 
-pub fn render_confirm_popup(frame: &mut Frame, area: Rect, feed_name: &str, theme: &Theme) {
-  let message = format!("Mark all entries in \"{}\" as read?", feed_name);
+pub fn render_confirm_popup(frame: &mut Frame, area: Rect, message: &str, theme: &Theme) {
   let prompt = " (y)es / (n)o ";
   let content_width = (message.len().max(prompt.len()) + 4) as u16;
   let popup_width = content_width.min(area.width.saturating_sub(4));

@@ -65,6 +65,9 @@ pub struct App {
   pub(crate) links_selected: usize,
   pub(crate) show_confirm_popup: bool,
   pub(crate) confirm_feed_name: String,
+  pub(crate) show_confirm_delete_popup: bool,
+  pub(crate) confirm_delete_entry_idx: Option<usize>,
+  pub(crate) confirm_delete_entry_title: String,
   pub(crate) show_add_feed_popup: bool,
   pub(crate) add_feed_form: AddFeedForm,
   pub(crate) show_save_popup: bool,
@@ -163,6 +166,9 @@ impl App {
       links_selected: 0,
       show_confirm_popup: false,
       confirm_feed_name: String::new(),
+      show_confirm_delete_popup: false,
+      confirm_delete_entry_idx: None,
+      confirm_delete_entry_title: String::new(),
       show_add_feed_popup: false,
       add_feed_form: AddFeedForm::default(),
       show_save_popup: false,
@@ -485,7 +491,16 @@ impl App {
     }
 
     if self.show_confirm_popup {
-      feeds_list_view::render_confirm_popup(frame, area, &self.confirm_feed_name, &self.theme);
+      let message = format!(
+        "Mark all entries in \"{}\" as read?",
+        self.confirm_feed_name
+      );
+      feeds_list_view::render_confirm_popup(frame, area, &message, &self.theme);
+    }
+
+    if self.show_confirm_delete_popup {
+      let message = format!("Delete \"{}\"?", self.confirm_delete_entry_title);
+      feeds_list_view::render_confirm_popup(frame, area, &message, &self.theme);
     }
 
     if self.show_add_feed_popup {
@@ -612,6 +627,25 @@ impl App {
       return;
     }
 
+    if self.show_confirm_delete_popup {
+      match key.code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => {
+          self.show_confirm_delete_popup = false;
+          if let Some(entry_idx) = self.confirm_delete_entry_idx.take() {
+            self.delete_selected_entry(entry_idx);
+          }
+          self.confirm_delete_entry_title.clear();
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+          self.show_confirm_delete_popup = false;
+          self.confirm_delete_entry_idx = None;
+          self.confirm_delete_entry_title.clear();
+        }
+        _ => {} // ignore all other keys while popup is open
+      }
+      return;
+    }
+
     if self.show_add_feed_popup {
       self.handle_add_feed_key(key);
       return;
@@ -717,6 +751,19 @@ impl App {
           self.request_mark_feed_read();
         }
         #[allow(unreachable_patterns)]
+        _ => {}
+      },
+      KeyCode::Char('D') => match self.state {
+        AppState::BrowsingEntries => {
+          if let Some(real_idx) = self.resolve_current_entry_idx() {
+            self.request_delete_selected_entry(real_idx);
+          }
+        }
+        AppState::ViewingEntry => {
+          if let Some(real_idx) = self.input.current_entry_relative_index {
+            self.request_delete_selected_entry(real_idx);
+          }
+        }
         _ => {}
       },
       KeyCode::Char('o') | KeyCode::Char('O') => match self.state {
@@ -1464,6 +1511,166 @@ mod tests {
     app.handle_key(KeyEvent::from(KeyCode::Char('q')));
     assert!(!app.should_exit());
     assert!(app.show_confirm_popup);
+  }
+
+  #[test]
+  fn test_app_delete_entry_shows_confirmation() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let mut app = make_app_with_feeds(feeds);
+
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // BrowsingEntries
+    app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+    assert!(app.show_confirm_delete_popup);
+    assert_eq!(app.confirm_delete_entry_title, "Post 1");
+  }
+
+  #[test]
+  fn test_app_delete_entry_confirm_yes_removes_entry() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![
+        make_entry("Post 1", Some("2024-01-01T00:00:00Z"), false),
+        make_entry("Post 2", Some("2024-02-01T00:00:00Z"), false),
+      ],
+    )];
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let cache = crate::cache::FeedCache::new_in_memory().unwrap();
+    cache.save_feed(&feeds[0], 0, None).unwrap();
+
+    let scratch = test_scratch_dir();
+    let mut app = App::new(
+      feeds,
+      GeneralConfig::default(),
+      UiConfig {
+        show_borders: true,
+        show_read_entries: true,
+        show_scrollbar: true,
+        ..Default::default()
+      },
+      vec![],
+      vec![],
+      tx,
+      cache,
+      scratch.join("feeds.toml"),
+      scratch.join("images"),
+      test_picker(),
+    );
+
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // BrowsingEntries
+    app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+    assert!(app.show_confirm_delete_popup);
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+    assert!(!app.show_confirm_delete_popup);
+    assert_eq!(app.feeds[0].entries.len(), 1);
+    assert_eq!(app.feeds[0].entries[0].title, "Post 2");
+  }
+
+  #[test]
+  fn test_app_delete_entry_confirm_no_keeps_entry() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let mut app = make_app_with_feeds(feeds);
+
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // BrowsingEntries
+    app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+    assert!(app.show_confirm_delete_popup);
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+    assert!(!app.show_confirm_delete_popup);
+    assert_eq!(app.feeds[0].entries.len(), 1);
+  }
+
+  #[test]
+  fn test_app_delete_last_entry_clamps_selection() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![
+        make_entry("Post 1", Some("2024-01-01T00:00:00Z"), false),
+        make_entry("Post 2", Some("2024-02-01T00:00:00Z"), false),
+      ],
+    )];
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let cache = crate::cache::FeedCache::new_in_memory().unwrap();
+    cache.save_feed(&feeds[0], 0, None).unwrap();
+
+    let scratch = test_scratch_dir();
+    let mut app = App::new(
+      feeds,
+      GeneralConfig::default(),
+      UiConfig {
+        show_borders: true,
+        show_read_entries: true,
+        show_scrollbar: true,
+        ..Default::default()
+      },
+      vec![],
+      vec![],
+      tx,
+      cache,
+      scratch.join("feeds.toml"),
+      scratch.join("images"),
+      test_picker(),
+    );
+
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // BrowsingEntries
+    app.handle_key(KeyEvent::from(KeyCode::Down)); // select Post 2 (last entry)
+    app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+
+    assert_eq!(app.feeds[0].entries.len(), 1);
+    assert_eq!(app.entry_list_state.selected(), Some(0));
+  }
+
+  #[test]
+  fn test_app_delete_entry_while_viewing_returns_to_list() {
+    let feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", None, false)],
+    )];
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let cache = crate::cache::FeedCache::new_in_memory().unwrap();
+    cache.save_feed(&feeds[0], 0, None).unwrap();
+
+    let scratch = test_scratch_dir();
+    let mut app = App::new(
+      feeds,
+      GeneralConfig::default(),
+      UiConfig {
+        show_borders: true,
+        show_read_entries: true,
+        show_scrollbar: true,
+        ..Default::default()
+      },
+      vec![],
+      vec![],
+      tx,
+      cache,
+      scratch.join("feeds.toml"),
+      scratch.join("images"),
+      test_picker(),
+    );
+
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // BrowsingEntries
+    app.handle_key(KeyEvent::from(KeyCode::Enter)); // ViewingEntry
+    assert_eq!(app.state, AppState::ViewingEntry);
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+    app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+
+    assert_eq!(app.state, AppState::BrowsingEntries);
+    assert!(app.input.current_entry_relative_index.is_none());
+    assert!(app.feeds[0].entries.is_empty());
   }
 
   #[test]

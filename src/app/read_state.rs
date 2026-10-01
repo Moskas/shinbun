@@ -1,4 +1,4 @@
-use super::types::DisplayFeed;
+use super::types::{AppState, DisplayFeed};
 use super::App;
 
 impl App {
@@ -158,6 +158,76 @@ impl App {
     }
 
     self.invalidate_visible_indices();
+  }
+
+  /// Show the confirmation popup for deleting a single entry.
+  pub(super) fn request_delete_selected_entry(&mut self, entry_idx: usize) {
+    let Some((feed_vec_idx, entry_vec_idx, _)) = self.resolve_entry(self.feed_index, entry_idx)
+    else {
+      return;
+    };
+    self.confirm_delete_entry_title = self.feeds[feed_vec_idx].entries[entry_vec_idx]
+      .title
+      .clone();
+    self.confirm_delete_entry_idx = Some(entry_idx);
+    self.show_confirm_delete_popup = true;
+  }
+
+  /// Permanently remove a single entry from the cache and in-memory state.
+  /// Called after the user confirms with 'y' in the delete popup.
+  pub(super) fn delete_selected_entry(&mut self, entry_idx: usize) {
+    let Some((feed_vec_idx, entry_vec_idx, _)) = self.resolve_entry(self.feed_index, entry_idx)
+    else {
+      return;
+    };
+
+    let feed_url = self.feeds[feed_vec_idx].url.clone();
+    let entry_title = self.feeds[feed_vec_idx].entries[entry_vec_idx]
+      .title
+      .clone();
+    let entry_published = self.feeds[feed_vec_idx].entries[entry_vec_idx]
+      .published
+      .clone();
+
+    if let Err(e) = self
+      .cache
+      .delete_entry(&feed_url, &entry_title, entry_published.as_deref())
+    {
+      self.push_error("Cache", format!("Failed to delete entry: {}", e));
+      return;
+    }
+
+    // 1. Remove from the canonical Vec — shifts every subsequent index down by one.
+    self.feeds[feed_vec_idx].entries.remove(entry_vec_idx);
+
+    // 2. Remove the matching entry from every Query DisplayFeed that aggregated it.
+    for df in self.display_feeds.iter_mut() {
+      if let DisplayFeed::Query { entries, .. } = df {
+        entries.retain(|qe| {
+          !(qe.feed_url.as_deref() == Some(feed_url.as_str())
+            && qe.title == entry_title
+            && qe.published.as_deref() == entry_published.as_deref())
+        });
+      }
+    }
+
+    // 3. Leaving the entry viewer — can't keep viewing a deleted entry.
+    if self.state == AppState::ViewingEntry {
+      self.input.current_entry_relative_index = None;
+      self.state = AppState::BrowsingEntries;
+    }
+
+    self.invalidate_visible_indices();
+
+    // 4. Re-clamp selection — deletion may have shrunk the visible list.
+    let len = self.visible_entry_indices().len();
+    if let Some(sel) = self.entry_list_state.selected() {
+      if len == 0 {
+        self.entry_list_state.select(None);
+      } else if sel >= len {
+        self.entry_list_state.select(Some(len - 1));
+      }
+    }
   }
 
   pub(super) fn mark_selected_entry_read(&mut self, entry_idx: usize) {

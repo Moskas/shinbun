@@ -247,6 +247,22 @@ impl FeedCache {
     self.set_entry_read(feed_url, entry_title, published, false)
   }
 
+  pub fn delete_entry(
+    &self,
+    feed_url: &str,
+    entry_title: &str,
+    published: Option<&str>,
+  ) -> Result<()> {
+    self.conn.execute(
+      "DELETE FROM entries
+       WHERE feed_id = (SELECT id FROM feeds WHERE url = ?1)
+         AND title = ?2
+         AND (published = ?3 OR (published IS NULL AND ?3 IS NULL))",
+      params![feed_url, entry_title, published],
+    )?;
+    Ok(())
+  }
+
   /// Persist the scroll position (in rows) for a specific entry.
   pub fn set_entry_scroll_position(
     &self,

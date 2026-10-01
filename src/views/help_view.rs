@@ -97,6 +97,10 @@ fn build_help_content(theme: &Theme) -> Vec<Line<'static>> {
       description: "Mark feed as read",
     },
     Keybind {
+      key: "D",
+      description: "Delete entry (with confirm)",
+    },
+    Keybind {
       key: "u",
       description: "Toggle hide read entries",
     },
