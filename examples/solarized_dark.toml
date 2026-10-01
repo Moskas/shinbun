@@ -37,7 +37,6 @@ source           = "#b58900"    # yellow
 
 # ── Search bar ────────────────────────────────────────────────
 search_prompt    = "#b58900"    # yellow
-search_cursor    = "#839496"    # base0
 search_info      = "#586e75"    # base01
 search_no_match  = "#dc322f"    # red
 search_match_read = "#657b83"   # base00

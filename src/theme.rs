@@ -109,9 +109,6 @@ pub struct ThemeConfig {
   /// Search prompt color
   #[serde(default)]
   pub search_prompt: Option<String>,
-  /// Search cursor color
-  #[serde(default)]
-  pub search_cursor: Option<String>,
   /// Search match info color
   #[serde(default)]
   pub search_info: Option<String>,
@@ -231,11 +228,6 @@ pub struct Theme {
 
   // ── Search ──
   pub search_prompt: Color,
-  /// No longer used for rendering — the search bar now positions the real
-  /// terminal cursor instead of drawing a styled glyph — but kept as a
-  /// resolved field so existing `search_cursor` config values don't error.
-  #[allow(dead_code)]
-  pub search_cursor: Color,
   pub search_info: Color,
   pub search_no_match: Color,
   pub search_match_read: Color,
@@ -300,7 +292,6 @@ impl Theme {
       source: resolve(&cfg.source, Color::Yellow),
 
       search_prompt: resolve(&cfg.search_prompt, Color::Yellow),
-      search_cursor: resolve(&cfg.search_cursor, Color::Gray),
       search_info: resolve(&cfg.search_info, Color::DarkGray),
       search_no_match: resolve(&cfg.search_no_match, Color::Red),
       search_match_read: resolve(&cfg.search_match_read, Color::Gray),
