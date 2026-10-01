@@ -66,7 +66,11 @@ pub struct App {
   pub(crate) show_confirm_popup: bool,
   pub(crate) confirm_feed_name: String,
   pub(crate) show_confirm_delete_popup: bool,
-  pub(crate) confirm_delete_entry_idx: Option<usize>,
+  /// Identity of the entry pending deletion, captured when the popup opens
+  /// (feed_url, title, published) rather than a display index — a background
+  /// feed update while the popup is open can shift indices, and unlike
+  /// mark-as-read this action isn't reversible.
+  pub(crate) confirm_delete_entry: Option<(String, String, Option<String>)>,
   pub(crate) confirm_delete_entry_title: String,
   pub(crate) show_add_feed_popup: bool,
   pub(crate) add_feed_form: AddFeedForm,
@@ -167,7 +171,7 @@ impl App {
       show_confirm_popup: false,
       confirm_feed_name: String::new(),
       show_confirm_delete_popup: false,
-      confirm_delete_entry_idx: None,
+      confirm_delete_entry: None,
       confirm_delete_entry_title: String::new(),
       show_add_feed_popup: false,
       add_feed_form: AddFeedForm::default(),
@@ -631,14 +635,14 @@ impl App {
       match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
           self.show_confirm_delete_popup = false;
-          if let Some(entry_idx) = self.confirm_delete_entry_idx.take() {
-            self.delete_selected_entry(entry_idx);
+          if let Some((feed_url, title, published)) = self.confirm_delete_entry.take() {
+            self.delete_entry_by_identity(&feed_url, &title, published.as_deref());
           }
           self.confirm_delete_entry_title.clear();
         }
         KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
           self.show_confirm_delete_popup = false;
-          self.confirm_delete_entry_idx = None;
+          self.confirm_delete_entry = None;
           self.confirm_delete_entry_title.clear();
         }
         _ => {} // ignore all other keys while popup is open
@@ -1671,6 +1675,57 @@ mod tests {
     assert_eq!(app.state, AppState::BrowsingEntries);
     assert!(app.input.current_entry_relative_index.is_none());
     assert!(app.feeds[0].entries.is_empty());
+  }
+
+  #[test]
+  fn test_app_delete_entry_from_tag_query_view() {
+    let mut feeds = vec![make_feed(
+      "http://a.com",
+      "Feed A",
+      vec![make_entry("Post 1", Some("2024-01-01T00:00:00Z"), false)],
+    )];
+    feeds[0].tags = Some(vec!["rust".to_string()]);
+
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let cache = crate::cache::FeedCache::new_in_memory().unwrap();
+    cache.save_feed(&feeds[0], 0, None).unwrap();
+
+    let scratch = test_scratch_dir();
+    let mut app = App::new(
+      feeds,
+      GeneralConfig::default(),
+      UiConfig {
+        show_borders: true,
+        show_read_entries: true,
+        show_scrollbar: true,
+        ..Default::default()
+      },
+      vec![],
+      vec![],
+      tx,
+      cache,
+      scratch.join("feeds.toml"),
+      scratch.join("images"),
+      test_picker(),
+    );
+
+    // Switch to the Tags pane and enter the "rust" tag's aggregated query view.
+    app.handle_key(KeyEvent::from(KeyCode::Char('t')));
+    assert_eq!(app.list_pane, ListPane::Tags);
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+    assert_eq!(app.state, AppState::BrowsingEntries);
+    assert!(app.display_feeds[app.feed_index].is_query());
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('D')));
+    assert!(app.show_confirm_delete_popup);
+    app.handle_key(KeyEvent::from(KeyCode::Char('y')));
+
+    // Removed from the canonical feed...
+    assert!(app.feeds[0].entries.is_empty());
+    // ...and from the aggregated query view's own entry copy.
+    assert!(app.display_feeds[app.feed_index]
+      .entries(&app.feeds)
+      .is_empty());
   }
 
   #[test]

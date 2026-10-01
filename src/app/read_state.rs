@@ -160,38 +160,49 @@ impl App {
     self.invalidate_visible_indices();
   }
 
-  /// Show the confirmation popup for deleting a single entry.
+  /// Show the confirmation popup for deleting a single entry. Captures the
+  /// entry's identity (feed_url, title, published) rather than its display
+  /// index, so a background feed update while the popup is open can't cause
+  /// 'y' to delete the wrong entry.
   pub(super) fn request_delete_selected_entry(&mut self, entry_idx: usize) {
     let Some((feed_vec_idx, entry_vec_idx, _)) = self.resolve_entry(self.feed_index, entry_idx)
     else {
       return;
     };
-    self.confirm_delete_entry_title = self.feeds[feed_vec_idx].entries[entry_vec_idx]
-      .title
-      .clone();
-    self.confirm_delete_entry_idx = Some(entry_idx);
+    let feed = &self.feeds[feed_vec_idx];
+    let entry = &feed.entries[entry_vec_idx];
+    self.confirm_delete_entry_title = entry.title.clone();
+    self.confirm_delete_entry = Some((
+      feed.url.clone(),
+      entry.title.clone(),
+      entry.published.clone(),
+    ));
     self.show_confirm_delete_popup = true;
   }
 
-  /// Permanently remove a single entry from the cache and in-memory state.
+  /// Permanently remove a single entry (identified by feed_url + title +
+  /// published, not a display index) from the cache and in-memory state.
   /// Called after the user confirms with 'y' in the delete popup.
-  pub(super) fn delete_selected_entry(&mut self, entry_idx: usize) {
-    let Some((feed_vec_idx, entry_vec_idx, _)) = self.resolve_entry(self.feed_index, entry_idx)
+  pub(super) fn delete_entry_by_identity(
+    &mut self,
+    feed_url: &str,
+    entry_title: &str,
+    entry_published: Option<&str>,
+  ) {
+    let Some(feed_vec_idx) = self.feeds.iter().position(|f| f.url == feed_url) else {
+      return;
+    };
+    let Some(entry_vec_idx) = self.feeds[feed_vec_idx]
+      .entries
+      .iter()
+      .position(|e| e.title == entry_title && e.published.as_deref() == entry_published)
     else {
       return;
     };
 
-    let feed_url = self.feeds[feed_vec_idx].url.clone();
-    let entry_title = self.feeds[feed_vec_idx].entries[entry_vec_idx]
-      .title
-      .clone();
-    let entry_published = self.feeds[feed_vec_idx].entries[entry_vec_idx]
-      .published
-      .clone();
-
     if let Err(e) = self
       .cache
-      .delete_entry(&feed_url, &entry_title, entry_published.as_deref())
+      .delete_entry(feed_url, entry_title, entry_published)
     {
       self.push_error("Cache", format!("Failed to delete entry: {}", e));
       return;
@@ -204,9 +215,9 @@ impl App {
     for df in self.display_feeds.iter_mut() {
       if let DisplayFeed::Query { entries, .. } = df {
         entries.retain(|qe| {
-          !(qe.feed_url.as_deref() == Some(feed_url.as_str())
+          !(qe.feed_url.as_deref() == Some(feed_url)
             && qe.title == entry_title
-            && qe.published.as_deref() == entry_published.as_deref())
+            && qe.published.as_deref() == entry_published)
         });
       }
     }

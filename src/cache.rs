@@ -50,6 +50,7 @@ impl FeedCache {
         media TEXT NOT NULL,
         read INTEGER NOT NULL DEFAULT 0,
         scroll_position INTEGER NOT NULL DEFAULT 0,
+        deleted INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY(feed_id) REFERENCES feeds(id) ON DELETE CASCADE
       )",
       [],
@@ -85,6 +86,23 @@ impl FeedCache {
     if !has_scroll_col {
       conn.execute(
         "ALTER TABLE entries ADD COLUMN scroll_position INTEGER NOT NULL DEFAULT 0",
+        [],
+      )?;
+    }
+
+    // Migrate existing databases that may lack the deleted column
+    let has_deleted_col: bool = conn
+      .query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('entries') WHERE name = 'deleted'",
+        [],
+        |row| row.get::<_, i64>(0),
+      )
+      .unwrap_or(0)
+      > 0;
+
+    if !has_deleted_col {
+      conn.execute(
+        "ALTER TABLE entries ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
         [],
       )?;
     }
@@ -247,6 +265,10 @@ impl FeedCache {
     self.set_entry_read(feed_url, entry_title, published, false)
   }
 
+  /// Soft-delete a single entry: marks it `deleted` rather than removing the
+  /// row outright, so that re-fetching the feed (which upserts on the same
+  /// feed_id + title + published key) never resurrects it. `load_all_feeds`
+  /// and `get_stats` filter out `deleted = 1` rows.
   pub fn delete_entry(
     &self,
     feed_url: &str,
@@ -254,7 +276,7 @@ impl FeedCache {
     published: Option<&str>,
   ) -> Result<()> {
     self.conn.execute(
-      "DELETE FROM entries
+      "UPDATE entries SET deleted = 1
        WHERE feed_id = (SELECT id FROM feeds WHERE url = ?1)
          AND title = ?2
          AND (published = ?3 OR (published IS NULL AND ?3 IS NULL))",
@@ -294,7 +316,7 @@ impl FeedCache {
     let mut entry_stmt = self.conn.prepare(
       "SELECT title, published, text, links, media, read, scroll_position
        FROM entries
-       WHERE feed_id = ?1
+       WHERE feed_id = ?1 AND deleted = 0
        ORDER BY published DESC",
     )?;
 
@@ -383,7 +405,7 @@ impl FeedCache {
     let mut entry_stmt = self.conn.prepare(
       "SELECT title, published, text, links, media, read, scroll_position
        FROM entries
-       WHERE feed_id = ?1
+       WHERE feed_id = ?1 AND deleted = 0
        ORDER BY published DESC",
     )?;
 
@@ -502,15 +524,17 @@ impl FeedCache {
     let feed_count: i64 = self
       .conn
       .query_row("SELECT COUNT(*) FROM feeds", [], |r| r.get(0))?;
-    let entry_count: i64 = self
-      .conn
-      .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?;
-    let read_count: i64 =
+    let entry_count: i64 =
       self
         .conn
-        .query_row("SELECT COUNT(*) FROM entries WHERE read = 1", [], |r| {
+        .query_row("SELECT COUNT(*) FROM entries WHERE deleted = 0", [], |r| {
           r.get(0)
         })?;
+    let read_count: i64 = self.conn.query_row(
+      "SELECT COUNT(*) FROM entries WHERE deleted = 0 AND read = 1",
+      [],
+      |r| r.get(0),
+    )?;
     Ok(CacheStats {
       feed_count: feed_count as usize,
       entry_count: entry_count as usize,
@@ -584,6 +608,41 @@ mod tests {
     // Entries should be ordered by published DESC
     assert_eq!(feeds[0].entries[0].title, "Post 2");
     assert_eq!(feeds[0].entries[1].title, "Post 1");
+  }
+
+  #[test]
+  fn test_deleted_entry_is_not_resurrected_by_refetch() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let feed = make_feed(
+      "https://example.com/rss",
+      "Example Feed",
+      vec![
+        make_entry("Post 1", Some("2024-01-01T00:00:00Z")),
+        make_entry("Post 2", Some("2024-02-01T00:00:00Z")),
+      ],
+    );
+
+    cache.save_feed(&feed, 0, None).unwrap();
+    cache
+      .delete_entry(
+        "https://example.com/rss",
+        "Post 1",
+        Some("2024-01-01T00:00:00Z"),
+      )
+      .unwrap();
+
+    let feeds = cache.load_all_feeds().unwrap();
+    assert_eq!(feeds[0].entries.len(), 1);
+    assert_eq!(feeds[0].entries[0].title, "Post 2");
+
+    // Re-fetching the feed (same upsert path main.rs uses on refresh) must
+    // not bring the deleted entry back, even though it's still present in
+    // the "remote" feed data being saved.
+    cache.save_feed(&feed, 0, None).unwrap();
+
+    let feeds = cache.load_all_feeds().unwrap();
+    assert_eq!(feeds[0].entries.len(), 1);
+    assert_eq!(feeds[0].entries[0].title, "Post 2");
   }
 
   #[test]
