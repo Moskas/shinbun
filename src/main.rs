@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use crossterm::event::{self, Event, KeyEventKind, poll};
+use crossterm::event::{self, poll, Event, KeyEventKind};
 use crossterm::{
   execute,
   style::{Color, Print, ResetColor, SetForegroundColor},
@@ -26,7 +26,11 @@ use cache::FeedCache;
 use ratatui_image::picker::{Picker, ProtocolType};
 
 #[derive(Parser)]
-#[command(name = "shinbun", about = "Terminal RSS reader")]
+#[command(
+  name = "shinbun",
+  about = "Terminal RSS reader",
+  version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")")
+)]
 struct Cli {
   #[command(subcommand)]
   command: Option<Commands>,
