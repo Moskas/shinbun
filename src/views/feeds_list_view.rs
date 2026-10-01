@@ -1,6 +1,6 @@
 use crate::app::{
   AddFeedField, AddFeedForm, AppState, DisplayFeed, FeedError, ListPane, LoadingState,
-  SaveEntryForm,
+  SaveEntryForm, TextInput,
 };
 use crate::feeds::{Feed, FeedEntry};
 use crate::theme::Theme;
@@ -905,7 +905,7 @@ pub fn render_confirm_popup(frame: &mut Frame, area: Rect, message: &str, theme:
   popup.render(popup_area, frame.buffer_mut());
 }
 
-pub fn render_add_feed_popup(frame: &mut Frame, area: Rect, form: &AddFeedForm, theme: &Theme) {
+pub fn render_add_feed_popup(frame: &mut Frame, area: Rect, form: &mut AddFeedForm, theme: &Theme) {
   let popup_width = 60u16.min(area.width.saturating_sub(4));
   let popup_height = 14u16;
 
@@ -922,16 +922,36 @@ pub fn render_add_feed_popup(frame: &mut Frame, area: Rect, form: &AddFeedForm, 
   let label_style = Style::default().bold();
   let hint_style = Style::default().fg(theme.count);
 
-  let field_line = |label: &'static str, value: &str, focused: bool, hint: &'static str| {
-    let cursor = if focused { "▌" } else { " " };
-    let value_display = if value.is_empty() && !focused {
+  let block = Block::default()
+    .title(Span::styled(" Add Feed ", theme.title_style()))
+    .borders(Borders::ALL)
+    .border_style(Style::default().fg(theme.confirm))
+    .border_set(border::PLAIN);
+
+  // Ask the block itself where its content area starts — same technique
+  // render_save_popup uses to keep the cursor position in sync with layout.
+  let inner_area = block.inner(popup_area);
+  let value_indent = 2u16;
+  let value_width = (inner_area.width as usize).saturating_sub(value_indent as usize);
+
+  let field_line = |label: &'static str,
+                    input: &mut TextInput,
+                    focused: bool,
+                    hint: &'static str|
+   -> (Line<'static>, Line<'static>, u16) {
+    let (visible, cursor_col) = if focused {
+      input.visible_window(value_width)
+    } else {
+      (input.value.clone(), 0)
+    };
+    let value_display = if input.value.is_empty() && !focused {
       hint.to_string()
     } else {
-      format!("{}{}", value, if focused { "▌" } else { "" })
+      visible
     };
     let value_style = if focused {
       focused_style
-    } else if value.is_empty() {
+    } else if input.value.is_empty() {
       hint_style
     } else {
       Style::default()
@@ -939,33 +959,34 @@ pub fn render_add_feed_popup(frame: &mut Frame, area: Rect, form: &AddFeedForm, 
     (
       Line::from(Span::styled(format!(" {}", label), label_style)),
       Line::from(vec![
-        Span::raw(format!("  {}", cursor)),
+        Span::raw("  "),
         Span::styled(value_display, value_style),
       ]),
+      cursor_col,
     )
   };
 
-  let (url_label, url_val) = field_line(
+  let (url_label, url_val, url_cursor) = field_line(
     "URL *",
-    &form.url,
+    &mut form.url,
     form.focus == AddFeedField::Url,
     "https://example.com/feed.xml",
   );
-  let (name_label, name_val) = field_line(
+  let (name_label, name_val, name_cursor) = field_line(
     "Name",
-    &form.name,
+    &mut form.name,
     form.focus == AddFeedField::Name,
     "(optional)",
   );
-  let (tags_label, tags_val) = field_line(
+  let (tags_label, tags_val, tags_cursor) = field_line(
     "Tags",
-    &form.tags,
+    &mut form.tags,
     form.focus == AddFeedField::Tags,
     "comma-separated, optional",
   );
-  let (refresh_label, refresh_val) = field_line(
+  let (refresh_label, refresh_val, refresh_cursor) = field_line(
     "Refresh",
-    &form.refresh,
+    &mut form.refresh,
     form.focus == AddFeedField::Refresh,
     "1h / 3d / 1w (optional)",
   );
@@ -994,14 +1015,21 @@ pub fn render_add_feed_popup(frame: &mut Frame, area: Rect, form: &AddFeedForm, 
     )));
   }
 
-  let block = Block::default()
-    .title(Span::styled(" Add Feed ", theme.title_style()))
-    .borders(Borders::ALL)
-    .border_style(Style::default().fg(theme.confirm))
-    .border_set(border::PLAIN);
-
   let popup = Paragraph::new(lines).block(block);
   popup.render(popup_area, frame.buffer_mut());
+
+  // Position the real terminal cursor over whichever field is focused, the
+  // same way render_save_popup does — it moves with Left/Right and blinks
+  // using the terminal's own cursor blink.
+  let (focused_row, focused_cursor_col) = match form.focus {
+    AddFeedField::Url => (1u16, url_cursor),
+    AddFeedField::Name => (3u16, name_cursor),
+    AddFeedField::Tags => (5u16, tags_cursor),
+    AddFeedField::Refresh => (7u16, refresh_cursor),
+  };
+  let cursor_x = inner_area.x + value_indent + focused_cursor_col;
+  let cursor_y = inner_area.y + focused_row;
+  frame.set_cursor_position((cursor_x, cursor_y));
 }
 
 pub fn render_save_popup(frame: &mut Frame, area: Rect, form: &mut SaveEntryForm, theme: &Theme) {

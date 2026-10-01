@@ -7,7 +7,7 @@ pub mod read_state;
 pub mod search;
 pub mod types;
 
-pub use input::{AddFeedField, AddFeedForm, InputState, SaveEntryForm};
+pub use input::{AddFeedField, AddFeedForm, InputState, SaveEntryForm, TextInput};
 pub use loading::LoadingState;
 pub use types::*;
 
@@ -508,7 +508,7 @@ impl App {
     }
 
     if self.show_add_feed_popup {
-      feeds_list_view::render_add_feed_popup(frame, area, &self.add_feed_form, &self.theme);
+      feeds_list_view::render_add_feed_popup(frame, area, &mut self.add_feed_form, &self.theme);
     }
 
     if self.show_save_popup {
@@ -672,8 +672,20 @@ impl App {
           self.input.clear_search();
         }
         KeyCode::Backspace => {
-          self.input.search_query.pop();
+          self.input.search_query.backspace();
           self.update_search_matches();
+        }
+        KeyCode::Left => {
+          self.input.search_query.move_left();
+        }
+        KeyCode::Right => {
+          self.input.search_query.move_right();
+        }
+        KeyCode::Home => {
+          self.input.search_query.move_home();
+        }
+        KeyCode::End => {
+          self.input.search_query.move_end();
         }
         // Next match: Ctrl+n or Tab
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -690,7 +702,7 @@ impl App {
           self.search_prev_match();
         }
         KeyCode::Char(c) => {
-          self.input.search_query.push(c);
+          self.input.search_query.insert_char(c);
           self.update_search_matches();
         }
         _ => {} // ignore other keys while searching
@@ -1895,6 +1907,22 @@ mod tests {
   }
 
   #[test]
+  fn test_search_cursor_arrow_navigation() {
+    let feeds = vec![make_feed("http://a.com", "Feed A", vec![])];
+    let mut app = make_app_with_feeds(feeds);
+    app.handle_key(KeyEvent::from(KeyCode::Char('/')));
+    for c in "ac".chars() {
+      app.handle_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    assert_eq!(app.input.search_query, "ac");
+
+    // Move left, then insert mid-string instead of appending.
+    app.handle_key(KeyEvent::from(KeyCode::Left));
+    app.handle_key(KeyEvent::from(KeyCode::Char('b')));
+    assert_eq!(app.input.search_query, "abc");
+  }
+
+  #[test]
   fn test_search_not_available_in_entry_view() {
     let feeds = vec![make_feed(
       "http://a.com",
@@ -2223,6 +2251,36 @@ mod tests {
     assert_eq!(app.add_feed_form.url, "hi");
     app.handle_key(KeyEvent::from(KeyCode::Backspace));
     assert_eq!(app.add_feed_form.url, "h");
+  }
+
+  #[test]
+  fn test_add_feed_popup_cursor_arrow_navigation() {
+    let mut app = make_test_app();
+    app.handle_key(KeyEvent::from(KeyCode::Char('a')));
+    for c in "ac".chars() {
+      app.handle_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    assert_eq!(app.add_feed_form.url, "ac");
+    assert_eq!(app.add_feed_form.url.cursor, 2);
+
+    // Move left, then insert mid-string instead of appending.
+    app.handle_key(KeyEvent::from(KeyCode::Left));
+    assert_eq!(app.add_feed_form.url.cursor, 1);
+    app.handle_key(KeyEvent::from(KeyCode::Char('b')));
+    assert_eq!(app.add_feed_form.url, "abc");
+    assert_eq!(app.add_feed_form.url.cursor, 2);
+
+    // Home / End jump to the string boundaries.
+    app.handle_key(KeyEvent::from(KeyCode::Home));
+    assert_eq!(app.add_feed_form.url.cursor, 0);
+    app.handle_key(KeyEvent::from(KeyCode::End));
+    assert_eq!(app.add_feed_form.url.cursor, 3);
+
+    // Backspacing mid-string removes the character before the cursor, not the last one.
+    app.handle_key(KeyEvent::from(KeyCode::Left));
+    app.handle_key(KeyEvent::from(KeyCode::Left));
+    app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    assert_eq!(app.add_feed_form.url, "bc");
   }
 
   #[test]

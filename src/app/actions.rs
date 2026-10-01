@@ -220,8 +220,20 @@ impl App {
         self.add_feed_form.error = None;
       }
       KeyCode::Backspace => {
-        self.add_feed_form.active_buffer().pop();
+        self.add_feed_form.active_buffer().backspace();
         self.add_feed_form.error = None;
+      }
+      KeyCode::Left => {
+        self.add_feed_form.active_buffer().move_left();
+      }
+      KeyCode::Right => {
+        self.add_feed_form.active_buffer().move_right();
+      }
+      KeyCode::Home => {
+        self.add_feed_form.active_buffer().move_home();
+      }
+      KeyCode::End => {
+        self.add_feed_form.active_buffer().move_end();
       }
       KeyCode::Enter => {
         let url = self.add_feed_form.url.trim().to_string();
@@ -294,7 +306,7 @@ impl App {
         self.add_feed_form.clear();
       }
       KeyCode::Char(c) => {
-        self.add_feed_form.active_buffer().push(c);
+        self.add_feed_form.active_buffer().insert_char(c);
         self.add_feed_form.error = None;
       }
       _ => {}

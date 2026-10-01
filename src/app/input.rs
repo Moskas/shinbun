@@ -27,12 +27,132 @@ impl AddFeedField {
   }
 }
 
+/// A single-line text buffer with a char-index cursor, byte-safe editing,
+/// and double-width-char-aware horizontal scrolling for rendering.
+#[derive(Debug, Default, Clone)]
+pub struct TextInput {
+  pub value: String,
+  /// Cursor position in `value`, counted in chars (not bytes).
+  pub cursor: usize,
+  /// Index (in chars) of the first character currently scrolled into view.
+  /// Adjusted by `visible_window` to keep the cursor on screen.
+  pub scroll: usize,
+}
+
+impl std::ops::Deref for TextInput {
+  type Target = str;
+  fn deref(&self) -> &str {
+    &self.value
+  }
+}
+
+impl PartialEq<&str> for TextInput {
+  fn eq(&self, other: &&str) -> bool {
+    self.value == *other
+  }
+}
+
+impl TextInput {
+  pub fn clear(&mut self) {
+    *self = Self::default();
+  }
+
+  fn byte_index(&self) -> usize {
+    self
+      .value
+      .char_indices()
+      .nth(self.cursor)
+      .map(|(i, _)| i)
+      .unwrap_or(self.value.len())
+  }
+
+  pub fn insert_char(&mut self, c: char) {
+    let idx = self.byte_index();
+    self.value.insert(idx, c);
+    self.cursor += 1;
+  }
+
+  /// Delete the character before the cursor, like a text-editor backspace.
+  pub fn backspace(&mut self) {
+    if self.cursor == 0 {
+      return;
+    }
+    let idx = self.byte_index();
+    let prev_idx = self.value[..idx]
+      .char_indices()
+      .next_back()
+      .map(|(i, _)| i)
+      .unwrap_or(0);
+    self.value.drain(prev_idx..idx);
+    self.cursor -= 1;
+  }
+
+  pub fn move_left(&mut self) {
+    self.cursor = self.cursor.saturating_sub(1);
+  }
+
+  pub fn move_right(&mut self) {
+    let len = self.value.chars().count();
+    self.cursor = (self.cursor + 1).min(len);
+  }
+
+  pub fn move_home(&mut self) {
+    self.cursor = 0;
+  }
+
+  pub fn move_end(&mut self) {
+    self.cursor = self.value.chars().count();
+  }
+
+  /// Display column (accounting for double-width characters like CJK) where
+  /// char index `idx` starts, relative to the start of `value`.
+  fn col_of(&self, idx: usize) -> usize {
+    self
+      .value
+      .chars()
+      .take(idx)
+      .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(1))
+      .sum()
+  }
+
+  /// Scroll just enough to keep the cursor within a `visible_width`-column
+  /// window, then return the substring of `value` that fits in that window
+  /// (unpadded) and the cursor's column offset within it.
+  pub fn visible_window(&mut self, visible_width: usize) -> (String, u16) {
+    if self.cursor < self.scroll {
+      self.scroll = self.cursor;
+    }
+    while self.scroll < self.cursor
+      && self.col_of(self.cursor) - self.col_of(self.scroll) >= visible_width
+    {
+      self.scroll += 1;
+    }
+
+    let start_col = self.col_of(self.scroll);
+    let total_chars = self.value.chars().count();
+    let mut end = self.scroll;
+    while end < total_chars && self.col_of(end + 1) - start_col <= visible_width {
+      end += 1;
+    }
+    end = end.max(self.cursor);
+
+    let visible: String = self
+      .value
+      .chars()
+      .skip(self.scroll)
+      .take(end - self.scroll)
+      .collect();
+    let cursor_col = (self.col_of(self.cursor) - start_col) as u16;
+    (visible, cursor_col)
+  }
+}
+
 #[derive(Debug, Default)]
 pub struct AddFeedForm {
-  pub url: String,
-  pub name: String,
-  pub tags: String,
-  pub refresh: String,
+  pub url: TextInput,
+  pub name: TextInput,
+  pub tags: TextInput,
+  pub refresh: TextInput,
   pub focus: AddFeedField,
   pub error: Option<String>,
 }
@@ -42,7 +162,7 @@ impl AddFeedForm {
     *self = Self::default();
   }
 
-  pub fn active_buffer(&mut self) -> &mut String {
+  pub fn active_buffer(&mut self) -> &mut TextInput {
     match self.focus {
       AddFeedField::Url => &mut self.url,
       AddFeedField::Name => &mut self.name,
@@ -171,7 +291,7 @@ pub struct InputState {
   /// True when the fuzzy search bar is active (triggered by '/').
   pub search_active: bool,
   /// The current search query typed by the user.
-  pub search_query: String,
+  pub search_query: TextInput,
   /// Indices of items matching the current search query, sorted best-match-first.
   /// For BrowsingFeeds: indices into `display_feeds`.
   /// For BrowsingEntries: indices into the visible entry list.
