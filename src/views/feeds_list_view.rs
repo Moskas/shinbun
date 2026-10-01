@@ -212,6 +212,9 @@ pub struct FeedsViewState<'a> {
   pub compact_mode: bool,
   pub search_active: bool,
   pub search_query: &'a str,
+  /// Char index of the cursor within `search_query`, for positioning the
+  /// real terminal cursor over the search bar.
+  pub search_cursor: usize,
   pub search_matches: &'a [usize],
   pub search_match_cursor: usize,
   pub theme: &'a Theme,
@@ -340,6 +343,7 @@ pub fn render(frame: &mut Frame, area: Rect, s: &mut FeedsViewState) {
       frame,
       search_rect,
       s.search_query,
+      s.search_cursor,
       s.search_matches,
       s.search_match_cursor,
       theme,
@@ -697,6 +701,7 @@ fn render_search_bar(
   frame: &mut Frame,
   area: Rect,
   query: &str,
+  cursor: usize,
   matches: &[usize],
   match_cursor: usize,
   theme: &Theme,
@@ -715,15 +720,22 @@ fn render_search_bar(
     Style::default().fg(theme.search_info)
   };
 
+  let prompt = " / ";
   let search_line = Line::from(vec![
-    Span::styled(" / ", Style::default().bold().fg(theme.search_prompt)),
-    Span::raw(query),
-    Span::styled("_", Style::default().fg(theme.search_cursor)), // cursor
+    Span::styled(prompt, Style::default().bold().fg(theme.search_prompt)),
+    Span::raw(query.to_string()),
     Span::styled(match_info, match_style),
   ]);
 
   let search_bar = Paragraph::new(search_line);
   search_bar.render(area, frame.buffer_mut());
+
+  // Real terminal cursor, positioned over the query text so it moves with
+  // Left/Right/Home/End instead of being glued to the end of the string.
+  let cursor_col =
+    unicode_width::UnicodeWidthStr::width(query.chars().take(cursor).collect::<String>().as_str())
+      as u16;
+  frame.set_cursor_position((area.x + prompt.len() as u16 + cursor_col, area.y));
 }
 
 // ─── Popups ───────────────────────────────────────────────────────────────────

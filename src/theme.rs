@@ -231,6 +231,10 @@ pub struct Theme {
 
   // ── Search ──
   pub search_prompt: Color,
+  /// No longer used for rendering — the search bar now positions the real
+  /// terminal cursor instead of drawing a styled glyph — but kept as a
+  /// resolved field so existing `search_cursor` config values don't error.
+  #[allow(dead_code)]
   pub search_cursor: Color,
   pub search_info: Color,
   pub search_no_match: Color,

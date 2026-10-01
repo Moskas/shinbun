@@ -438,7 +438,7 @@ impl App {
         self.save_entry_form.error = None;
       }
       KeyCode::Enter => {
-        let path = self.save_entry_form.path.trim().to_string();
+        let path = self.save_entry_form.value.trim().to_string();
         if path.is_empty() {
           self.save_entry_form.error = Some("Path is required".to_string());
           return;

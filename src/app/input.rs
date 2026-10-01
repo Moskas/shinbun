@@ -57,6 +57,13 @@ impl TextInput {
     *self = Self::default();
   }
 
+  /// Set `value` and place the cursor at its end.
+  pub fn set_value(&mut self, value: String) {
+    self.cursor = value.chars().count();
+    self.scroll = 0;
+    self.value = value;
+  }
+
   fn byte_index(&self) -> usize {
     self
       .value
@@ -172,15 +179,26 @@ impl AddFeedForm {
   }
 }
 
+/// The save-entry-to-file popup's form. Wraps `TextInput` (via `Deref`) for
+/// its cursor/scroll editing rather than duplicating that logic — it was the
+/// original implementation `TextInput` was extracted from.
 #[derive(Debug, Default)]
 pub struct SaveEntryForm {
-  pub path: String,
-  /// Cursor position in `path`, counted in chars (not bytes).
-  pub cursor: usize,
-  /// Index (in chars) of the first character currently scrolled into view.
-  /// Adjusted by `visible_window` to keep the cursor on screen.
-  pub scroll: usize,
+  pub input: TextInput,
   pub error: Option<String>,
+}
+
+impl std::ops::Deref for SaveEntryForm {
+  type Target = TextInput;
+  fn deref(&self) -> &TextInput {
+    &self.input
+  }
+}
+
+impl std::ops::DerefMut for SaveEntryForm {
+  fn deref_mut(&mut self) -> &mut TextInput {
+    &mut self.input
+  }
 }
 
 impl SaveEntryForm {
@@ -188,92 +206,9 @@ impl SaveEntryForm {
     *self = Self::default();
   }
 
-  /// Set `path` and place the cursor at its end.
+  /// Set the path and place the cursor at its end.
   pub fn set_path(&mut self, path: String) {
-    self.cursor = path.chars().count();
-    self.scroll = 0;
-    self.path = path;
-  }
-
-  fn byte_index(&self) -> usize {
-    self
-      .path
-      .char_indices()
-      .nth(self.cursor)
-      .map(|(i, _)| i)
-      .unwrap_or(self.path.len())
-  }
-
-  pub fn insert_char(&mut self, c: char) {
-    let idx = self.byte_index();
-    self.path.insert(idx, c);
-    self.cursor += 1;
-  }
-
-  /// Delete the character before the cursor, like a text-editor backspace.
-  pub fn backspace(&mut self) {
-    if self.cursor == 0 {
-      return;
-    }
-    let idx = self.byte_index();
-    let prev_idx = self.path[..idx]
-      .char_indices()
-      .next_back()
-      .map(|(i, _)| i)
-      .unwrap_or(0);
-    self.path.drain(prev_idx..idx);
-    self.cursor -= 1;
-  }
-
-  pub fn move_left(&mut self) {
-    self.cursor = self.cursor.saturating_sub(1);
-  }
-
-  pub fn move_right(&mut self) {
-    let len = self.path.chars().count();
-    self.cursor = (self.cursor + 1).min(len);
-  }
-
-  /// Display column (accounting for double-width characters like CJK) where
-  /// char index `idx` starts, relative to the start of `path`.
-  fn col_of(&self, idx: usize) -> usize {
-    self
-      .path
-      .chars()
-      .take(idx)
-      .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(1))
-      .sum()
-  }
-
-  /// Scroll just enough to keep the cursor within a `visible_width`-column
-  /// window, then return the substring of `path` that fits in that window
-  /// (unpadded) and the cursor's column offset within it.
-  pub fn visible_window(&mut self, visible_width: usize) -> (String, u16) {
-    if self.cursor < self.scroll {
-      self.scroll = self.cursor;
-    }
-    while self.scroll < self.cursor
-      && self.col_of(self.cursor) - self.col_of(self.scroll) >= visible_width
-    {
-      self.scroll += 1;
-    }
-
-    let start_col = self.col_of(self.scroll);
-    let total_chars = self.path.chars().count();
-    let mut end = self.scroll;
-    while end < total_chars && self.col_of(end + 1) - start_col <= visible_width {
-      end += 1;
-    }
-    end = end.max(self.cursor);
-
-    let visible: String = self
-      .path
-      .chars()
-      .skip(self.scroll)
-      .take(end - self.scroll)
-      .collect();
-    let cursor_col = (self.col_of(self.cursor) - start_col) as u16;
-    (visible, cursor_col)
+    self.input.set_value(path);
   }
 }
 
@@ -360,8 +295,8 @@ mod tests {
     form.set_path("日本語".to_string());
     form.cursor = 1; // between 日 and 本
     form.insert_char('X');
-    assert_eq!(form.path, "日X本語");
+    assert_eq!(form.value, "日X本語");
     form.backspace();
-    assert_eq!(form.path, "日本語");
+    assert_eq!(form.value, "日本語");
   }
 }

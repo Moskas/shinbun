@@ -458,6 +458,7 @@ impl App {
             compact_mode: self.compact_mode,
             search_active: self.input.search_active,
             search_query: &self.input.search_query,
+            search_cursor: self.input.search_query.cursor,
             search_matches: &self.input.search_matches,
             search_match_cursor: self.input.search_match_cursor,
             theme: &self.theme,
@@ -2406,7 +2407,7 @@ mod tests {
 
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
     assert!(app.show_save_popup);
-    assert_eq!(app.save_entry_form.path, "~/Feed A - Post 1.md");
+    assert_eq!(app.save_entry_form.value, "~/Feed A - Post 1.md");
   }
 
   #[test]
@@ -2443,7 +2444,7 @@ mod tests {
 
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
     assert_eq!(
-      app.save_entry_form.path,
+      app.save_entry_form.value,
       "~/Documents/shinbun/Feed A - Post 1.md"
     );
   }
@@ -2459,7 +2460,7 @@ mod tests {
     enter_first_entry(&mut app);
 
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
-    let len = app.save_entry_form.path.chars().count();
+    let len = app.save_entry_form.value.chars().count();
     assert_eq!(app.save_entry_form.cursor, len);
 
     app.handle_key(KeyEvent::from(KeyCode::Left));
@@ -2469,8 +2470,8 @@ mod tests {
     // Typing inserts at the cursor, not at the end.
     app.handle_key(KeyEvent::from(KeyCode::Char('X')));
     assert_eq!(app.save_entry_form.cursor, len - 1);
-    assert!(app.save_entry_form.path.contains("X"));
-    assert!(!app.save_entry_form.path.ends_with('X'));
+    assert!(app.save_entry_form.value.contains("X"));
+    assert!(!app.save_entry_form.value.ends_with('X'));
 
     // Moving right past the end clamps at the string length.
     for _ in 0..(len + 5) {
@@ -2478,7 +2479,7 @@ mod tests {
     }
     assert_eq!(
       app.save_entry_form.cursor,
-      app.save_entry_form.path.chars().count()
+      app.save_entry_form.value.chars().count()
     );
 
     // Moving left past the start clamps at zero.
@@ -2499,11 +2500,11 @@ mod tests {
     enter_first_entry(&mut app);
 
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
-    app.save_entry_form.path = "abc".to_string();
+    app.save_entry_form.value = "abc".to_string();
     app.save_entry_form.cursor = 2; // between 'b' and 'c'
 
     app.handle_key(KeyEvent::from(KeyCode::Backspace));
-    assert_eq!(app.save_entry_form.path, "ac");
+    assert_eq!(app.save_entry_form.value, "ac");
     assert_eq!(app.save_entry_form.cursor, 1);
   }
 
@@ -2520,7 +2521,7 @@ mod tests {
     app.handle_key(KeyEvent::from(KeyCode::Char('s')));
     app.handle_key(KeyEvent::from(KeyCode::Esc));
     assert!(!app.show_save_popup);
-    assert!(app.save_entry_form.path.is_empty());
+    assert!(app.save_entry_form.value.is_empty());
   }
 
   #[test]
@@ -2536,7 +2537,7 @@ mod tests {
 
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("out.md");
-    app.save_entry_form.path.clear();
+    app.save_entry_form.value.clear();
     for c in target.to_str().unwrap().chars() {
       app.handle_key(KeyEvent::from(KeyCode::Char(c)));
     }
