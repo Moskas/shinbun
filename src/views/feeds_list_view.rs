@@ -1134,6 +1134,7 @@ mod tests {
       feed_url: None,
       read,
       scroll_position: 0,
+      ..Default::default()
     }
   }
 
@@ -1143,6 +1144,7 @@ mod tests {
       title: title.to_string(),
       entries,
       tags: None,
+      ..Default::default()
     }
   }
 

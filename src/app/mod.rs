@@ -12,7 +12,7 @@ pub use loading::LoadingState;
 pub use types::*;
 
 use crate::cache::FeedCache;
-use crate::config::{Feed as FeedConfig, GeneralConfig, QueryFeed, UiConfig};
+use crate::config::{BackendConfig, Feed as FeedConfig, GeneralConfig, QueryFeed, UiConfig};
 use crate::feeds::{self, Feed};
 use crate::image_cache::DiskImageCache;
 use crate::query;
@@ -32,6 +32,10 @@ pub struct App {
   pub(crate) display_feeds: Vec<DisplayFeed>,
   pub(crate) feed_config: Vec<FeedConfig>,
   pub(crate) query_config: Vec<QueryFeed>,
+  /// Configured remote-backend instances (e.g. Miniflux servers). A list,
+  /// not one field per backend type/instance, so adding a backend never
+  /// changes `App`'s shape.
+  pub(crate) backends: Vec<BackendConfig>,
   /// Path `feeds.toml` is written to when feeds are added/removed. Injected
   /// rather than resolved internally so tests can point it at a temp dir
   /// instead of the real user config directory.
@@ -121,6 +125,7 @@ impl App {
     ui_config: UiConfig,
     feed_config: Vec<FeedConfig>,
     query_config: Vec<QueryFeed>,
+    backends: Vec<BackendConfig>,
     feed_tx: mpsc::UnboundedSender<FeedUpdate>,
     cache: FeedCache,
     feeds_path: std::path::PathBuf,
@@ -142,6 +147,7 @@ impl App {
       display_feeds,
       feed_config,
       query_config,
+      backends,
       feeds_path,
       feed_index: 0,
       feed_list_state: TableState::default().with_selected(Some(0)),
@@ -210,6 +216,29 @@ impl App {
     });
   }
 
+  /// Shared by `FeedUpdate::UpdateSingle` and `UpdateSingleRemote`: cache
+  /// the feed at the given position, then reload just that feed from cache
+  /// (to pick up merged entries — old entries preserved by the cache
+  /// upsert) and replace it in-place in `self.feeds`.
+  fn save_and_reload_single_feed(&mut self, feed: Feed, position: usize, interval: Option<u64>) {
+    if self.loading_state.is_loading {
+      self.loading_state.updated_feeds.push(feed.title.clone());
+    }
+    if let Err(e) = self.cache.save_feed(&feed, position, interval) {
+      self.push_error(&feed.title, format!("Failed to cache: {}", e));
+    }
+    if let Ok(Some(updated_feed)) = self.cache.load_feed_by_url(&feed.url) {
+      if let Some(existing_pos) = self.feeds.iter().position(|f| f.url == updated_feed.url) {
+        self.feeds[existing_pos] = updated_feed;
+      } else {
+        self.feeds = self.cache.load_all_feeds().unwrap_or_default();
+      }
+    } else {
+      self.feeds = self.cache.load_all_feeds().unwrap_or_default();
+    }
+    self.rebuild_display_feeds();
+  }
+
   pub fn handle_feed_update(&mut self, update: FeedUpdate) {
     self.dirty = true;
     match update {
@@ -254,29 +283,42 @@ impl App {
             )
           })
           .unwrap_or((0, None));
-        if self.loading_state.is_loading {
-          self.loading_state.updated_feeds.push(feed.title.clone());
+        self.save_and_reload_single_feed(feed, pos, interval);
+      }
+
+      FeedUpdate::UpdateSingleRemote { feed, position } => {
+        // The cache's UNIQUE(url) means a feed present both in feeds.toml
+        // and on a remote backend would have whichever source saves last
+        // overwrite the other's backend_id/title/tags on that row — warn
+        // rather than let that happen silently. No automatic merge in v1.
+        if self.feed_config.iter().any(|fc| fc.link == feed.url) {
+          self.push_error(
+            &feed.title,
+            format!(
+              "{} is in both feeds.toml and a remote backend; the remote copy will take over this feed's cache row",
+              feed.url
+            ),
+          );
         }
-        if let Err(e) = self.cache.save_feed(&feed, pos, interval) {
-          self.push_error(&feed.title, format!("Failed to cache: {}", e));
-        }
-        // Reload only the updated feed from cache to pick up merged entries
-        // (old entries preserved by the cache upsert), then replace in-place.
-        if let Ok(Some(updated_feed)) = self.cache.load_feed_by_url(&feed.url) {
-          if let Some(existing_pos) = self.feeds.iter().position(|f| f.url == updated_feed.url) {
-            self.feeds[existing_pos] = updated_feed;
-          } else {
-            self.feeds = self.cache.load_all_feeds().unwrap_or_default();
-          }
-        } else {
-          self.feeds = self.cache.load_all_feeds().unwrap_or_default();
-        }
-        self.rebuild_display_feeds();
+        // No `feed_config` entry exists for a remote-backend feed (it's not
+        // in feeds.toml), so there's no refresh interval to look up either —
+        // the backend sync itself decides when to re-sync.
+        self.save_and_reload_single_feed(feed, position, None);
       }
 
       FeedUpdate::SkippedFeed(name) => {
         if self.loading_state.is_loading {
           self.loading_state.skipped_feeds.push(name);
+        }
+      }
+
+      FeedUpdate::BackendFeedList {
+        backend_id,
+        remote_feed_ids,
+      } => {
+        let ids: Vec<&str> = remote_feed_ids.iter().map(String::as_str).collect();
+        if let Err(e) = self.cache.remove_dead_backend_feeds(&backend_id, &ids) {
+          self.push_error(&backend_id, format!("Failed to prune removed feeds: {}", e));
         }
       }
 
@@ -320,6 +362,8 @@ impl App {
     tokio::spawn(async move {
       feeds::fetch_feed_with_progress(feeds, tx).await;
     });
+
+    crate::miniflux::spawn_backend_syncs(&self.backends, self.feed_tx.clone());
   }
 
   pub fn refresh_selected_feed(&mut self) {
@@ -328,6 +372,25 @@ impl App {
     }
 
     let selected = self.feed_list_state.selected().unwrap_or(0);
+
+    // A selected feed backed by a remote backend has no `feed_config` entry
+    // (it's not in feeds.toml) — refresh it via that backend instance
+    // instead of the local RSS fetch path, and return early.
+    if let Some(DisplayFeed::Regular(i)) = self.display_feeds.get(selected) {
+      if let Some(remote) = self.feeds.get(*i).and_then(|f| f.backend.clone()) {
+        if let Some(backend) = self.backends.iter().find(|b| b.id == remote.backend_id) {
+          self.loading_state.start();
+          self.feed_errors.clear();
+          self.show_error_popup = false;
+          let backend = backend.clone();
+          let tx = self.feed_tx.clone();
+          tokio::spawn(async move {
+            crate::miniflux::sync_with_progress(&backend, tx).await;
+          });
+        }
+        return;
+      }
+    }
 
     let feeds_to_refresh: Vec<FeedConfig> = match self.display_feeds.get(selected) {
       Some(DisplayFeed::Regular(i)) => {
@@ -900,6 +963,7 @@ mod tests {
       feed_url: None,
       read,
       scroll_position: 0,
+      ..Default::default()
     }
   }
 
@@ -909,6 +973,7 @@ mod tests {
       title: title.to_string(),
       entries,
       tags: None,
+      ..Default::default()
     }
   }
 
@@ -940,6 +1005,7 @@ mod tests {
       },
       vec![],
       vec![],
+      vec![],
       tx,
       cache,
       scratch.join("feeds.toml"),
@@ -961,6 +1027,7 @@ mod tests {
         show_scrollbar: true,
         ..Default::default()
       },
+      vec![],
       vec![],
       vec![],
       tx,
@@ -1455,6 +1522,7 @@ mod tests {
       },
       vec![],
       vec![],
+      vec![],
       tx,
       cache,
       scratch.join("feeds.toml"),
@@ -1571,6 +1639,7 @@ mod tests {
       },
       vec![],
       vec![],
+      vec![],
       tx,
       cache,
       scratch.join("feeds.toml"),
@@ -1632,6 +1701,7 @@ mod tests {
       },
       vec![],
       vec![],
+      vec![],
       tx,
       cache,
       scratch.join("feeds.toml"),
@@ -1669,6 +1739,7 @@ mod tests {
         show_scrollbar: true,
         ..Default::default()
       },
+      vec![],
       vec![],
       vec![],
       tx,
@@ -1713,6 +1784,7 @@ mod tests {
         show_scrollbar: true,
         ..Default::default()
       },
+      vec![],
       vec![],
       vec![],
       tx,
@@ -1767,6 +1839,7 @@ mod tests {
       },
       vec![],
       vec![],
+      vec![],
       tx,
       cache,
       scratch.join("feeds.toml"),
@@ -1813,6 +1886,7 @@ mod tests {
         show_scrollbar: true,
         ..Default::default()
       },
+      vec![],
       vec![],
       vec![],
       tx,
@@ -2432,6 +2506,7 @@ mod tests {
         show_scrollbar: true,
         ..Default::default()
       },
+      vec![],
       vec![],
       vec![],
       tx,

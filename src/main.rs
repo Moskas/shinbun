@@ -15,6 +15,7 @@ mod config;
 mod content;
 mod feeds;
 mod image_cache;
+mod miniflux;
 mod opml;
 mod query;
 mod theme;
@@ -206,6 +207,9 @@ async fn main() -> io::Result<()> {
     let _ = feed_tx.send(FeedUpdate::FetchComplete);
   }
 
+  // Start background sync for every enabled remote-backend instance.
+  miniflux::spawn_backend_syncs(&config.backends, feed_tx.clone());
+
   // Create and run the app with cached feeds
   let mut app = App::new(
     cached_feeds,
@@ -213,6 +217,7 @@ async fn main() -> io::Result<()> {
     config.ui,
     config.feeds,
     config.queries,
+    config.backends,
     feed_tx,
     cache,
     config::get_feeds_path(),
@@ -429,7 +434,9 @@ async fn cmd_refresh(quiet: bool) -> io::Result<()> {
     }
   };
 
-  if config.feeds.is_empty() {
+  let enabled_backends: Vec<_> = config.backends.iter().filter(|b| b.enabled).collect();
+
+  if config.feeds.is_empty() && enabled_backends.is_empty() {
     println!("No feeds configured.");
     return Ok(());
   }
@@ -487,9 +494,15 @@ async fn cmd_refresh(quiet: bool) -> io::Result<()> {
   let total = feeds_to_fetch.len();
   let (tx, mut rx) = mpsc::unbounded_channel::<FeedUpdate>();
 
+  miniflux::spawn_backend_syncs(&config.backends, tx.clone());
   tokio::spawn(async move {
     feeds::fetch_feeds_subset_with_progress(feeds_to_fetch, tx).await;
   });
+  // One `FetchComplete` is always sent by the RSS fetch task above, plus one
+  // per enabled backend instance — wait for all of them before stopping,
+  // since each producer streams its own completion signal independently.
+  let expected_completions = 1 + enabled_backends.len();
+  let mut completions = 0usize;
 
   let mut updated = 0usize;
   let mut errors = 0usize;
@@ -531,6 +544,36 @@ async fn cmd_refresh(quiet: bool) -> io::Result<()> {
           }
         }
       }
+      // No `feed_config` entry exists for a remote-backend feed (not in
+      // feeds.toml); the backend sync already computed its cache position.
+      FeedUpdate::UpdateSingleRemote { feed, position } => {
+        if config.feeds.iter().any(|fc| fc.link == feed.url) {
+          colored_out(
+            &format!(
+              "  Warning: {} is in both feeds.toml and a remote backend; the remote copy will take over this feed's cache row",
+              feed.url
+            ),
+            Color::DarkYellow,
+            color,
+          );
+        }
+        match cache.save_feed(&feed, position, None) {
+          Ok(_) => {
+            if !quiet {
+              colored_out(&format!("  OK: {}", feed.title), Color::DarkGreen, color);
+            }
+            updated += 1;
+          }
+          Err(e) => {
+            colored_out(
+              &format!("  Cache error: {}: {}", feed.title, e),
+              Color::DarkRed,
+              color,
+            );
+            errors += 1;
+          }
+        }
+      }
       FeedUpdate::FeedError { name, error } => {
         colored_out(
           &format!("  Error: {}: {}", name, error),
@@ -539,7 +582,25 @@ async fn cmd_refresh(quiet: bool) -> io::Result<()> {
         );
         errors += 1;
       }
-      FeedUpdate::FetchComplete => break,
+      FeedUpdate::BackendFeedList {
+        backend_id,
+        remote_feed_ids,
+      } => {
+        let ids: Vec<&str> = remote_feed_ids.iter().map(String::as_str).collect();
+        if let Err(e) = cache.remove_dead_backend_feeds(&backend_id, &ids) {
+          colored_out(
+            &format!("  Error pruning {}: {}", backend_id, e),
+            Color::DarkRed,
+            color,
+          );
+        }
+      }
+      FeedUpdate::FetchComplete => {
+        completions += 1;
+        if completions >= expected_completions {
+          break;
+        }
+      }
       _ => {}
     }
   }

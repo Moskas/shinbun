@@ -58,6 +58,15 @@ pub enum FeedUpdate {
   /// Replace all feeds with new data
   Replace(Vec<Feed>),
   UpdateSingle(Feed),
+  /// Like `UpdateSingle`, but for a remote-backend feed: `feed_config` has
+  /// no entry for it (it's not in feeds.toml), so there's no position to
+  /// look up — the backend sync computes and carries one explicitly instead
+  /// (see `miniflux::build_feeds`), keeping remote feeds grouped after local
+  /// ones and stably ordered relative to each other across syncs.
+  UpdateSingleRemote {
+    feed: Feed,
+    position: usize,
+  },
   /// Report progress on a specific feed
   FetchingFeed(String),
   /// Report a feed that failed to fetch or parse
@@ -67,6 +76,15 @@ pub enum FeedUpdate {
   },
   /// A feed was intentionally skipped because its refresh interval has not elapsed
   SkippedFeed(String),
+  /// A remote backend instance finished listing its feeds — carries every
+  /// remote feed id it currently knows about, so `App` can prune any cached
+  /// feed for that `backend_id` whose remote id is no longer present (i.e.
+  /// removed on the remote server). Scoped to one `backend_id` so this never
+  /// touches local feeds or other backend instances.
+  BackendFeedList {
+    backend_id: String,
+    remote_feed_ids: Vec<String>,
+  },
   /// All feeds finished fetching — reload from cache now
   FetchComplete,
   /// A background image fetch completed successfully

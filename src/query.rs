@@ -187,6 +187,7 @@ mod tests {
       title: "Test".to_string(),
       entries: Vec::new(),
       tags: Some(vec!["blog".to_string(), "tech".to_string()]),
+      ..Default::default()
     };
 
     let filter = QueryFilter::Tags(vec!["blog".to_string()]);
@@ -203,6 +204,7 @@ mod tests {
       title: "Test".to_string(),
       entries: Vec::new(),
       tags: None,
+      ..Default::default()
     };
     assert!(feed_matches(&feed, &QueryFilter::All));
   }
@@ -214,6 +216,7 @@ mod tests {
       title: "Test".to_string(),
       entries: Vec::new(),
       tags: Some(vec!["blog".to_string()]),
+      ..Default::default()
     };
     let filter = QueryFilter::Tags(vec![]);
     assert!(!feed_matches(&feed, &filter));
@@ -226,6 +229,7 @@ mod tests {
       title: "Test".to_string(),
       entries: Vec::new(),
       tags: None,
+      ..Default::default()
     };
     let filter = QueryFilter::Tags(vec!["blog".to_string()]);
     assert!(!feed_matches(&feed, &filter));
@@ -238,6 +242,7 @@ mod tests {
       title: "Test".to_string(),
       entries: Vec::new(),
       tags: Some(vec!["Blog".to_string()]),
+      ..Default::default()
     };
     let filter = QueryFilter::Tags(vec!["blog".to_string()]);
     assert!(feed_matches(&feed, &filter));
@@ -262,6 +267,7 @@ mod tests {
             feed_url: None,
             read: false,
             scroll_position: 0,
+            ..Default::default()
           },
           FeedEntry {
             title: "Entry 3".to_string(),
@@ -273,9 +279,11 @@ mod tests {
             feed_url: None,
             read: false,
             scroll_position: 0,
+            ..Default::default()
           },
         ],
         tags: Some(vec!["blog".to_string()]),
+        ..Default::default()
       },
       Feed {
         url: "b".to_string(),
@@ -290,8 +298,10 @@ mod tests {
           feed_url: None,
           read: false,
           scroll_position: 0,
+          ..Default::default()
         }],
         tags: Some(vec!["tech".to_string()]),
+        ..Default::default()
       },
     ];
 
@@ -328,8 +338,10 @@ mod tests {
         feed_url: None,
         read: false,
         scroll_position: 0,
+        ..Default::default()
       }],
       tags: Some(vec!["blog".to_string()]),
+      ..Default::default()
     }];
 
     let entries = apply_query(&feeds, "tags:nonexistent");
@@ -352,6 +364,7 @@ mod tests {
           feed_url: None,
           read: false,
           scroll_position: 0,
+          ..Default::default()
         },
         FeedEntry {
           title: "Undated".to_string(),
@@ -363,9 +376,11 @@ mod tests {
           feed_url: None,
           read: false,
           scroll_position: 0,
+          ..Default::default()
         },
       ],
       tags: None,
+      ..Default::default()
     }];
 
     let entries = apply_query(&feeds, "*");

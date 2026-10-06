@@ -435,6 +435,7 @@ mod tests {
       feed_url: None,
       read: false,
       scroll_position: 0,
+      ..Default::default()
     }
   }
 

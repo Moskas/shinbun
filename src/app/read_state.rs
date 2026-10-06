@@ -4,6 +4,60 @@ use super::App;
 impl App {
   // ─── Read-state helpers ───────────────────────────────────────────────────
 
+  /// Push a read/unread status update to the remote backend that owns
+  /// `self.feeds[feed_vec_idx]`, if any — fire-and-forget, so the local
+  /// cache/UI update (already applied by the caller) never blocks on the
+  /// network. A failure surfaces as an ordinary `FeedUpdate::FeedError`
+  /// through the existing channel; local and remote state may drift until
+  /// the next action re-attempts, which is an accepted limitation (no
+  /// retry/offline queue in this version).
+  ///
+  /// This is the one dispatch point a future backend type would extend with
+  /// a new `BackendKind` match arm — call sites never need their own
+  /// per-backend branching.
+  pub(super) fn push_read_state(&self, feed_vec_idx: usize, remote_ids: Vec<String>, read: bool) {
+    if remote_ids.is_empty() {
+      return;
+    }
+    let Some(remote) = self.feeds.get(feed_vec_idx).and_then(|f| f.backend.clone()) else {
+      return;
+    };
+    let Some(backend) = self
+      .backends
+      .iter()
+      .find(|b| b.id == remote.backend_id)
+      .cloned()
+    else {
+      return;
+    };
+    let tx = self.feed_tx.clone();
+    tokio::spawn(async move {
+      let token = match backend.resolve_token() {
+        Ok(t) => t,
+        Err(err) => {
+          let _ = tx.send(super::FeedUpdate::FeedError {
+            name: backend.id,
+            error: err,
+          });
+          return;
+        }
+      };
+      let result = match &backend.kind {
+        crate::config::BackendKind::Miniflux { url, .. } => {
+          let client = crate::miniflux::MinifluxClient::new(url.clone(), token);
+          let status = if read { "read" } else { "unread" };
+          client.update_entries_status(&remote_ids, status).await
+        }
+      };
+      if let Err(err) = result {
+        let _ = tx.send(super::FeedUpdate::FeedError {
+          name: backend.id,
+          error: err,
+        });
+      }
+    });
+  }
+
   /// Resolve a display entry to `(feed_vec_idx, entry_vec_idx, currently_read)`.
   ///
   /// Returns only `Copy` values so all borrows on `self` are fully released
@@ -136,6 +190,13 @@ impl App {
 
     self.sync_read_state(feed_vec_idx, entry_vec_idx, new_read);
 
+    if let Some(remote_id) = self.feeds[feed_vec_idx].entries[entry_vec_idx]
+      .remote_id
+      .clone()
+    {
+      self.push_read_state(feed_vec_idx, vec![remote_id], new_read);
+    }
+
     // Manually marking an entry unread means "I haven't read this" — clear
     // any saved reading progress too, otherwise reopening it would resume
     // at/past the bottom and the next render's bottom-detection would
@@ -265,6 +326,14 @@ impl App {
     }
 
     self.sync_read_state(feed_vec_idx, entry_vec_idx, true);
+
+    if let Some(remote_id) = self.feeds[feed_vec_idx].entries[entry_vec_idx]
+      .remote_id
+      .clone()
+    {
+      self.push_read_state(feed_vec_idx, vec![remote_id], true);
+    }
+
     self.invalidate_visible_indices();
   }
 
@@ -376,11 +445,20 @@ impl App {
           return;
         }
         // Update in-memory state for every entry
-        if let Some(feed) = self.feeds.get_mut(i) {
+        let remote_ids: Vec<String> = if let Some(feed) = self.feeds.get_mut(i) {
+          let remote_ids = feed
+            .entries
+            .iter()
+            .filter_map(|e| e.remote_id.clone())
+            .collect();
           for entry in feed.entries.iter_mut() {
             entry.read = true;
           }
-        }
+          remote_ids
+        } else {
+          Vec::new()
+        };
+        self.push_read_state(i, remote_ids, true);
       }
       DisplayFeed::Query { .. } => {
         // Collect entries as owned data so we can release the borrow on
@@ -418,17 +496,28 @@ impl App {
             .or_default()
             .push((title.as_str(), published.as_deref()));
         }
-        for feed in self.feeds.iter_mut() {
+        let mut remote_pushes: Vec<(usize, Vec<String>)> = Vec::new();
+        for (feed_vec_idx, feed) in self.feeds.iter_mut().enumerate() {
           if let Some(entry_list) = by_feed.get(feed.url.as_str()) {
+            let mut remote_ids = Vec::new();
             for entry in feed.entries.iter_mut() {
               if entry_list
                 .iter()
                 .any(|(t, p)| *t == entry.title && *p == entry.published.as_deref())
               {
                 entry.read = true;
+                if let Some(remote_id) = entry.remote_id.clone() {
+                  remote_ids.push(remote_id);
+                }
               }
             }
+            if !remote_ids.is_empty() {
+              remote_pushes.push((feed_vec_idx, remote_ids));
+            }
           }
+        }
+        for (feed_vec_idx, remote_ids) in remote_pushes {
+          self.push_read_state(feed_vec_idx, remote_ids, true);
         }
       }
     }

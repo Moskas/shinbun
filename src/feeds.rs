@@ -38,17 +38,29 @@ pub fn build_client() -> Client {
     .expect("failed to build HTTP client with preconfigured TLS")
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Feed {
   pub url: String,
   pub title: String,
   pub entries: Vec<FeedEntry>,
   pub tags: Option<Vec<String>>,
+  /// Set when this feed is sourced from a remote backend (e.g. Miniflux)
+  /// rather than a plain feeds.toml entry. `None` means a local feed.
+  pub backend: Option<RemoteFeedRef>,
+}
+
+/// Identifies which configured backend instance a feed came from, and that
+/// backend's own id for the feed — needed to make targeted API calls
+/// (single-feed refresh, read-state push-back) without re-deriving it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteFeedRef {
+  pub backend_id: String,
+  pub remote_feed_id: String,
 }
 
 // ─── Entry ────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FeedEntry {
   pub title: String,
   pub published: Option<String>,
@@ -59,6 +71,9 @@ pub struct FeedEntry {
   pub feed_url: Option<String>,   // Source feed URL (for query feeds — used for reliable lookup)
   pub read: bool,                 // Whether this entry has been read
   pub scroll_position: usize,     // Last-read scroll offset (rows), for resuming
+  /// Stable remote entry id (e.g. Miniflux's numeric entry id, as a string).
+  /// `None` for locally-fetched RSS/Atom entries, which have no such id.
+  pub remote_id: Option<String>,
 }
 
 // ─── Fetching ─────────────────────────────────────────────────────────────────
@@ -243,10 +258,9 @@ pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {
         text,
         links,
         media,
-        feed_title: None,
-        feed_url: None,
         read: false,
         scroll_position: 0,
+        ..Default::default()
       }
     })
     .collect();
@@ -256,6 +270,7 @@ pub fn parse_single_feed(feed_config: FeedConfig, body: &str) -> Option<Feed> {
     title,
     entries,
     tags: feed_config.tags,
+    ..Default::default()
   })
 }
 

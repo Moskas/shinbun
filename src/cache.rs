@@ -1,4 +1,4 @@
-use crate::feeds::{Feed, FeedEntry};
+use crate::feeds::{Feed, FeedEntry, RemoteFeedRef};
 use rusqlite::{params, Connection, OptionalExtension, Result};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -124,14 +124,49 @@ impl FeedCache {
       )?;
     }
 
+    // Migrate existing databases that may lack the remote-backend columns.
+    // `backend_id` holds the configured [[backends]] `id` this feed came
+    // from (e.g. "home-miniflux"); NULL means a plain feeds.toml feed.
+    // `remote_feed_id` is that backend's own id for the feed.
+    for (table, column, decl) in [
+      ("feeds", "backend_id", "TEXT"),
+      ("feeds", "remote_feed_id", "TEXT"),
+      ("entries", "remote_id", "TEXT"),
+    ] {
+      let has_col: bool = conn
+        .query_row(
+          &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
+          [],
+          |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+      if !has_col {
+        conn.execute(
+          &format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"),
+          [],
+        )?;
+      }
+    }
+
     conn.execute("CREATE INDEX IF NOT EXISTS idx_feed_url ON feeds(url)", [])?;
 
-    // Unique index that drives incremental upserts in save_feed.
-    // COALESCE maps NULL published dates to '' so the uniqueness check
-    // works correctly even when published is absent.
+    // Unique index that drives incremental upserts in save_feed for local
+    // (non-remote-id-bearing) entries. COALESCE maps NULL published dates to
+    // '' so the uniqueness check works correctly even when published is absent.
     conn.execute(
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_entry_unique
        ON entries(feed_id, title, COALESCE(published, ''))",
+      [],
+    )?;
+
+    // Separate unique index for remote-backend entries, keyed on the stable
+    // remote id instead of title/published (which Miniflux etc. may not
+    // give a reliable published date for, and which can change on the
+    // remote side without the entry's identity changing).
+    conn.execute(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_entry_remote
+       ON entries(feed_id, remote_id) WHERE remote_id IS NOT NULL",
       [],
     )?;
 
@@ -162,18 +197,22 @@ impl FeedCache {
       .as_ref()
       .map(|t| serde_json::to_string(t).unwrap_or_default());
     let interval = refresh_interval_secs.map(|s| s as i64);
+    let backend_id = feed.backend.as_ref().map(|b| b.backend_id.as_str());
+    let remote_feed_id = feed.backend.as_ref().map(|b| b.remote_feed_id.as_str());
 
     // Upsert the feed row and retrieve its id in a single round-trip using
     // RETURNING (available since SQLite 3.35.0, released March 2021).
     let feed_id: i64 = self.conn.query_row(
-      "INSERT INTO feeds (url, title, last_fetched, tags, position, refresh_interval_secs)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      "INSERT INTO feeds (url, title, last_fetched, tags, position, refresh_interval_secs, backend_id, remote_feed_id)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
        ON CONFLICT(url) DO UPDATE SET
          title                 = excluded.title,
          last_fetched          = excluded.last_fetched,
          tags                  = excluded.tags,
          position              = excluded.position,
-         refresh_interval_secs = excluded.refresh_interval_secs
+         refresh_interval_secs = excluded.refresh_interval_secs,
+         backend_id            = excluded.backend_id,
+         remote_feed_id        = excluded.remote_feed_id
        RETURNING id",
       params![
         feed.url,
@@ -181,7 +220,9 @@ impl FeedCache {
         now,
         tags_json,
         position as i64,
-        interval
+        interval,
+        backend_id,
+        remote_feed_id,
       ],
       |row| row.get(0),
     )?;
@@ -192,7 +233,23 @@ impl FeedCache {
     // feeds with many items (e.g. planet.emacslife.com).
     let tx = self.conn.unchecked_transaction()?;
 
-    let mut stmt = tx.prepare_cached(
+    // Remote-backend entries (have a stable `remote_id`) upsert on
+    // (feed_id, remote_id) instead of (feed_id, title, published) — title or
+    // published date can be edited/missing upstream without the entry's
+    // underlying identity changing.
+    let mut stmt_by_remote_id = tx.prepare_cached(
+      "INSERT INTO entries (feed_id, title, published, text, links, media, remote_id, read, scroll_position)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0)
+       ON CONFLICT(feed_id, remote_id) WHERE remote_id IS NOT NULL DO UPDATE SET
+         title    = excluded.title,
+         published = excluded.published,
+         text     = excluded.text,
+         links    = excluded.links,
+         media    = excluded.media
+         -- `read` and `scroll_position` are intentionally omitted: never reset on re-fetch",
+    )?;
+
+    let mut stmt_by_title = tx.prepare_cached(
       "INSERT INTO entries (feed_id, title, published, text, links, media, read, scroll_position)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0)
        ON CONFLICT(feed_id, title, COALESCE(published, '')) DO UPDATE SET
@@ -205,17 +262,30 @@ impl FeedCache {
     for entry in &feed.entries {
       let links_json = serde_json::to_string(&entry.links).unwrap_or_default();
       let media_str = entry.media.as_deref().unwrap_or("");
-      stmt.execute(params![
-        feed_id,
-        entry.title,
-        entry.published,
-        entry.text,
-        links_json,
-        media_str,
-      ])?;
+      if let Some(remote_id) = entry.remote_id.as_deref() {
+        stmt_by_remote_id.execute(params![
+          feed_id,
+          entry.title,
+          entry.published,
+          entry.text,
+          links_json,
+          media_str,
+          remote_id,
+        ])?;
+      } else {
+        stmt_by_title.execute(params![
+          feed_id,
+          entry.title,
+          entry.published,
+          entry.text,
+          links_json,
+          media_str,
+        ])?;
+      }
     }
 
-    drop(stmt); // release borrow on tx before commit
+    drop(stmt_by_remote_id);
+    drop(stmt_by_title); // release borrows on tx before commit
     tx.commit()
   }
 
@@ -308,13 +378,13 @@ impl FeedCache {
   /// The entry statement is prepared once outside the per-feed loop so the
   /// query is compiled only a single time regardless of how many feeds exist.
   pub fn load_all_feeds(&self) -> Result<Vec<Feed>> {
-    let mut feed_stmt = self
-      .conn
-      .prepare("SELECT id, url, title, tags FROM feeds ORDER BY position")?;
+    let mut feed_stmt = self.conn.prepare(
+      "SELECT id, url, title, tags, backend_id, remote_feed_id FROM feeds ORDER BY position",
+    )?;
 
     // Prepare the entry query once — reused for every feed in the loop below.
     let mut entry_stmt = self.conn.prepare(
-      "SELECT title, published, text, links, media, read, scroll_position
+      "SELECT title, published, text, links, media, read, scroll_position, remote_id
        FROM entries
        WHERE feed_id = ?1 AND deleted = 0
        ORDER BY published DESC",
@@ -327,14 +397,22 @@ impl FeedCache {
           row.get::<_, String>(1)?,
           row.get::<_, String>(2)?,
           row.get::<_, Option<String>>(3)?,
+          row.get::<_, Option<String>>(4)?,
+          row.get::<_, Option<String>>(5)?,
         ))
       })?
       .collect::<Result<Vec<_>>>()?;
 
     let mut feeds = Vec::with_capacity(feed_data.len());
 
-    for (feed_id, url, title, tags_json) in feed_data {
+    for (feed_id, url, title, tags_json, backend_id, remote_feed_id) in feed_data {
       let tags = tags_json.and_then(|json| serde_json::from_str(&json).ok());
+      let backend = backend_id
+        .zip(remote_feed_id)
+        .map(|(backend_id, remote_feed_id)| RemoteFeedRef {
+          backend_id,
+          remote_feed_id,
+        });
 
       let entries = entry_stmt
         .query_map(params![feed_id], |row| {
@@ -345,6 +423,7 @@ impl FeedCache {
           let media_str: String = row.get(4)?;
           let read: i64 = row.get(5)?;
           let scroll_position: i64 = row.get(6)?;
+          let remote_id: Option<String> = row.get(7)?;
 
           let links: Vec<String> = serde_json::from_str(&links_json).unwrap_or_default();
           let media = if media_str.is_empty() {
@@ -359,10 +438,10 @@ impl FeedCache {
             text,
             links,
             media,
-            feed_title: None,
-            feed_url: None,
             read: read != 0,
             scroll_position: scroll_position.max(0) as usize,
+            remote_id,
+            ..Default::default()
           })
         })?
         .collect::<Result<Vec<_>>>()?;
@@ -372,6 +451,7 @@ impl FeedCache {
         title,
         entries,
         tags,
+        backend,
       });
     }
 
@@ -383,7 +463,7 @@ impl FeedCache {
     let feed_row = self
       .conn
       .query_row(
-        "SELECT id, url, title, tags FROM feeds WHERE url = ?1",
+        "SELECT id, url, title, tags, backend_id, remote_feed_id FROM feeds WHERE url = ?1",
         params![url],
         |row| {
           Ok((
@@ -391,19 +471,27 @@ impl FeedCache {
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
             row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
           ))
         },
       )
       .optional()?;
 
-    let Some((feed_id, url, title, tags_json)) = feed_row else {
+    let Some((feed_id, url, title, tags_json, backend_id, remote_feed_id)) = feed_row else {
       return Ok(None);
     };
 
     let tags = tags_json.and_then(|json| serde_json::from_str(&json).ok());
+    let backend = backend_id
+      .zip(remote_feed_id)
+      .map(|(backend_id, remote_feed_id)| RemoteFeedRef {
+        backend_id,
+        remote_feed_id,
+      });
 
     let mut entry_stmt = self.conn.prepare(
-      "SELECT title, published, text, links, media, read, scroll_position
+      "SELECT title, published, text, links, media, read, scroll_position, remote_id
        FROM entries
        WHERE feed_id = ?1 AND deleted = 0
        ORDER BY published DESC",
@@ -418,6 +506,7 @@ impl FeedCache {
         let media_str: String = row.get(4)?;
         let read: i64 = row.get(5)?;
         let scroll_position: i64 = row.get(6)?;
+        let remote_id: Option<String> = row.get(7)?;
 
         let links: Vec<String> = serde_json::from_str(&links_json).unwrap_or_default();
         let media = if media_str.is_empty() {
@@ -432,10 +521,10 @@ impl FeedCache {
           text,
           links,
           media,
-          feed_title: None,
-          feed_url: None,
           read: read != 0,
           scroll_position: scroll_position.max(0) as usize,
+          remote_id,
+          ..Default::default()
         })
       })?
       .collect::<Result<Vec<_>>>()?;
@@ -445,6 +534,7 @@ impl FeedCache {
       title,
       entries,
       tags,
+      backend,
     }))
   }
 
@@ -471,8 +561,13 @@ impl FeedCache {
     Ok(count > 0)
   }
 
-  /// Remove every feed from the cache whose URL is **not** present in
-  /// `active_urls` (i.e. feeds that have been deleted from `feeds.toml`).
+  /// Remove every **local** feed (i.e. `backend_id IS NULL`) from the cache
+  /// whose URL is **not** present in `active_urls` (feeds that have been
+  /// deleted from `feeds.toml`). Remote-backend feeds are left untouched —
+  /// they're pruned separately by `remove_dead_backend_feeds`, since
+  /// `feeds.toml` has no knowledge of them and would otherwise wipe every
+  /// synced backend feed (and, if `feeds.toml` is empty, the entire cache)
+  /// on every normal startup.
   ///
   /// Entries belonging to removed feeds are deleted automatically thanks to
   /// the `ON DELETE CASCADE` constraint defined in `init_schema`.
@@ -484,11 +579,14 @@ impl FeedCache {
   /// intermediate allocations.
   pub fn remove_dead_feeds(&self, active_urls: &[&str]) -> Result<usize> {
     if active_urls.is_empty() {
-      // No active feeds at all — drop everything.
-      return self.conn.execute("DELETE FROM feeds", []);
+      // No active local feeds at all — drop every local feed, but keep
+      // remote-backend ones.
+      return self
+        .conn
+        .execute("DELETE FROM feeds WHERE backend_id IS NULL", []);
     }
 
-    // Build: DELETE FROM feeds WHERE url NOT IN (?1, ?2, …, ?N)
+    // Build: DELETE FROM feeds WHERE backend_id IS NULL AND url NOT IN (?1, ?2, …, ?N)
     // rusqlite doesn't support variable-length IN lists natively, so we
     // generate the placeholder string dynamically.  The input is trusted
     // (URLs from feeds.toml), but we still use bound parameters so that
@@ -497,17 +595,52 @@ impl FeedCache {
       .map(|i| format!("?{i}"))
       .collect::<Vec<_>>()
       .join(", ");
-    let sql = format!("DELETE FROM feeds WHERE url NOT IN ({placeholders})");
+    let sql = format!("DELETE FROM feeds WHERE backend_id IS NULL AND url NOT IN ({placeholders})");
 
     self
       .conn
       .execute(&sql, rusqlite::params_from_iter(active_urls))
   }
 
-  /// Return `(url, title)` for every feed in the cache that is **not** present
-  /// in `active_urls`. Does not modify the database.
+  /// Remove every feed belonging to the given configured backend instance
+  /// (`backend_id`) whose remote feed id is **not** present in
+  /// `active_remote_feed_ids` — i.e. a feed that was removed on the remote
+  /// server. Scoped to one `backend_id` so one backend's sync can never
+  /// prune another backend's (or a local feed's) rows.
+  pub fn remove_dead_backend_feeds(
+    &self,
+    backend_id: &str,
+    active_remote_feed_ids: &[&str],
+  ) -> Result<usize> {
+    if active_remote_feed_ids.is_empty() {
+      return self.conn.execute(
+        "DELETE FROM feeds WHERE backend_id = ?1",
+        params![backend_id],
+      );
+    }
+
+    let placeholders = (2..=active_remote_feed_ids.len() + 1)
+      .map(|i| format!("?{i}"))
+      .collect::<Vec<_>>()
+      .join(", ");
+    let sql =
+      format!("DELETE FROM feeds WHERE backend_id = ?1 AND remote_feed_id NOT IN ({placeholders})");
+    let mut all_params: Vec<&dyn rusqlite::ToSql> = vec![&backend_id];
+    all_params.extend(
+      active_remote_feed_ids
+        .iter()
+        .map(|s| s as &dyn rusqlite::ToSql),
+    );
+    self.conn.execute(&sql, all_params.as_slice())
+  }
+
+  /// Return `(url, title)` for every **local** feed in the cache that is
+  /// **not** present in `active_urls`. Does not modify the database.
+  /// Remote-backend feeds are excluded — see `remove_dead_feeds` for why.
   pub fn list_dead_feeds(&self, active_urls: &[&str]) -> Result<Vec<(String, String)>> {
-    let mut stmt = self.conn.prepare("SELECT url, title FROM feeds")?;
+    let mut stmt = self
+      .conn
+      .prepare("SELECT url, title FROM feeds WHERE backend_id IS NULL")?;
     let active: HashSet<&str> = active_urls.iter().copied().collect();
     let dead = stmt
       .query_map([], |row| {
@@ -563,6 +696,7 @@ mod tests {
       title: title.to_string(),
       entries,
       tags: None,
+      ..Default::default()
     }
   }
 
@@ -573,10 +707,42 @@ mod tests {
       text: format!("Content of {}", title),
       links: vec![format!("https://example.com/{}", title)],
       media: None,
-      feed_title: None,
-      feed_url: None,
       read: false,
       scroll_position: 0,
+      ..Default::default()
+    }
+  }
+
+  fn make_remote_entry(title: &str, remote_id: &str) -> FeedEntry {
+    FeedEntry {
+      title: title.to_string(),
+      published: None,
+      text: format!("Content of {}", title),
+      links: vec![],
+      media: None,
+      read: false,
+      scroll_position: 0,
+      remote_id: Some(remote_id.to_string()),
+      ..Default::default()
+    }
+  }
+
+  fn make_remote_feed(
+    url: &str,
+    title: &str,
+    backend_id: &str,
+    remote_feed_id: &str,
+    entries: Vec<FeedEntry>,
+  ) -> Feed {
+    Feed {
+      url: url.to_string(),
+      title: title.to_string(),
+      entries,
+      tags: None,
+      backend: Some(crate::feeds::RemoteFeedRef {
+        backend_id: backend_id.to_string(),
+        remote_feed_id: remote_feed_id.to_string(),
+      }),
     }
   }
 
@@ -998,5 +1164,117 @@ mod tests {
     let cache = FeedCache::new_in_memory().unwrap();
     // Should not error, just affect zero rows
     cache.mark_feed_read("https://nonexistent.com/rss").unwrap();
+  }
+
+  #[test]
+  fn test_remote_feed_roundtrips_backend_ref() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let feed = make_remote_feed(
+      "https://miniflux.example.com/feed/1",
+      "Remote Feed",
+      "home-miniflux",
+      "1",
+      vec![make_remote_entry("Post 1", "101")],
+    );
+    cache.save_feed(&feed, 0, None).unwrap();
+
+    let feeds = cache.load_all_feeds().unwrap();
+    assert_eq!(feeds.len(), 1);
+    let backend = feeds[0].backend.as_ref().unwrap();
+    assert_eq!(backend.backend_id, "home-miniflux");
+    assert_eq!(backend.remote_feed_id, "1");
+    assert_eq!(feeds[0].entries[0].remote_id.as_deref(), Some("101"));
+  }
+
+  #[test]
+  fn test_remote_entry_upsert_keyed_on_remote_id_not_title() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let feed1 = make_remote_feed(
+      "https://miniflux.example.com/feed/1",
+      "Remote Feed",
+      "home-miniflux",
+      "1",
+      vec![make_remote_entry("Original Title", "101")],
+    );
+    cache.save_feed(&feed1, 0, None).unwrap();
+    cache
+      .mark_entry_read(
+        "https://miniflux.example.com/feed/1",
+        "Original Title",
+        None,
+      )
+      .unwrap();
+
+    // Same remote_id, title changed upstream — must update in place (not
+    // insert a duplicate) and must not reset the read flag.
+    let feed2 = make_remote_feed(
+      "https://miniflux.example.com/feed/1",
+      "Remote Feed",
+      "home-miniflux",
+      "1",
+      vec![make_remote_entry("Edited Title", "101")],
+    );
+    cache.save_feed(&feed2, 0, None).unwrap();
+
+    let feeds = cache.load_all_feeds().unwrap();
+    assert_eq!(feeds[0].entries.len(), 1);
+    assert_eq!(feeds[0].entries[0].title, "Edited Title");
+    assert!(feeds[0].entries[0].read);
+  }
+
+  #[test]
+  fn test_remove_dead_feeds_does_not_prune_remote_feeds() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let local = make_feed("https://a.com/rss", "Local Feed", vec![]);
+    let remote = make_remote_feed(
+      "https://miniflux.example.com/feed/1",
+      "Remote Feed",
+      "home-miniflux",
+      "1",
+      vec![],
+    );
+    cache.save_feed(&local, 0, None).unwrap();
+    cache.save_feed(&remote, 1, None).unwrap();
+
+    // Local feed no longer in feeds.toml — remote feed must survive, even
+    // though it's never present in `active_urls` either.
+    let removed = cache.remove_dead_feeds(&[]).unwrap();
+    assert_eq!(removed, 1);
+
+    let feeds = cache.load_all_feeds().unwrap();
+    assert_eq!(feeds.len(), 1);
+    assert_eq!(feeds[0].url, "https://miniflux.example.com/feed/1");
+  }
+
+  #[test]
+  fn test_remove_dead_backend_feeds_scoped_to_backend_id() {
+    let cache = FeedCache::new_in_memory().unwrap();
+    let remote_a = make_remote_feed(
+      "https://a.example.com/feed",
+      "Feed A",
+      "home-miniflux",
+      "1",
+      vec![],
+    );
+    let remote_b = make_remote_feed(
+      "https://b.example.com/feed",
+      "Feed B",
+      "other-miniflux",
+      "1",
+      vec![],
+    );
+    cache.save_feed(&remote_a, 0, None).unwrap();
+    cache.save_feed(&remote_b, 1, None).unwrap();
+
+    // Feed "1" no longer returned by home-miniflux's feed list — must prune
+    // remote_a only, leaving remote_b (a different backend_id) untouched.
+    let removed = cache
+      .remove_dead_backend_feeds("home-miniflux", &[])
+      .unwrap();
+    assert_eq!(removed, 1);
+
+    let feeds = cache.load_all_feeds().unwrap();
+    assert_eq!(feeds.len(), 1);
+    assert_eq!(feeds[0].url, "https://b.example.com/feed");
   }
 }

@@ -165,6 +165,76 @@ pub struct QueryFeed {
   pub query: String,
 }
 
+/// A configured remote-backend instance. `id` is a user-chosen stable name
+/// (e.g. "home-miniflux") referenced by the `feeds.backend_id` cache column —
+/// this is what lets multiple instances (even of the same `kind`) coexist.
+#[derive(Debug, Deserialize, Clone)]
+pub struct BackendConfig {
+  pub id: String,
+  #[serde(flatten)]
+  pub kind: BackendKind,
+  #[serde(default)]
+  pub enabled: bool,
+}
+
+/// Tagged by `type` in TOML (`type = "miniflux"`). New backend types add a
+/// variant here; no other part of `Config`/`BackendConfig` needs to change.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum BackendKind {
+  Miniflux {
+    url: String,
+    token: Option<String>,
+    /// Shell command whose trimmed stdout is used as the API token when
+    /// `token` is absent — keeps the secret out of config.toml.
+    token_command: Option<String>,
+  },
+}
+
+impl BackendConfig {
+  /// Resolve this backend's API token: `token` wins if set, otherwise run
+  /// `token_command` and use its trimmed stdout. Run once at startup, not
+  /// per-fetch.
+  pub fn resolve_token(&self) -> Result<String, String> {
+    let (token, token_command) = match &self.kind {
+      BackendKind::Miniflux {
+        token,
+        token_command,
+        ..
+      } => (token, token_command),
+    };
+
+    if let Some(token) = token {
+      return Ok(token.clone());
+    }
+    let Some(command) = token_command else {
+      return Err(format!(
+        "backend \"{}\" has neither `token` nor `token_command` set",
+        self.id
+      ));
+    };
+    let output = std::process::Command::new("sh")
+      .arg("-c")
+      .arg(command)
+      .output()
+      .map_err(|e| format!("backend \"{}\": failed to run token_command: {e}", self.id))?;
+    if !output.status.success() {
+      return Err(format!(
+        "backend \"{}\": token_command exited with {}",
+        self.id, output.status
+      ));
+    }
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if token.is_empty() {
+      return Err(format!(
+        "backend \"{}\": token_command produced no output",
+        self.id
+      ));
+    }
+    Ok(token)
+  }
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct ConfigFile {
   #[serde(default)]
@@ -173,6 +243,8 @@ struct ConfigFile {
   ui: UiConfig,
   #[serde(default)]
   queries: Vec<QueryFeed>,
+  #[serde(default)]
+  backends: Vec<BackendConfig>,
 }
 
 pub struct Config {
@@ -180,42 +252,82 @@ pub struct Config {
   pub general: GeneralConfig,
   pub ui: UiConfig,
   pub queries: Vec<QueryFeed>,
+  pub backends: Vec<BackendConfig>,
 }
 
 /// Parse complete configuration from config.toml and feeds.toml
 pub fn parse_config() -> Result<Config, ConfigError> {
   let config_dir = get_config_dir();
-  let (general_config, ui_config, queries) = parse_config_file(&config_dir);
+  let (general_config, ui_config, queries, backends) = parse_config_file(&config_dir);
   let feeds = parse_feeds(&config_dir)?;
   Ok(Config {
     feeds,
     general: general_config,
     ui: ui_config,
     queries,
+    backends,
   })
 }
 
 /// Parse configuration file (config.toml)
-fn parse_config_file(config_dir: &Path) -> (GeneralConfig, UiConfig, Vec<QueryFeed>) {
+fn parse_config_file(
+  config_dir: &Path,
+) -> (GeneralConfig, UiConfig, Vec<QueryFeed>, Vec<BackendConfig>) {
   let config_path = config_dir.join("config.toml");
 
   if !config_path.exists() {
-    return (default_general_config(), default_ui_config(), Vec::new());
+    return (
+      default_general_config(),
+      default_ui_config(),
+      Vec::new(),
+      Vec::new(),
+    );
   }
 
   let content = match fs::read_to_string(&config_path) {
     Ok(c) => c,
-    Err(_) => return (default_general_config(), default_ui_config(), Vec::new()),
+    Err(_) => {
+      return (
+        default_general_config(),
+        default_ui_config(),
+        Vec::new(),
+        Vec::new(),
+      )
+    }
   };
 
   match toml::from_str::<ConfigFile>(&content) {
-    Ok(config) => (config.general, config.ui, config.queries),
+    Ok(config) => {
+      if let Some(dup) = first_duplicate_backend_id(&config.backends) {
+        eprintln!(
+          "Warning: duplicate [[backends]] id \"{dup}\" in config.toml; ignoring all backends"
+        );
+        return (config.general, config.ui, config.queries, Vec::new());
+      }
+      (config.general, config.ui, config.queries, config.backends)
+    }
     Err(err) => {
       eprintln!("Warning: Failed to parse config.toml: {}", err);
       eprintln!("Using default configuration");
-      (default_general_config(), default_ui_config(), Vec::new())
+      (
+        default_general_config(),
+        default_ui_config(),
+        Vec::new(),
+        Vec::new(),
+      )
     }
   }
+}
+
+/// Return the first `id` that appears more than once in `backends`, if any.
+fn first_duplicate_backend_id(backends: &[BackendConfig]) -> Option<&str> {
+  let mut seen = std::collections::HashSet::new();
+  for b in backends {
+    if !seen.insert(b.id.as_str()) {
+      return Some(b.id.as_str());
+    }
+  }
+  None
 }
 
 /// `GeneralConfig` with all serde field defaults actually applied (unlike the
@@ -402,7 +514,8 @@ link = "https://other.com/rss"
   #[test]
   fn test_parse_config_file_missing() {
     let dir = tempfile::tempdir().unwrap();
-    let (general, ui, queries) = parse_config_file(dir.path());
+    let (general, ui, queries, backends) = parse_config_file(dir.path());
+    assert!(backends.is_empty());
     // Should return defaults when file is missing
     assert!(general.browser.is_none());
     assert!(general.media_player.is_none());
@@ -437,11 +550,18 @@ show_read_entries = false
 [[queries]]
 name = "All Blogs"
 query = "tags:blog"
+
+[[backends]]
+id = "home-miniflux"
+type = "miniflux"
+enabled = true
+url = "https://miniflux.example.com"
+token = "secret-token"
 "#,
     )
     .unwrap();
 
-    let (general, ui, queries) = parse_config_file(dir.path());
+    let (general, ui, queries, backends) = parse_config_file(dir.path());
     assert_eq!(general.browser.as_deref(), Some("firefox"));
     assert_eq!(general.media_player.as_deref(), Some("mpv"));
     assert_eq!(
@@ -453,6 +573,13 @@ query = "tags:blog"
     assert_eq!(queries.len(), 1);
     assert_eq!(queries[0].name, "All Blogs");
     assert_eq!(queries[0].query, "tags:blog");
+    assert_eq!(backends.len(), 1);
+    assert_eq!(backends[0].id, "home-miniflux");
+    assert!(backends[0].enabled);
+    assert_eq!(backends[0].resolve_token().unwrap(), "secret-token");
+    match &backends[0].kind {
+      BackendKind::Miniflux { url, .. } => assert_eq!(url, "https://miniflux.example.com"),
+    }
   }
 
   #[test]
@@ -461,10 +588,65 @@ query = "tags:blog"
     let config_path = dir.path().join("config.toml");
     fs::write(&config_path, "not valid toml {{{{").unwrap();
 
-    let (general, ui, queries) = parse_config_file(dir.path());
+    let (general, ui, queries, backends) = parse_config_file(dir.path());
     assert!(general.browser.is_none());
     assert!(ui.show_borders); // Falls back to serde defaults, not the derived Default
     assert!(queries.is_empty());
+    assert!(backends.is_empty());
+  }
+
+  #[test]
+  fn test_backend_resolve_token_via_command() {
+    let backend = BackendConfig {
+      id: "home-miniflux".to_string(),
+      kind: BackendKind::Miniflux {
+        url: "https://miniflux.example.com".to_string(),
+        token: None,
+        token_command: Some("echo my-secret".to_string()),
+      },
+      enabled: true,
+    };
+    assert_eq!(backend.resolve_token().unwrap(), "my-secret");
+  }
+
+  #[test]
+  fn test_backend_resolve_token_missing_errors() {
+    let backend = BackendConfig {
+      id: "home-miniflux".to_string(),
+      kind: BackendKind::Miniflux {
+        url: "https://miniflux.example.com".to_string(),
+        token: None,
+        token_command: None,
+      },
+      enabled: true,
+    };
+    assert!(backend.resolve_token().is_err());
+  }
+
+  #[test]
+  fn test_duplicate_backend_ids_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.toml");
+    fs::write(
+      &config_path,
+      r#"
+[[backends]]
+id = "dup"
+type = "miniflux"
+url = "https://a.example.com"
+token = "a"
+
+[[backends]]
+id = "dup"
+type = "miniflux"
+url = "https://b.example.com"
+token = "b"
+"#,
+    )
+    .unwrap();
+
+    let (_, _, _, backends) = parse_config_file(dir.path());
+    assert!(backends.is_empty());
   }
 
   #[test]
