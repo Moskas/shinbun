@@ -1,4 +1,4 @@
-use super::types::FeedUpdate;
+use super::types::{AppState, DisplayFeed, FeedUpdate, ListPane};
 use super::App;
 use crate::config::{parse_refresh_interval, write_feeds, Feed as FeedConfig};
 use crate::feeds;
@@ -196,6 +196,44 @@ impl App {
     }
   }
 
+  /// Open the add-feed popup pre-filled with the currently selected feed's
+  /// config, so its URL, name, tags and refresh interval can be changed.
+  /// No-ops outside `BrowsingFeeds` / the feeds pane, or on a query feed
+  /// (which has no single `feed_config` entry to edit).
+  pub(super) fn open_edit_feed_popup(&mut self) {
+    if self.state != AppState::BrowsingFeeds || self.list_pane != ListPane::Feeds {
+      return;
+    }
+
+    let selected = self.feed_list_state.selected().unwrap_or(0);
+    let Some(DisplayFeed::Regular(i)) = self.display_feeds.get(selected) else {
+      return;
+    };
+    let Some(url) = self.feeds.get(*i).map(|f| f.url.clone()) else {
+      return;
+    };
+    let Some(fc) = self.feed_config.iter().find(|fc| fc.link == url) else {
+      return;
+    };
+
+    self.add_feed_form.clear();
+    self.add_feed_form.url.set_value(fc.link.clone());
+    self
+      .add_feed_form
+      .name
+      .set_value(fc.name.clone().unwrap_or_default());
+    self
+      .add_feed_form
+      .tags
+      .set_value(fc.tags.clone().unwrap_or_default().join(", "));
+    self
+      .add_feed_form
+      .refresh
+      .set_value(fc.refresh.clone().unwrap_or_default());
+    self.add_feed_form.editing_url = Some(fc.link.clone());
+    self.show_add_feed_popup = true;
+  }
+
   /// Handle a keypress while the add-feed popup is open.
   pub(super) fn handle_add_feed_key(&mut self, key: KeyEvent) {
     match key.code {
@@ -284,7 +322,21 @@ impl App {
           tags,
           refresh,
         };
-        self.feed_config.push(new_feed.clone());
+
+        let action_label = if self.add_feed_form.is_editing() {
+          "Edit Feed"
+        } else {
+          "Add Feed"
+        };
+
+        if let Some(orig_url) = self.add_feed_form.editing_url.clone() {
+          match self.feed_config.iter().position(|fc| fc.link == orig_url) {
+            Some(pos) => self.feed_config[pos] = new_feed.clone(),
+            None => self.feed_config.push(new_feed.clone()),
+          }
+        } else {
+          self.feed_config.push(new_feed.clone());
+        }
 
         if self.loading_state.is_loading {
           self.add_feed_form.error = Some("A fetch is already in progress".to_string());
@@ -292,7 +344,15 @@ impl App {
         }
 
         if let Err(e) = write_feeds(&self.feeds_path, &self.feed_config) {
-          self.push_error("Add Feed", format!("Failed to save feeds.toml: {}", e));
+          self.push_error(action_label, format!("Failed to save feeds.toml: {}", e));
+        }
+
+        // If editing changed the feed's URL, drop the now-orphaned cache row
+        // for the old URL immediately rather than waiting for the next
+        // startup prune — otherwise the stale feed lingers in the list.
+        let active_urls: Vec<&str> = self.feed_config.iter().map(|fc| fc.link.as_str()).collect();
+        if let Err(e) = self.cache.remove_dead_feeds(&active_urls) {
+          self.push_error(action_label, format!("Failed to prune old feed: {}", e));
         }
 
         let tx = self.feed_tx.clone();

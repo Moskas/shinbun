@@ -724,7 +724,7 @@ impl App {
       }
       KeyCode::Char('r') => self.refresh_selected_feed(),
       KeyCode::Char('R') => self.refresh_feeds(),
-      KeyCode::Char('e') | KeyCode::Char('E') => {
+      KeyCode::Char('e') => {
         if !self.feed_errors.is_empty() {
           self.show_error_popup = !self.show_error_popup;
         }
@@ -829,6 +829,12 @@ impl App {
           self.input.cancel_sequence();
           self.add_feed_form.clear();
           self.show_add_feed_popup = true;
+        }
+      }
+      KeyCode::Char('E') => {
+        if self.state == AppState::BrowsingFeeds {
+          self.input.cancel_sequence();
+          self.open_edit_feed_popup();
         }
       }
       KeyCode::Char('/') => match self.state {
@@ -2386,6 +2392,116 @@ mod tests {
       parsed["feeds"][0]["link"].as_str(),
       Some("https://example.com/rss")
     );
+  }
+
+  #[test]
+  fn test_edit_feed_popup_opens_prefilled() {
+    let mut app = make_app_with_feeds(vec![make_feed(
+      "https://example.com/feed.xml",
+      "Example Feed",
+      vec![],
+    )]);
+    app.feed_config = vec![FeedConfig {
+      link: "https://example.com/feed.xml".to_string(),
+      name: Some("Old Name".to_string()),
+      tags: Some(vec!["a".to_string(), "b".to_string()]),
+      refresh: Some("1d".to_string()),
+    }];
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('E')));
+
+    assert!(app.show_add_feed_popup);
+    assert_eq!(app.add_feed_form.url, "https://example.com/feed.xml");
+    assert_eq!(app.add_feed_form.name, "Old Name");
+    assert_eq!(app.add_feed_form.tags, "a, b");
+    assert_eq!(app.add_feed_form.refresh, "1d");
+    assert_eq!(
+      app.add_feed_form.editing_url.as_deref(),
+      Some("https://example.com/feed.xml")
+    );
+  }
+
+  #[test]
+  fn test_edit_feed_popup_not_opened_on_query_feed() {
+    let mut app = make_app_with_feeds(vec![make_feed(
+      "https://example.com/feed.xml",
+      "Example Feed",
+      vec![],
+    )]);
+    app.query_config = vec![QueryFeed {
+      name: "All".to_string(),
+      query: "*".to_string(),
+    }];
+    app.display_feeds = vec![DisplayFeed::Query {
+      name: "All".to_string(),
+      entries: vec![],
+    }];
+    app.feed_list_state.select(Some(0));
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('E')));
+
+    assert!(!app.show_add_feed_popup);
+  }
+
+  #[tokio::test]
+  async fn test_edit_feed_popup_enter_updates_feed_config_in_place() {
+    let mut app = make_app_with_feeds(vec![make_feed(
+      "https://example.com/feed.xml",
+      "Example Feed",
+      vec![],
+    )]);
+    app.feed_config = vec![FeedConfig {
+      link: "https://example.com/feed.xml".to_string(),
+      name: Some("Old Name".to_string()),
+      tags: Some(vec!["a".to_string()]),
+      refresh: Some("1d".to_string()),
+    }];
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('E')));
+    // Clear and retype the name field, leaving the URL (and thus the
+    // feed_config match key) unchanged.
+    app.add_feed_form.focus = AddFeedField::Name;
+    while !app.add_feed_form.name.value.is_empty() {
+      app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    }
+    for c in "New Name".chars() {
+      app.handle_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+
+    assert!(!app.show_add_feed_popup);
+    assert_eq!(app.feed_config.len(), 1);
+    assert_eq!(app.feed_config[0].link, "https://example.com/feed.xml");
+    assert_eq!(app.feed_config[0].name.as_deref(), Some("New Name"));
+  }
+
+  #[tokio::test]
+  async fn test_edit_feed_popup_enter_with_changed_url_replaces_entry() {
+    let mut app = make_app_with_feeds(vec![make_feed(
+      "https://example.com/old.xml",
+      "Example Feed",
+      vec![],
+    )]);
+    app.feed_config = vec![FeedConfig {
+      link: "https://example.com/old.xml".to_string(),
+      name: None,
+      tags: None,
+      refresh: None,
+    }];
+
+    app.handle_key(KeyEvent::from(KeyCode::Char('E')));
+    app.add_feed_form.focus = AddFeedField::Url;
+    while !app.add_feed_form.url.value.is_empty() {
+      app.handle_key(KeyEvent::from(KeyCode::Backspace));
+    }
+    for c in "https://example.com/new.xml".chars() {
+      app.handle_key(KeyEvent::from(KeyCode::Char(c)));
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Enter));
+
+    assert!(!app.show_add_feed_popup);
+    assert_eq!(app.feed_config.len(), 1);
+    assert_eq!(app.feed_config[0].link, "https://example.com/new.xml");
   }
 
   fn enter_first_entry(app: &mut App) {

@@ -162,11 +162,22 @@ pub struct AddFeedForm {
   pub refresh: TextInput,
   pub focus: AddFeedField,
   pub error: Option<String>,
+  /// The original URL of the feed being edited, if this form was opened in
+  /// edit mode rather than for adding a brand-new feed. Kept separate from
+  /// `url` (which the user may change) so the matching `feed_config` entry
+  /// can still be found on submit.
+  pub editing_url: Option<String>,
 }
 
 impl AddFeedForm {
   pub fn clear(&mut self) {
     *self = Self::default();
+  }
+
+  /// True while this form represents an edit of an existing feed rather
+  /// than adding a new one.
+  pub fn is_editing(&self) -> bool {
+    self.editing_url.is_some()
   }
 
   pub fn active_buffer(&mut self) -> &mut TextInput {

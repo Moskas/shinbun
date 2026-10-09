@@ -81,6 +81,10 @@ fn build_help_content(theme: &Theme) -> Vec<Line<'static>> {
       description: "Add new feed",
     },
     Keybind {
+      key: "E",
+      description: "Edit selected feed",
+    },
+    Keybind {
       key: "r",
       description: "Refresh selected feed",
     },

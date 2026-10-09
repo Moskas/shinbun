@@ -934,8 +934,13 @@ pub fn render_add_feed_popup(frame: &mut Frame, area: Rect, form: &mut AddFeedFo
   let label_style = Style::default().bold();
   let hint_style = Style::default().fg(theme.count);
 
+  let title = if form.is_editing() {
+    " Edit Feed "
+  } else {
+    " Add Feed "
+  };
   let block = Block::default()
-    .title(Span::styled(" Add Feed ", theme.title_style()))
+    .title(Span::styled(title, theme.title_style()))
     .borders(Borders::ALL)
     .border_style(Style::default().fg(theme.confirm))
     .border_set(border::PLAIN);
@@ -1021,10 +1026,12 @@ pub fn render_add_feed_popup(frame: &mut Frame, area: Rect, form: &mut AddFeedFo
       Style::default().fg(theme.error_title),
     )));
   } else {
-    lines.push(Line::from(Span::styled(
-      " Tab: next field  Enter: add  Esc: cancel",
-      hint_style,
-    )));
+    let hint = if form.is_editing() {
+      " Tab: next field  Enter: save  Esc: cancel"
+    } else {
+      " Tab: next field  Enter: add  Esc: cancel"
+    };
+    lines.push(Line::from(Span::styled(hint, hint_style)));
   }
 
   let popup = Paragraph::new(lines).block(block);
