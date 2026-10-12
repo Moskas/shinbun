@@ -248,8 +248,10 @@ fn run_app(
       app.handle_feed_update(update);
     }
 
-    let popup_showing =
-      app.loading_state.should_show_popup() || app.show_help_popup || app.show_links_popup;
+    let popup_showing = app.loading_state.should_show_popup()
+      || app.show_help_popup
+      || app.show_links_popup
+      || app.show_toc_popup;
 
     // Only render when:
     //   - state changed (keypress, feed update, resize)

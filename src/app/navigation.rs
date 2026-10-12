@@ -159,6 +159,17 @@ impl App {
     }
   }
 
+  /// Jump the entry scroll to the heading currently selected in the table
+  /// of contents popup.
+  pub(super) fn jump_to_toc_selection(&mut self) {
+    let rows = self.entry_render_cache.heading_rows();
+    if rows.is_empty() {
+      return;
+    }
+    let idx = self.toc_selected.min(rows.len() - 1);
+    self.entry_scroll = rows[idx];
+  }
+
   pub(super) fn handle_enter(&mut self) {
     match self.state {
       AppState::BrowsingFeeds => match self.list_pane {
@@ -237,6 +248,9 @@ impl App {
         self.show_links_popup = false;
         self.links_scroll = 0;
         self.links_selected = 0;
+        self.show_toc_popup = false;
+        self.toc_scroll = 0;
+        self.toc_selected = 0;
         self.state = AppState::BrowsingEntries;
         // Entries are no longer marked read on open — bottom-detection while
         // viewing may have just marked one read, which can shrink the

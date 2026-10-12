@@ -21,6 +21,26 @@ pub enum MdBlock {
   Image { src: String, alt: String },
 }
 
+/// A heading encountered while rendering, used to build the entry's table
+/// of contents.
+#[derive(Debug, Clone)]
+pub struct HeadingInfo {
+  pub level: u8,
+  pub text: String,
+  /// Index into the `Vec<MdBlock>` this heading's first line belongs to.
+  pub block_index: usize,
+  /// Line offset within that block's eventual `Vec<Line>`.
+  pub line_offset: usize,
+}
+
+/// Result of [`render_markdown`]: the laid-out blocks plus the headings
+/// found while walking them.
+#[derive(Debug)]
+pub struct RenderedMarkdown {
+  pub blocks: Vec<MdBlock>,
+  pub headings: Vec<HeadingInfo>,
+}
+
 /// Theme-derived styles used while rendering Markdown.
 #[derive(Clone, Copy, Debug)]
 pub struct MarkdownStyles {
@@ -96,7 +116,7 @@ pub fn render_markdown(
   width: u16,
   styles: &MarkdownStyles,
   link_numbers: &HashMap<String, usize>,
-) -> Vec<MdBlock> {
+) -> RenderedMarkdown {
   let mut r = Renderer {
     styles: *styles,
     width: width.max(10) as usize,
@@ -108,6 +128,8 @@ pub fn render_markdown(
     italic: 0,
     strike: 0,
     heading: None,
+    heading_start: None,
+    headings: Vec::new(),
     quote: 0,
     in_code_block: false,
     list_stack: Vec::new(),
@@ -121,7 +143,10 @@ pub fn render_markdown(
     r.event(ev);
   }
   r.end_text_block();
-  r.blocks
+  RenderedMarkdown {
+    blocks: r.blocks,
+    headings: r.headings,
+  }
 }
 
 /// Word-wrap a single styled line to `width` columns (no hanging indent).
@@ -165,6 +190,10 @@ struct Renderer<'a> {
   italic: u32,
   strike: u32,
   heading: Option<u8>,
+  /// (level, block_index, line_offset) recorded at the start of the
+  /// currently-open heading, for the table of contents.
+  heading_start: Option<(u8, usize, usize)>,
+  headings: Vec<HeadingInfo>,
   quote: usize,
   in_code_block: bool,
   list_stack: Vec<Option<u64>>,
@@ -227,7 +256,9 @@ impl Renderer<'_> {
       Tag::Paragraph => self.start_block(),
       Tag::Heading { level, .. } => {
         self.start_block();
-        self.heading = Some(heading_level(level));
+        let level = heading_level(level);
+        self.heading = Some(level);
+        self.heading_start = Some((level, self.blocks.len(), self.lines.len()));
       }
       Tag::BlockQuote(_) => {
         self.start_block();
@@ -294,6 +325,18 @@ impl Renderer<'_> {
     match tag {
       TagEnd::Paragraph => self.flush_line(),
       TagEnd::Heading(_) => {
+        if let Some((level, block_index, line_offset)) = self.heading_start.take() {
+          let text: String = self.spans.iter().map(|s| s.content.as_ref()).collect();
+          let text = text.trim_start_matches(['│', ' ']).trim().to_string();
+          if !text.is_empty() {
+            self.headings.push(HeadingInfo {
+              level,
+              text,
+              block_index,
+              line_offset,
+            });
+          }
+        }
         self.flush_line();
         self.heading = None;
       }
@@ -865,7 +908,7 @@ mod tests {
   }
 
   fn render(md: &str, width: u16) -> Vec<MdBlock> {
-    render_markdown(md, width, &styles(), &HashMap::new())
+    render_markdown(md, width, &styles(), &HashMap::new()).blocks
   }
 
   fn text_of(blocks: &[MdBlock]) -> String {
@@ -1132,7 +1175,8 @@ mod tests {
       80,
       &styles(),
       &numbers,
-    );
+    )
+    .blocks;
     let out = text_of(&blocks);
     assert!(out.contains("the docs[2]"), "got: {out}");
     // Links not present in the entry's link list get no number.
@@ -1153,7 +1197,8 @@ mod tests {
       80,
       &styles(),
       &numbers,
-    );
+    )
+    .blocks;
     let out = text_of(&blocks);
     assert_eq!(out, "https://example.com/a");
   }
@@ -1193,5 +1238,42 @@ mod tests {
     for l in &wrapped {
       assert!(l.width() <= 20);
     }
+  }
+
+  #[test]
+  fn headings_are_captured_with_level_and_text() {
+    let rendered = render_markdown(
+      "# Title\n\nIntro text.\n\n## Section One\n\nBody.\n\n### Sub Section\n\nMore body.",
+      80,
+      &styles(),
+      &HashMap::new(),
+    );
+    let levels: Vec<u8> = rendered.headings.iter().map(|h| h.level).collect();
+    let texts: Vec<&str> = rendered.headings.iter().map(|h| h.text.as_str()).collect();
+    assert_eq!(levels, vec![1, 2, 3]);
+    assert_eq!(texts, vec!["Title", "Section One", "Sub Section"]);
+    // All headings land in the single Text block (no images to split it).
+    assert!(rendered.headings.iter().all(|h| h.block_index == 0));
+    // Each heading starts at a later line offset than the previous one.
+    assert!(rendered.headings[0].line_offset < rendered.headings[1].line_offset);
+    assert!(rendered.headings[1].line_offset < rendered.headings[2].line_offset);
+  }
+
+  #[test]
+  fn single_heading_is_still_captured() {
+    let rendered = render_markdown("# Only One\n\nBody text.", 80, &styles(), &HashMap::new());
+    assert_eq!(rendered.headings.len(), 1);
+    assert_eq!(rendered.headings[0].text, "Only One");
+  }
+
+  #[test]
+  fn no_headings_yields_empty_vec() {
+    let rendered = render_markdown(
+      "Just a paragraph, no headings here.",
+      80,
+      &styles(),
+      &HashMap::new(),
+    );
+    assert!(rendered.headings.is_empty());
   }
 }

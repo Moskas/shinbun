@@ -17,7 +17,7 @@ use crate::feeds::{self, Feed};
 use crate::image_cache::DiskImageCache;
 use crate::query;
 use crate::theme::Theme;
-use crate::views::{entry_view, feeds_list_view, help_view, links_view};
+use crate::views::{entry_view, feeds_list_view, help_view, links_view, toc_view};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use image::DynamicImage;
 use ratatui::prelude::*;
@@ -63,6 +63,9 @@ pub struct App {
   pub(crate) show_links_popup: bool,
   pub(crate) links_scroll: usize,
   pub(crate) links_selected: usize,
+  pub(crate) show_toc_popup: bool,
+  pub(crate) toc_scroll: usize,
+  pub(crate) toc_selected: usize,
   pub(crate) show_confirm_popup: bool,
   pub(crate) confirm_feed_name: String,
   pub(crate) show_confirm_delete_popup: bool,
@@ -168,6 +171,9 @@ impl App {
       show_links_popup: false,
       links_scroll: 0,
       links_selected: 0,
+      show_toc_popup: false,
+      toc_scroll: 0,
+      toc_selected: 0,
       show_confirm_popup: false,
       confirm_feed_name: String::new(),
       show_confirm_delete_popup: false,
@@ -495,6 +501,19 @@ impl App {
       }
     }
 
+    if self.show_toc_popup {
+      toc_view::render_toc_popup(
+        frame,
+        area,
+        self.entry_render_cache.headings(),
+        self.entry_render_cache.current_heading(),
+        &mut self.toc_selected,
+        &mut self.toc_scroll,
+        self.ui_config.show_scrollbar,
+        &self.theme,
+      );
+    }
+
     if self.show_confirm_popup {
       let message = format!(
         "Mark all entries in \"{}\" as read?",
@@ -611,6 +630,40 @@ impl App {
         }
         KeyCode::Char('y') => {
           self.yank_selected_link();
+          return;
+        }
+        _ => return,
+      }
+    }
+
+    if self.show_toc_popup {
+      match key.code {
+        KeyCode::Esc | KeyCode::Char('t') => {
+          self.show_toc_popup = false;
+          self.toc_scroll = 0;
+          return;
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+          self.toc_selected = self.toc_selected.saturating_add(1);
+          return;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+          self.toc_selected = self.toc_selected.saturating_sub(1);
+          return;
+        }
+        KeyCode::Home | KeyCode::Char('g') => {
+          self.toc_selected = 0;
+          self.toc_scroll = 0;
+          return;
+        }
+        KeyCode::End | KeyCode::Char('G') => {
+          self.toc_selected = usize::MAX;
+          return;
+        }
+        KeyCode::Enter => {
+          self.jump_to_toc_selection();
+          self.show_toc_popup = false;
+          self.toc_scroll = 0;
           return;
         }
         _ => return,
@@ -813,8 +866,8 @@ impl App {
         }
         _ => {}
       },
-      KeyCode::Char('t') | KeyCode::Char('T') => {
-        if self.state == AppState::BrowsingFeeds {
+      KeyCode::Char('t') | KeyCode::Char('T') => match self.state {
+        AppState::BrowsingFeeds => {
           self.input.cancel_sequence();
           self.list_pane = match self.list_pane {
             ListPane::Feeds => ListPane::Tags,
@@ -823,7 +876,13 @@ impl App {
           self.tag_list_state.select(Some(0));
           self.tag_index = 0;
         }
-      }
+        AppState::ViewingEntry if self.entry_render_cache.headings().len() > 1 => {
+          self.show_toc_popup = !self.show_toc_popup;
+          self.toc_scroll = 0;
+          self.toc_selected = self.entry_render_cache.current_heading().unwrap_or(0);
+        }
+        _ => {}
+      },
       KeyCode::Char('a') => {
         if self.state == AppState::BrowsingFeeds {
           self.input.cancel_sequence();

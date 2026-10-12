@@ -1,4 +1,4 @@
-use crate::content::markdown::{render_markdown, wrap_line, MarkdownStyles, MdBlock};
+use crate::content::markdown::{render_markdown, wrap_line, HeadingInfo, MarkdownStyles, MdBlock};
 use crate::feeds::FeedEntry;
 use crate::theme::Theme;
 use image::DynamicImage;
@@ -42,10 +42,35 @@ enum ContentSegment {
 pub struct EntryRenderCache {
   key: u64,
   segments: Vec<ContentSegment>,
+  /// Headings found in the entry, cached alongside `segments` (same `key`),
+  /// for the table-of-contents popup.
+  headings: Vec<HeadingInfo>,
   /// Per-URL sliced image protocols, built lazily at render time and
   /// cleared whenever `key` changes (a new width invalidates existing
   /// slices, since they're encoded at a fixed target size).
   sliced: HashMap<String, SlicedProtocol>,
+  /// Absolute virtual-row position of each heading in `headings`, recomputed
+  /// every frame in `render()` (unlike `segments`/`headings`, this depends
+  /// on `heights`, which depends on `show_images` — not part of the cache
+  /// key, so it can't be cached across frames).
+  heading_rows: Vec<usize>,
+  /// Index into `headings` of the section currently scrolled into view,
+  /// recomputed every frame alongside `heading_rows`.
+  current_heading: Option<usize>,
+}
+
+impl EntryRenderCache {
+  pub fn headings(&self) -> &[HeadingInfo] {
+    &self.headings
+  }
+
+  pub fn heading_rows(&self) -> &[usize] {
+    &self.heading_rows
+  }
+
+  pub fn current_heading(&self) -> Option<usize> {
+    self.current_heading
+  }
 }
 
 /// Configuration passed to [`render`] to avoid too many individual parameters.
@@ -75,7 +100,7 @@ fn build_all_segments(
   entry: &FeedEntry,
   theme: &Theme,
   content_width: u16,
-) -> Vec<ContentSegment> {
+) -> (Vec<ContentSegment>, Vec<HeadingInfo>) {
   let mut segs = Vec::new();
 
   // Metadata header (theme-colored, wrapped to the viewport width).
@@ -112,17 +137,27 @@ fn build_all_segments(
     .enumerate()
     .map(|(i, url)| (url.clone(), i + 1))
     .collect();
-  for block in render_markdown(&entry.text, content_width, &styles, &link_numbers) {
+  let rendered = render_markdown(&entry.text, content_width, &styles, &link_numbers);
+  for block in rendered.blocks {
     segs.push(match block {
       MdBlock::Text(lines) => ContentSegment::Lines(lines),
       MdBlock::Image { src, alt } => ContentSegment::Image { src, alt },
     });
   }
+  // Metadata always occupies segment 0, so body blocks are offset by one.
+  let headings: Vec<HeadingInfo> = rendered
+    .headings
+    .into_iter()
+    .map(|h| HeadingInfo {
+      block_index: h.block_index + 1,
+      ..h
+    })
+    .collect();
 
   // Bottom padding, mirroring the blank line placed after the metadata header.
   segs.push(ContentSegment::Lines(vec![Line::from("")]));
 
-  segs
+  (segs, headings)
 }
 
 /// Return the virtual height of a single segment. All text lines are
@@ -341,7 +376,9 @@ pub fn render(
   // Build (or reuse) segments and compute layout heights.
   let key = cache_key(feed_title, entry, content_width);
   if cfg.render_cache.key != key || cfg.render_cache.segments.is_empty() {
-    cfg.render_cache.segments = build_all_segments(feed_title, entry, theme, content_width);
+    let (segs, headings) = build_all_segments(feed_title, entry, theme, content_width);
+    cfg.render_cache.segments = segs;
+    cfg.render_cache.headings = headings;
     cfg.render_cache.key = key;
     cfg.render_cache.sliced.clear();
   }
@@ -354,9 +391,40 @@ pub fn render(
     .collect();
   let content_length: usize = heights.iter().sum();
 
+  // Absolute virtual-row position of each heading's first line. Recomputed
+  // every frame (not cached with segments/headings) since `heights` depends
+  // on `show_images`, which is deliberately not part of the cache key.
+  let mut running = 0usize;
+  let seg_starts: Vec<usize> = heights
+    .iter()
+    .map(|&h| {
+      let start = running;
+      running += h;
+      start
+    })
+    .collect();
+  cfg.render_cache.heading_rows = cfg
+    .render_cache
+    .headings
+    .iter()
+    .map(|h| seg_starts.get(h.block_index).copied().unwrap_or(0) + h.line_offset)
+    .collect();
+
   let max_scroll = content_length.saturating_sub(visible_height);
   *scroll = (*scroll).min(max_scroll);
   let cur_scroll = *scroll;
+
+  // Last heading whose row is at or before the current scroll position —
+  // i.e. the section currently in view, for the ToC popup to highlight.
+  cfg.render_cache.current_heading = {
+    let rows = &cfg.render_cache.heading_rows;
+    let idx = rows.partition_point(|&r| r <= cur_scroll);
+    if idx == 0 {
+      None
+    } else {
+      Some(idx - 1)
+    }
+  };
 
   let (first_visible, last_visible) = if content_length == 0 || visible_height == 0 {
     (0, 0)
@@ -445,7 +513,7 @@ mod tests {
       vec!["https://example.com/post".to_string()],
     );
 
-    let segs = build_all_segments("My Feed", &entry, &test_theme(), 80);
+    let (segs, _headings) = build_all_segments("My Feed", &entry, &test_theme(), 80);
     // First segment should be the metadata lines
     assert!(matches!(&segs[0], ContentSegment::Lines(_)));
     if let ContentSegment::Lines(lines) = &segs[0] {
@@ -463,7 +531,7 @@ mod tests {
       vec![],
     );
 
-    let segs = build_all_segments("Feed", &entry, &test_theme(), 80);
+    let (segs, _headings) = build_all_segments("Feed", &entry, &test_theme(), 80);
     assert!(segs.iter().any(
       |s| matches!(s, ContentSegment::Image { src, alt } if src == "https://example.com/img.png" && alt == "alt text")
     ));
@@ -490,7 +558,7 @@ mod tests {
     // A long single-line paragraph must be pre-wrapped: every line fits.
     let long = "word ".repeat(60);
     let entry = make_entry(&long, vec![]);
-    let segs = build_all_segments("Feed", &entry, &test_theme(), 40);
+    let (segs, _headings) = build_all_segments("Feed", &entry, &test_theme(), 40);
     for seg in &segs {
       if let ContentSegment::Lines(lines) = seg {
         for line in lines {
@@ -512,7 +580,7 @@ mod tests {
       ],
     );
 
-    let segs = build_all_segments("Feed", &entry, &test_theme(), 80);
+    let (segs, _headings) = build_all_segments("Feed", &entry, &test_theme(), 80);
     for seg in &segs {
       if let ContentSegment::Lines(lines) = seg {
         for line in lines {
@@ -525,7 +593,7 @@ mod tests {
   #[test]
   fn test_metadata_lines_keep_line_style() {
     let entry = make_entry("body", vec!["https://example.com/post".to_string()]);
-    let segs = build_all_segments("Feed", &entry, &test_theme(), 80);
+    let (segs, _headings) = build_all_segments("Feed", &entry, &test_theme(), 80);
     let ContentSegment::Lines(lines) = &segs[0] else {
       panic!("expected metadata lines")
     };
@@ -552,7 +620,7 @@ mod tests {
       ],
     );
 
-    let segs = build_all_segments("Feed", &entry, &test_theme(), 80);
+    let (segs, _headings) = build_all_segments("Feed", &entry, &test_theme(), 80);
     let all: String = segs
       .iter()
       .filter_map(|s| match s {
@@ -609,7 +677,7 @@ mod tests {
   #[test]
   fn test_body_has_trailing_blank_line() {
     let entry = make_entry("body", vec![]);
-    let segs = build_all_segments("Feed", &entry, &test_theme(), 80);
+    let (segs, _headings) = build_all_segments("Feed", &entry, &test_theme(), 80);
     let ContentSegment::Lines(lines) = segs.last().expect("expected a trailing segment") else {
       panic!("expected trailing blank-line segment")
     };
